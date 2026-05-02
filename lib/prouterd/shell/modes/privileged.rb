@@ -170,14 +170,20 @@ module Prouterd
           JSON.parse(source)
         end
 
-        # `replay run <uid>` — re-execute a previous run with the same event
-        # and the config commit it was originally pinned to. Stores the new
-        # run with replay_of_run_id pointing back at the original.
+        # `replay run <uid>` or `replay run <uid> from <block>`.
+        # Without `from`: re-execute from scratch with the original event +
+        # config commit. With `from`: seed context from the step's captured
+        # input and start at that block.
         def cmd_replay(tokens, session, out, _err)
-          unless tokens.length == 3 && tokens[1].value == "run"
-            raise CommandError, "syntax: replay run <uid>"
-          end
-          new_run = session.replay(tokens[2].value)
+          new_run =
+            if tokens.length == 3 && tokens[1].value == "run"
+              session.replay(tokens[2].value)
+            elsif tokens.length == 5 && tokens[1].value == "run" && tokens[3].value == "from"
+              session.replay_from(tokens[2].value, tokens[4].value)
+            else
+              raise CommandError, "syntax: replay run <uid> [from <block>]"
+            end
+
           out.puts "Replayed #{tokens[2].value} as #{new_run.uid} (#{new_run.status})"
           steps = Prouterd::Storage::Repositories::Runs.new(session.store.db).list_steps(new_run.id)
           steps.each do |s|

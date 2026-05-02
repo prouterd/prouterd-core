@@ -52,19 +52,7 @@ module Prouterd
       # Replay a previous run with the same input event and the same config
       # commit it was originally pinned to. Returns the new Run.
       def replay(run_uid)
-        raise ShellError, "no DB attached; replay requires --db" unless @store
-
-        repo = Storage::Repositories::Runs.new(@store.db)
-        original = repo.get_run_by_uid(run_uid)
-        raise ShellError, "no such run '#{run_uid}'" unless original
-        unless original.process_config_commit_id
-          raise ShellError, "run '#{run_uid}' was not pinned to a config commit; cannot replay"
-        end
-
-        commit = @store.get_commit(original.process_config_commit_id)
-        raise ShellError, "config commit #{original.process_config_commit_id} no longer exists" unless commit
-
-        document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
+        original, document = load_replay_context(run_uid)
         event = original.input_event_json ? JSON.parse(original.input_event_json) : {}
 
         orchestrator.trigger(
@@ -72,9 +60,41 @@ module Prouterd
           original.process_name,
           input_event: event,
           interface_name: original.interface_name,
-          commit_id: commit.id,
+          commit_id: original.process_config_commit_id,
           replay_of_run_id: original.id
         )
+      end
+
+      # Replay starting AT a specific block. Seeds the new run's context with
+      # the snapshot captured in the original step's input_json, so downstream
+      # blocks see exactly what they would have seen on the original run.
+      def replay_from(run_uid, block_name)
+        original, document = load_replay_context(run_uid)
+        repo = Storage::Repositories::Runs.new(@store.db)
+
+        # Pick the EARLIEST attempt's row for the chosen block — that's the
+        # one with the original input_json before any retry mutation.
+        target_step = repo.list_steps(original.id).find { |s| s.block_name == block_name }
+        unless target_step
+          raise ShellError, "block '#{block_name}' did not run in '#{run_uid}'; cannot replay from it"
+        end
+        unless target_step.input_json
+          raise ShellError, "step '#{block_name}' has no captured input; cannot replay from it"
+        end
+
+        payload = JSON.parse(target_step.input_json)
+        seed = payload["context"] || {}
+
+        new_run = orchestrator.enqueue(
+          document,
+          original.process_name,
+          input_event: payload["context"]&.dig("event") || (original.input_event_json ? JSON.parse(original.input_event_json) : {}),
+          interface_name: original.interface_name,
+          commit_id: original.process_config_commit_id,
+          replay_of_run_id: original.id
+        )
+        orchestrator.execute_run(new_run, document, from_block: block_name, seed_context: seed)
+        Storage::Repositories::Runs.new(@store.db).get_run(new_run.id)
       end
 
       def hostname
@@ -154,6 +174,23 @@ module Prouterd
 
       def deep_clone(document)
         Marshal.load(Marshal.dump(document))
+      end
+
+      def load_replay_context(run_uid)
+        raise ShellError, "no DB attached; replay requires --db" unless @store
+
+        repo = Storage::Repositories::Runs.new(@store.db)
+        original = repo.get_run_by_uid(run_uid)
+        raise ShellError, "no such run '#{run_uid}'" unless original
+        unless original.process_config_commit_id
+          raise ShellError, "run '#{run_uid}' was not pinned to a config commit; cannot replay"
+        end
+
+        commit = @store.get_commit(original.process_config_commit_id)
+        raise ShellError, "config commit #{original.process_config_commit_id} no longer exists" unless commit
+
+        document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
+        [original, document]
       end
     end
   end

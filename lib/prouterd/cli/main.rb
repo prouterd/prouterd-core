@@ -233,6 +233,11 @@ module Prouterd
         runner = build_runner(runner_kind)
         return 1 if runner == :error
 
+        # Crash recovery: any run/step left in `running`/`queued` from a
+        # previous daemon process must be marked failed before we accept
+        # new traffic. Otherwise replay/show would still see them as live.
+        Prouterd::Runtime::Recovery.sweep(store.db, output: @stdout)
+
         app = Prouterd::API::App.new(store: store, runner: runner)
         Prouterd::API::Server.run(app: app, bind: bind, port: port, output: @stdout)
         0
@@ -251,14 +256,20 @@ module Prouterd
       end
 
       # `prouter replay run <uid>` — re-runs a previous run.
+      # `prouter replay run <uid> from <block>` — replays from a chosen block.
       def cmd_replay
         store = nil
+        from_block = nil
         unless @argv.length >= 2 && @argv[0] == "run"
-          @stderr.puts "prouter replay: usage: replay run <uid> [--db PATH] [--runner KIND]"
+          @stderr.puts "prouter replay: usage: replay run <uid> [from <block>] [--db PATH] [--runner KIND]"
           return 2
         end
         run_uid = @argv[1]
         @argv = @argv[2..]
+        if @argv[0] == "from" && @argv[1]
+          from_block = @argv[1]
+          @argv = @argv[2..]
+        end
 
         opts = parse_runtime_options("replay")
         return 2 if opts == :error
@@ -274,7 +285,11 @@ module Prouterd
         return 1 if runner == :error
 
         session = Prouterd::Shell::Session.new(store: store, runner: runner)
-        new_run = session.replay(run_uid)
+        new_run = if from_block
+                    session.replay_from(run_uid, from_block)
+                  else
+                    session.replay(run_uid)
+                  end
 
         repo = Prouterd::Storage::Repositories::Runs.new(store.db)
         @stdout.puts "Replayed #{run_uid} as #{new_run.uid} (#{new_run.status})"

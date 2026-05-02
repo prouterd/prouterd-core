@@ -81,25 +81,44 @@ module Prouterd
 
       # Execute a previously-enqueued Run against a Document. Returns the
       # final Run row after termination. Safe to call from a worker thread.
-      def execute_run(run, document)
+      #
+      # `from_block:` and `seed_context:` together support replay-from-block:
+      # caller supplies the context that fed into the chosen block (taken
+      # from an earlier run's step.input_json["context"]) and the orchestrator
+      # starts execution AT that block instead of from entry blocks.
+      def execute_run(run, document, from_block: nil, seed_context: nil)
         process = document.processes.find { |p| p.name == run.process_name }
         raise TriggerError, "no such process '#{run.process_name}'" unless process
 
-        execute(run, process, document)
+        if from_block
+          unless process.block(from_block)
+            raise TriggerError, "no such block '#{run.process_name}/#{from_block}'"
+          end
+          execute(run, process, document, seed_context: seed_context, start_blocks: [from_block])
+        else
+          execute(run, process, document)
+        end
       end
 
       private
 
-      def execute(run, process, document)
+      def execute(run, process, document, seed_context: nil, start_blocks: nil)
         @runs.update_run(run.id, status: "running", started_at: Time.now.utc.iso8601(3))
 
-        context = Context.new("event" => deep_stringify(run.input_event_json ? JSON.parse(run.input_event_json) : {}))
+        context = if seed_context
+                    Context.new(seed_context)
+                  else
+                    Context.new("event" => deep_stringify(run.input_event_json ? JSON.parse(run.input_event_json) : {}))
+                  end
 
         # Per-run mutexes: DB writes serialized, context reads/writes guarded.
         db_mutex = Mutex.new
         ctx_mutex = Mutex.new
+        # Per-run redactor scrubs secret values from log content before
+        # they hit the DB. Empty when no secrets are declared.
+        redactor = Redactor.from_document(document, @secret_resolver)
 
-        ready = entry_blocks(process)
+        ready = start_blocks || entry_blocks(process)
         if ready.empty?
           finalize_run(run, status: "failed", error: "process '#{process.name}' has no entry blocks")
           return @runs.get_run(run.id)
@@ -132,7 +151,7 @@ module Prouterd
             next
           end
 
-          results = run_level_in_parallel(run, process, document, level, context, db_mutex, ctx_mutex)
+          results = run_level_in_parallel(run, process, document, level, context, db_mutex, ctx_mutex, redactor)
           level.each { |b| executed << b.name }
 
           # Persist accumulated context once after the level drains.
@@ -148,8 +167,9 @@ module Prouterd
             failed_blocks << block_name
             policy = on_failure_for(process, block_name)
             if policy == "stop"
-              failure_reason = "block '#{block_name}' #{result.error_type || 'failed'}: " \
-                               "#{result.error_message || "exit #{result.exit_code}"}"
+              raw = "block '#{block_name}' #{result.error_type || 'failed'}: " \
+                    "#{result.error_message || "exit #{result.exit_code}"}"
+              failure_reason = redactor.redact(raw)
             end
           end
           break if failure_reason
@@ -182,18 +202,18 @@ module Prouterd
       # Execute a level (a set of blocks ready to run concurrently) and
       # return [[block_name, ExecutionResult], ...] in arbitrary order. Each
       # entry includes the LAST attempt's result — retry history is in DB.
-      def run_level_in_parallel(run, process, document, level, context, db_mutex, ctx_mutex)
+      def run_level_in_parallel(run, process, document, level, context, db_mutex, ctx_mutex, redactor)
         return [] if level.empty?
 
         if level.length == 1 || @max_parallelism <= 1
           return level.map do |block|
-            [block.name, execute_block_with_retries(run, process, block, context, document, db_mutex, ctx_mutex)]
+            [block.name, execute_block_with_retries(run, process, block, context, document, db_mutex, ctx_mutex, redactor)]
           end
         end
 
         threads = level.map do |block|
           Thread.new do
-            [block.name, execute_block_with_retries(run, process, block, context, document, db_mutex, ctx_mutex)]
+            [block.name, execute_block_with_retries(run, process, block, context, document, db_mutex, ctx_mutex, redactor)]
           end
         end
         threads.map(&:value)
@@ -202,7 +222,7 @@ module Prouterd
       # Per-block retry driver. Each attempt creates its own step row so the
       # full retry history is queryable via show run / show logs. Sleeps
       # happen OUTSIDE both mutexes (with an unlocked Kernel#sleep).
-      def execute_block_with_retries(run, process, block, context, document, db_mutex, ctx_mutex)
+      def execute_block_with_retries(run, process, block, context, document, db_mutex, ctx_mutex, redactor)
         policy = lookup_policy(document, block.retry_policy_name)
         attempt = 1
         result = nil
@@ -219,7 +239,7 @@ module Prouterd
             end
           end
 
-          result = execute_single_attempt(run, process, block, attempt, context, document, db_mutex, ctx_mutex)
+          result = execute_single_attempt(run, process, block, attempt, context, document, db_mutex, ctx_mutex, redactor)
           break if result.success?
           break unless RetryCalculator.more_attempts?(policy, attempt)
 
@@ -263,7 +283,7 @@ module Prouterd
       # One attempt of one block. DB writes go through db_mutex; Context get
       # for input + set for output go through ctx_mutex. Runner.run() runs
       # OUTSIDE both — that's where the actual concurrency happens.
-      def execute_single_attempt(run, process, block, attempt, context, document, db_mutex, ctx_mutex)
+      def execute_single_attempt(run, process, block, attempt, context, document, db_mutex, ctx_mutex, redactor)
         input_payload = nil
         ctx_mutex.synchronize do
           input_value = block.input ? context.get(block.input) : nil
@@ -304,7 +324,7 @@ module Prouterd
         result = @runner.run(request)
 
         db_mutex.synchronize do
-          persist_logs(run, step, result)
+          persist_logs(run, step, result, redactor)
           persist_artifacts(run, step, block, result)
           @runs.update_step(
             step.id,
@@ -313,7 +333,7 @@ module Prouterd
             duration_ms: result.duration_ms,
             exit_code: result.exit_code,
             error_type: result.error_type,
-            error_message: result.error_message,
+            error_message: redactor.redact(result.error_message),
             output_json: result.output_json ? JSON.dump(result.output_json) : nil
           )
         end
@@ -359,12 +379,19 @@ module Prouterd
         env
       end
 
-      def persist_logs(run, step, result)
+      def persist_logs(run, step, result, redactor)
         @db.transaction do
-          @runs.append_log(run_id: run.id, step_id: step.id, stream: "stdout", content: result.stdout) if result.stdout && !result.stdout.empty?
-          @runs.append_log(run_id: run.id, step_id: step.id, stream: "stderr", content: result.stderr) if result.stderr && !result.stderr.empty?
+          if result.stdout && !result.stdout.empty?
+            @runs.append_log(run_id: run.id, step_id: step.id, stream: "stdout", content: redactor.redact(result.stdout))
+          end
+          if result.stderr && !result.stderr.empty?
+            @runs.append_log(run_id: run.id, step_id: step.id, stream: "stderr", content: redactor.redact(result.stderr))
+          end
           if result.error_message
-            @runs.append_log(run_id: run.id, step_id: step.id, stream: "system", content: "[#{result.error_type}] #{result.error_message}")
+            @runs.append_log(
+              run_id: run.id, step_id: step.id, stream: "system",
+              content: redactor.redact("[#{result.error_type}] #{result.error_message}")
+            )
           end
         end
       end

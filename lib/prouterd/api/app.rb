@@ -161,6 +161,7 @@ module Prouterd
         when ["POST",   %w[v1 config check]]     then @v1.post_config_check(request)
         when ["POST",   %w[v1 config apply]]     then @v1.post_config_apply(request)
         when ["POST",   %w[v1 config rollback]]  then @v1.post_config_rollback(request)
+        when ["POST",   %w[v1 config save-boot]] then @v1.post_config_save_boot(request)
         when ["GET",    %w[v1 processes]]        then @v1.get_processes(request)
         when ["GET",    %w[v1 interfaces]]       then @v1.get_interfaces(request)
         when ["GET",    %w[v1 queues]]           then @v1.get_queues(request)
@@ -191,6 +192,8 @@ module Prouterd
           @v1.post_run_replay(request, segments[2])
         when method == "POST" && segments.length == 4 && segments[0..1] == %w[v1 runs] && segments[3] == "cancel"
           @v1.post_run_cancel(request, segments[2])
+        when method == "GET" && segments.length == 4 && segments[0..1] == %w[v1 artifacts] && segments[3] == "download"
+          @v1.get_artifact_download(request, segments[2])
         else
           json_response(404, error: "no /v1 route for #{method} /#{segments.join('/')}")
         end

@@ -160,6 +160,19 @@ module Prouterd
           )
         end
 
+        def get_artifact(id)
+          row = @db.query_row(
+            "SELECT id, run_id, step_id, block_name, name, path, content_type, size_bytes, checksum, created_at FROM artifacts WHERE id = ?",
+            [id.to_i]
+          )
+          return nil unless row
+
+          Artifact.new(
+            id: row[0], run_id: row[1], step_id: row[2], block_name: row[3], name: row[4],
+            path: row[5], content_type: row[6], size_bytes: row[7], checksum: row[8], created_at: row[9]
+          )
+        end
+
         def list_artifacts(run_id, step_id: nil)
           if step_id
             rows = @db.execute(

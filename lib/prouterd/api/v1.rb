@@ -77,6 +77,16 @@ module Prouterd
         json(404, error: e.message)
       end
 
+      # Mark the running config as the boot config (router CLI's `write memory`).
+      # Returns the commit that's now blessed as boot. 409 when there is no
+      # running pointer to copy.
+      def post_config_save_boot(_request)
+        commit = @store.write_memory
+        json(200, data: { commit_id: commit.id, checksum: commit.checksum })
+      rescue ControlPlane::ConfigStoreError => e
+        json(409, error: e.message)
+      end
+
       def get_config_commits(_request)
         commits = @store.list_commits(limit: 100).map { |c| commit_summary(c) }
         running = @store.running_commit&.id
@@ -189,6 +199,23 @@ module Prouterd
         logs = repo.list_logs(run.id, step_id: step_id)
         logs = logs.select { |l| l.stream == stream } if stream
         json(200, data: logs.map { |l| log_summary(l) })
+      end
+
+      # GET /v1/artifacts/:id/download — stream the persisted bytes to the
+      # caller. Path is read from the artifacts row server-side; the client
+      # never gets to specify it (closed against directory traversal).
+      def get_artifact_download(_request, id)
+        repo = Storage::Repositories::Runs.new(@store.db)
+        artifact = repo.get_artifact(id.to_i)
+        return json(404, error: "no such artifact") unless artifact
+        return json(410, error: "artifact bytes no longer on disk") unless File.file?(artifact.path)
+
+        headers = {
+          "content-type"        => artifact.content_type || "application/octet-stream",
+          "content-length"      => artifact.size_bytes.to_s,
+          "content-disposition" => %(attachment; filename="#{artifact.name.to_s.gsub(/"/, "")}")
+        }
+        [200, headers, [File.binread(artifact.path)]]
       end
 
       def get_run_artifacts(_request, uid)

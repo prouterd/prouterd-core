@@ -166,6 +166,83 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
     end
   end
 
+  describe "POST /v1/config/save-boot" do
+    it "blesses the running commit as boot and returns it" do
+      # Apply once so there's a running pointer to bless.
+      post "/v1/config/apply",
+           "router demo\nexit\nqueue q\n concurrency 1\n timeout 1m\nexit\n",
+           { "CONTENT_TYPE" => "text/plain" }
+      expect(last_response.status).to eq(201)
+
+      post "/v1/config/save-boot"
+      expect(last_response.status).to eq(200)
+      data = JSON.parse(last_response.body)["data"]
+      expect(data["commit_id"]).to be_a(Integer)
+    end
+
+    it "409s when there is no running config to bless" do
+      empty_db    = Prouterd::Storage::DB.open(":memory:")
+      empty_store = Prouterd::ControlPlane::ConfigStore.new(empty_db)
+      empty_app   = Prouterd::API::App.new(
+        store: empty_store, runner: runner,
+        in_flight: in_flight, metrics: metrics, admin_token: nil
+      )
+
+      env = Rack::MockRequest.new(empty_app).post("/v1/config/save-boot").errors
+      response = Rack::MockRequest.new(empty_app).post("/v1/config/save-boot")
+      expect(response.status).to eq(409)
+      empty_db.close
+    end
+  end
+
+  describe "GET /v1/artifacts/:id/download" do
+    it "streams the file bytes with content-disposition" do
+      require "tempfile"
+      tmp = Tempfile.new(["art", ".json"])
+      tmp.write('{"ok":true}')
+      tmp.flush
+
+      runs_repo = Prouterd::Storage::Repositories::Runs.new(db)
+      run = runs_repo.create_run(process_name: "pipeline", input_event: {}, interface_name: "cli")
+      step = runs_repo.create_step(run_id: run.id, block_name: "extract")
+      runs_repo.add_artifact(
+        run_id: run.id, step_id: step.id, block_name: "extract",
+        name: "out.json", path: tmp.path, size_bytes: tmp.size,
+        content_type: "application/json"
+      )
+      art = runs_repo.list_artifacts(run.id).first
+
+      get "/v1/artifacts/#{art.id}/download"
+      expect(last_response.status).to eq(200)
+      expect(last_response.headers["content-type"]).to eq("application/json")
+      expect(last_response.headers["content-disposition"]).to include('filename="out.json"')
+      expect(last_response.body).to eq('{"ok":true}')
+    ensure
+      tmp&.close
+      tmp&.unlink
+    end
+
+    it "404s for unknown artifact id" do
+      get "/v1/artifacts/9999/download"
+      expect(last_response.status).to eq(404)
+    end
+
+    it "410s when the underlying file no longer exists" do
+      runs_repo = Prouterd::Storage::Repositories::Runs.new(db)
+      run = runs_repo.create_run(process_name: "pipeline", input_event: {}, interface_name: "cli")
+      step = runs_repo.create_step(run_id: run.id, block_name: "extract")
+      runs_repo.add_artifact(
+        run_id: run.id, step_id: step.id, block_name: "extract",
+        name: "ghost.json", path: "/tmp/this-path-does-not-exist-xyz", size_bytes: 5,
+        content_type: "application/json"
+      )
+      art = runs_repo.list_artifacts(run.id).first
+
+      get "/v1/artifacts/#{art.id}/download"
+      expect(last_response.status).to eq(410)
+    end
+  end
+
   describe "GET /v1/interfaces" do
     it "lists interfaces from running config" do
       get "/v1/interfaces"

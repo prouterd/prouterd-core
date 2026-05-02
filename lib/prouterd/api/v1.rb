@@ -91,6 +91,34 @@ module Prouterd
         json(200, data: commit_summary(commit).merge(rendered_config: commit.rendered_config))
       end
 
+      # ----- /v1/{interfaces,queues,policies,secrets} -----
+
+      def get_interfaces(_request)
+        document = @store.load_running
+        json(200, data: document.interfaces.map { |i| interface_summary(i) })
+      end
+
+      def get_queues(_request)
+        document = @store.load_running
+        json(200, data: document.queues.map { |q| queue_summary(q) })
+      end
+
+      def get_policies(_request)
+        document = @store.load_running
+        json(200, data: document.policies.map { |p| policy_summary(p) })
+      end
+
+      # Spec §22.6 / spec §37.1: secret values must never be exposed via the
+      # API. We return the declared name, source type, and source ref (e.g.
+      # an env var NAME, never its value), plus a "present"/"missing" status
+      # for env-backed secrets so operators can verify configuration without
+      # the value crossing the wire.
+      def get_secrets(_request)
+        document = @store.load_running
+        used = secret_usage_index(document)
+        json(200, data: document.secrets.map { |s| secret_summary(s, used[s.name] || []) })
+      end
+
       # ----- /v1/processes -----
 
       def get_processes(_request)
@@ -347,6 +375,65 @@ module Prouterd
 
       def match_summary(m)
         { path: m.path, operator: m.operator, values: m.values }
+      end
+
+      def interface_summary(i)
+        {
+          name:     i.name,
+          type:     i.type,
+          shutdown: i.shutdown,
+          path:     i.respond_to?(:path)   ? i.path   : nil,
+          method:   i.respond_to?(:method) ? i.method : nil,
+          schedule: i.respond_to?(:schedule) ? i.schedule : nil,
+          timezone: i.respond_to?(:timezone) ? i.timezone : nil
+        }.compact
+      end
+
+      def queue_summary(q)
+        { name: q.name, concurrency: q.concurrency, timeout_ms: q.timeout_ms }
+      end
+
+      def policy_summary(p)
+        {
+          name:                   p.name,
+          retry_attempts:         p.retry_attempts,
+          retry_backoff:          p.retry_backoff,
+          retry_initial_delay_ms: p.retry_initial_delay_ms,
+          retry_max_delay_ms:     p.retry_max_delay_ms,
+          timeout_ms:             p.timeout_ms
+        }
+      end
+
+      def secret_summary(s, used_by)
+        {
+          name:        s.name,
+          source_type: s.source_type,
+          source_ref:  s.source_value,
+          used_by:     used_by,
+          status:      secret_status(s)
+        }
+      end
+
+      def secret_status(secret)
+        case secret.source_type
+        when "env" then ENV.key?(secret.source_value.to_s) ? "present" : "missing"
+        else "unknown"
+        end
+      end
+
+      def secret_usage_index(document)
+        idx = Hash.new { |h, k| h[k] = [] }
+        document.processes.each do |p|
+          p.blocks.each do |b|
+            Array(b.secret_names).each { |n| idx[n] << "block #{b.name}" }
+          end
+        end
+        document.interfaces.each do |iface|
+          if iface.respond_to?(:auth) && iface.auth && iface.auth.respond_to?(:secret_name) && iface.auth.secret_name
+            idx[iface.auth.secret_name] << "interface #{iface.name}"
+          end
+        end
+        idx
       end
 
       def run_summary(r)

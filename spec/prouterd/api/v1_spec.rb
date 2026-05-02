@@ -166,6 +166,77 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
     end
   end
 
+  describe "GET /v1/interfaces" do
+    it "lists interfaces from running config" do
+      get "/v1/interfaces"
+      expect(last_response.status).to eq(200)
+      data = JSON.parse(last_response.body)["data"]
+      expect(data.length).to eq(1)
+      expect(data.first).to include("name" => "cli", "type" => "manual")
+    end
+  end
+
+  describe "GET /v1/queues" do
+    it "lists queues" do
+      get "/v1/queues"
+      expect(last_response.status).to eq(200)
+      data = JSON.parse(last_response.body)["data"]
+      expect(data.first).to include("name" => "default", "concurrency" => 4)
+    end
+  end
+
+  describe "GET /v1/policies" do
+    it "lists policies (empty for fixture without policies)" do
+      get "/v1/policies"
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)["data"]).to eq([])
+    end
+  end
+
+  describe "GET /v1/secrets" do
+    let(:document) do
+      parse(<<~PRC)
+        router demo
+        exit
+        secret WEBHOOK_TOKEN
+         source env WEBHOOK_TOKEN
+        exit
+        secret CLEARBIT_API_KEY
+         source env CLEARBIT_API_KEY
+        exit
+        queue default
+         concurrency 1
+         timeout 1m
+        exit
+        process p
+         queue default
+         block enrich
+          image x
+          secret CLEARBIT_API_KEY
+          output r
+         exit
+        exit
+      PRC
+    end
+
+    it "returns names + source refs + status, never values" do
+      get "/v1/secrets"
+      expect(last_response.status).to eq(200)
+      data = JSON.parse(last_response.body)["data"]
+      names = data.map { |s| s["name"] }
+      expect(names).to include("WEBHOOK_TOKEN", "CLEARBIT_API_KEY")
+
+      clearbit = data.find { |s| s["name"] == "CLEARBIT_API_KEY" }
+      expect(clearbit["source_type"]).to eq("env")
+      expect(clearbit["source_ref"]).to  eq("CLEARBIT_API_KEY")
+      expect(clearbit["used_by"]).to     include("block enrich")
+      expect(clearbit["status"]).to      satisfy { |s| %w[present missing].include?(s) }
+
+      # Spec §37.1: no `value` key, ever.
+      expect(data).to all(satisfy { |s| !s.key?("value") })
+    end
+  end
+
   describe "GET /v1/processes/:name" do
     it "returns detail" do
       get "/v1/processes/pipeline"

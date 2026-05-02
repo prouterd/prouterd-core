@@ -37,7 +37,8 @@ module Prouterd
       # Phase 12 introduced the `block ... type docker|shell` DSL; the
       # orchestrator dispatches based on block.execution_type.
       def initialize(db:, runner:, artifact_store: nil, secret_resolver: nil, logger: nil,
-                     max_parallelism: 8, in_flight: nil, metrics: nil)
+                     max_parallelism: 8, in_flight: nil, metrics: nil,
+                     events: Prouterd::Events.default)
         @db = db
         @runners = normalize_runners(runner)
         @runs = Storage::Repositories::Runs.new(db)
@@ -47,6 +48,7 @@ module Prouterd
         @max_parallelism = max_parallelism
         @in_flight = in_flight
         @metrics = metrics
+        @events = events
       end
 
       def normalize_runners(runner)
@@ -90,13 +92,15 @@ module Prouterd
         process = document.processes.find { |p| p.name == process_name }
         raise TriggerError, "no such process '#{process_name}'" unless process
 
-        @runs.create_run(
+        run = @runs.create_run(
           process_name: process_name,
           process_config_commit_id: commit_id,
           interface_name: interface_name,
           input_event: input_event,
           replay_of_run_id: replay_of_run_id
         )
+        @events.publish(:run_created, run: run)
+        run
       end
 
       # Execute a previously-enqueued Run against a Document. Returns the
@@ -130,7 +134,8 @@ module Prouterd
       end
 
       def execute_inner(run, process, document, seed_context: nil, start_blocks: nil)
-        @runs.update_run(run.id, status: "running", started_at: Time.now.utc.iso8601(3))
+        running = @runs.update_run(run.id, status: "running", started_at: Time.now.utc.iso8601(3))
+        @events.publish(:run_updated, run: running) if running
 
         context = if seed_context
                     Context.new(seed_context)
@@ -303,6 +308,13 @@ module Prouterd
 
       def log_system_safe(run, message, db_mutex)
         db_mutex.synchronize { @runs.append_log(run_id: run.id, stream: "system", content: message) }
+        @events.publish(:log_appended,
+                        run_id:     run.id,
+                        run_uid:    run.uid,
+                        step_id:    nil,
+                        stream:     "system",
+                        content:    message,
+                        created_at: Time.now.utc.iso8601(3))
       end
 
       def entry_blocks(process)
@@ -325,6 +337,7 @@ module Prouterd
         end
 
         step = nil
+        running_step = nil
         db_mutex.synchronize do
           step = @runs.create_step(
             run_id: run.id,
@@ -332,14 +345,16 @@ module Prouterd
             attempt: attempt,
             image: block.image
           )
-          @runs.update_step(
+          running_step = @runs.update_step(
             step.id,
             status: attempt == 1 ? "running" : "retrying",
             started_at: Time.now.utc.iso8601(3),
             input_json: JSON.dump(input_payload)
           )
-          @runs.update_step(step.id, status: "running") if attempt > 1
+          running_step = @runs.update_step(step.id, status: "running") if attempt > 1
         end
+        @events.publish(:step_created, step: step,         run_id: run.id, run_uid: run.uid) if step
+        @events.publish(:step_updated, step: running_step, run_id: run.id, run_uid: run.uid) if running_step
 
         env = build_env(run, process, block, document)
         # Shell type: prefer block.shell_exec as the command. Docker type:
@@ -368,10 +383,11 @@ module Prouterd
 
         result = runner_for(block).run(request)
 
+        finished_step = nil
         db_mutex.synchronize do
           persist_logs(run, step, result, redactor)
           persist_artifacts(run, step, block, result)
-          @runs.update_step(
+          finished_step = @runs.update_step(
             step.id,
             status: result.to_step_status,
             finished_at: Time.now.utc.iso8601(3),
@@ -382,6 +398,7 @@ module Prouterd
             output_json: result.output_json ? JSON.dump(result.output_json) : nil
           )
         end
+        @events.publish(:step_updated, step: finished_step, run_id: run.id, run_uid: run.uid) if finished_step
 
         if result.success?
           ctx_mutex.synchronize { update_context_with_output(block, context, result) }
@@ -432,19 +449,34 @@ module Prouterd
       end
 
       def persist_logs(run, step, result, redactor)
+        emitted = []
         @db.transaction do
           if result.stdout && !result.stdout.empty?
-            @runs.append_log(run_id: run.id, step_id: step.id, stream: "stdout", content: redactor.redact(result.stdout))
+            content = redactor.redact(result.stdout)
+            @runs.append_log(run_id: run.id, step_id: step.id, stream: "stdout", content: content)
+            emitted << ["stdout", content]
           end
           if result.stderr && !result.stderr.empty?
-            @runs.append_log(run_id: run.id, step_id: step.id, stream: "stderr", content: redactor.redact(result.stderr))
+            content = redactor.redact(result.stderr)
+            @runs.append_log(run_id: run.id, step_id: step.id, stream: "stderr", content: content)
+            emitted << ["stderr", content]
           end
           if result.error_message
-            @runs.append_log(
-              run_id: run.id, step_id: step.id, stream: "system",
-              content: redactor.redact("[#{result.error_type}] #{result.error_message}")
-            )
+            content = redactor.redact("[#{result.error_type}] #{result.error_message}")
+            @runs.append_log(run_id: run.id, step_id: step.id, stream: "system", content: content)
+            emitted << ["system", content]
           end
+        end
+
+        ts = Time.now.utc.iso8601(3)
+        emitted.each do |stream, content|
+          @events.publish(:log_appended,
+                          run_id:     run.id,
+                          run_uid:    run.uid,
+                          step_id:    step.id,
+                          stream:     stream,
+                          content:    content,
+                          created_at: ts)
         end
       end
 
@@ -478,19 +510,23 @@ module Prouterd
 
       def finalize_run(run, status:, error: nil)
         @metrics&.increment(:runs_total, process: run.process_name, status: status)
-        @runs.update_run(
+        finalized = @runs.update_run(
           run.id,
           status: status,
           finished_at: Time.now.utc.iso8601(3),
           error_summary: error
         )
+        @events.publish(:run_updated, run: finalized) if finalized
+        finalized
       end
 
       def finalize_canceled(run)
         # The cancel command already stamped run.status; we keep that and
         # just return the row. Don't overwrite finished_at — the cancel
         # command set it the moment the operator hit cancel.
-        @runs.get_run(run.id)
+        canceled = @runs.get_run(run.id)
+        @events.publish(:run_updated, run: canceled) if canceled
+        canceled
       end
 
       def log_system(run, message)

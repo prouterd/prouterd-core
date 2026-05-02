@@ -1,5 +1,6 @@
 require "rack"
 require "json"
+require "faye/websocket"
 
 module Prouterd
   module API
@@ -38,10 +39,12 @@ module Prouterd
     # The daemon prints a warning at boot when unset.
     class App
       WEBHOOK_PATH = %r{\A/i/(?<name>[A-Za-z_][A-Za-z0-9_-]*)\z}.freeze
+      CLI_WS_PATH  = %r{\A/v1/cli/(?<session_id>[A-Za-z0-9._-]+)\z}.freeze
 
       def initialize(store:, runner:, secret_resolver: nil, logger: nil,
                      in_flight: nil, metrics: nil, admin_token: nil,
-                     jobs: nil, rate_limiter: nil)
+                     jobs: nil, rate_limiter: nil,
+                     events: Prouterd::Events.default)
         @store = store
         @runner = runner
         @secret_resolver = secret_resolver || Runtime::EnvSecretResolver.new
@@ -51,6 +54,7 @@ module Prouterd
         @admin_token = admin_token
         @jobs = jobs
         @rate_limiter = rate_limiter
+        @events = events
         @accepting = true
 
         @webhook_handler = WebhookHandler.new(
@@ -92,6 +96,13 @@ module Prouterd
         return status_response if method == "GET" && path == "/v1/status"
         return metrics_response if method == "GET" && path == "/metrics"
 
+        # WS upgrades for /v1/events and /v1/cli/:sid. Faye::WebSocket
+        # hijacks the underlying socket via rack.hijack (Puma supports it),
+        # so the regular Rack response cycle is short-circuited.
+        if Faye::WebSocket.websocket?(env)
+          return dispatch_ws(env, path)
+        end
+
         if !@accepting && !readonly?(method, path)
           return json_response(503, error: "daemon is shutting down — try again later")
         end
@@ -116,6 +127,27 @@ module Prouterd
         method == "GET"
       end
 
+      def dispatch_ws(env, path)
+        if path == "/v1/events"
+          EventsWebSocket.handle(
+            env,
+            events:      @events,
+            admin_token: @admin_token,
+            logger:      @logger
+          )
+        elsif (m = CLI_WS_PATH.match(path))
+          CliWebSocket.handle(
+            env,
+            session_id:  m[:session_id],
+            store:       @store,
+            admin_token: @admin_token,
+            logger:      @logger
+          )
+        else
+          json_response(404, error: "no WS route for #{path}")
+        end
+      end
+
       def dispatch_v1(method, path, request)
         auth_err = check_admin(request)
         return auth_err if auth_err
@@ -130,6 +162,10 @@ module Prouterd
         when ["POST",   %w[v1 config apply]]     then @v1.post_config_apply(request)
         when ["POST",   %w[v1 config rollback]]  then @v1.post_config_rollback(request)
         when ["GET",    %w[v1 processes]]        then @v1.get_processes(request)
+        when ["GET",    %w[v1 interfaces]]       then @v1.get_interfaces(request)
+        when ["GET",    %w[v1 queues]]           then @v1.get_queues(request)
+        when ["GET",    %w[v1 policies]]         then @v1.get_policies(request)
+        when ["GET",    %w[v1 secrets]]          then @v1.get_secrets(request)
         when ["GET",    %w[v1 runs]]             then @v1.get_runs(request)
         when ["POST",   %w[v1 trace]]            then @v1.post_trace(request)
         else

@@ -133,16 +133,11 @@ module Prouterd
                       :input, :output, :shutdown, :line, :execution_type
         attr_reader :secret_names
 
-        # Docker-only fields:
-        attr_accessor :image, :command, :network, :pull, :user, :memory, :cpu
-
-        # Shell-only fields:
-        attr_accessor :shell_exec, :shell_cwd, :shell_path
-        attr_reader :shell_env
-
-        NETWORK_VALUES = %w[on off].freeze
-        EXECUTION_TYPES = %w[docker shell].freeze
-        PULL_VALUES = %w[never if-missing always].freeze
+        # Per-type fields live in this hash keyed by the plugin's field name.
+        # Plugins describe their schema; parser/validator/renderer/show all
+        # drive off the schema, so adding a new runner type doesn't require
+        # adding new slots here.
+        attr_accessor :type_fields
 
         def initialize(name:, line:)
           @name = name
@@ -155,21 +150,7 @@ module Prouterd
           @input = nil
           @output = nil
           @shutdown = false
-
-          # Docker
-          @image = nil
-          @command = nil
-          @network = "on"
-          @pull = nil
-          @user = nil
-          @memory = nil
-          @cpu = nil
-
-          # Shell
-          @shell_exec = nil
-          @shell_cwd = nil
-          @shell_path = nil
-          @shell_env = {}
+          @type_fields = {}
         end
 
         def docker?
@@ -178,6 +159,41 @@ module Prouterd
 
         def shell?
           execution_type == "shell"
+        end
+
+        # Convenience accessors that proxy to type_fields. Keep the read sites
+        # readable (block.image vs block.type_fields["image"]).
+        %w[image command network pull user memory cpu].each do |key|
+          define_method(key) { @type_fields[key] }
+          define_method("#{key}=") { |v| @type_fields[key] = v }
+        end
+
+        def shell_exec
+          @type_fields["exec"]
+        end
+
+        def shell_exec=(v)
+          @type_fields["exec"] = v
+        end
+
+        def shell_cwd
+          @type_fields["cwd"]
+        end
+
+        def shell_cwd=(v)
+          @type_fields["cwd"] = v
+        end
+
+        def shell_path
+          @type_fields["shell"]
+        end
+
+        def shell_path=(v)
+          @type_fields["shell"] = v
+        end
+
+        def shell_env
+          @type_fields["env"] ||= {}
         end
       end
 

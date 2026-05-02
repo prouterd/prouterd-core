@@ -1,4 +1,5 @@
 require "set"
+require_relative "../runner/registry"
 
 module Prouterd
   module Config
@@ -208,34 +209,46 @@ module Prouterd
 
       def check_block_type(process, block)
         # Spec §7.1/§7.4/§7.5: every block must have an execution_type set.
-        # Old DSL form (image directly in block) auto-infers to "docker"
-        # in the parser; an absent image AND absent exec means the user
-        # didn't declare a type at all.
+        # Old DSL form (e.g. `image` directly in block) auto-infers to
+        # "docker" in the parser; an absent type means the user didn't
+        # declare any runner-typed fields at all.
         unless block.execution_type
           @result.error(
             "block '#{process.name}/#{block.name}' missing 'type' section " \
-            "(use 'type docker' or 'type shell')",
+            "(use 'type <#{Runner::Registry.types.join('|')}>')",
             line: block.line
           )
           return
         end
 
-        case block.execution_type
-        when "docker"
-          if block.image.nil? || block.image.empty?
-            @result.error("block '#{process.name}/#{block.name}' (type docker) missing 'image'", line: block.line)
-          end
-          if block.shell_exec
-            @result.error("block '#{process.name}/#{block.name}' (type docker) cannot declare 'exec'", line: block.line)
-          end
-        when "shell"
-          if block.shell_exec.nil? || block.shell_exec.empty?
-            @result.error("block '#{process.name}/#{block.name}' (type shell) missing 'exec'", line: block.line)
-          end
-          if block.image
-            @result.error("block '#{process.name}/#{block.name}' (type shell) cannot declare 'image'", line: block.line)
+        plugin = Runner::Registry.lookup(block.execution_type)
+        unless plugin
+          @result.error(
+            "block '#{process.name}/#{block.name}' references unknown type " \
+            "'#{block.execution_type}'",
+            line: block.line
+          )
+          return
+        end
+
+        # Required-field check from plugin schema.
+        plugin.fields.each do |field|
+          next unless field.required
+
+          value = block.type_fields[field.storage_key]
+          if value.nil? || (value.respond_to?(:empty?) && value.empty?)
+            @result.error(
+              "block '#{process.name}/#{block.name}' (type #{plugin.type_name}) " \
+              "missing '#{field.dsl_keyword}'",
+              line: block.line
+            )
           end
         end
+
+        # Cross-type fields are caught implicitly: parser stores fields
+        # under storage_key from the active plugin, so a `type shell` block
+        # cannot end up with type_fields["image"] unless someone hand-edited
+        # the AST. Skip the explicit check here.
       end
 
       def check_process_routes(process)

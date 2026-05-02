@@ -343,7 +343,7 @@ module Prouterd
             run_id: run.id,
             block_name: block.name,
             attempt: attempt,
-            image: block.image
+            image: block.type_fields["image"]
           )
           running_step = @runs.update_step(
             step.id,
@@ -357,28 +357,22 @@ module Prouterd
         @events.publish(:step_updated, step: running_step, run_id: run.id, run_uid: run.uid) if running_step
 
         env = build_env(run, process, block, document)
-        # Shell type: prefer block.shell_exec as the command. Docker type:
-        # block.command (image's CMD override). The runner consults
-        # execution_type for which fields apply.
-        command = block.shell? ? block.shell_exec : block.command
+        # Plugin defines the field schema; we hand the whole map plus
+        # plugin defaults to the runner. Each runner reads only what it
+        # cares about (DockerRunner reads "image"/"pull"/...; ShellRunner
+        # reads "exec"/"cwd"/...).
+        plugin = Runner::Registry.lookup(block.execution_type)
+        merged_fields = (plugin&.defaults || {}).merge(block.type_fields)
         request = Runner::RunRequest.new(
           run_uid: run.uid,
           process_name: process.name,
           block_name: block.name,
           execution_type: block.execution_type || "docker",
           attempt: attempt,
-          image: block.image,
-          command: command,
           env: env,
           input_json: input_payload,
           timeout_ms: block.timeout_ms,
-          network: block.network || "on",
-          cwd: block.shell_cwd,
-          shell_path: block.shell_path,
-          pull: block.pull,
-          user: block.user,
-          memory: block.memory,
-          cpu: block.cpu
+          type_fields: merged_fields
         )
 
         result = runner_for(block).run(request)
@@ -496,13 +490,6 @@ module Prouterd
           # forward an empty string so the container side can detect absence
           # without crashing on missing-key.
           env[secret_name] = value.to_s
-        end
-        # Shell blocks may declare custom env via `env KEY VALUE`. Merge
-        # AFTER PROUTER_* so the user can intentionally override them if
-        # they really want to. ShellRunner re-overrides the file-path env
-        # vars to point at its actual work_dir.
-        if block.shell? && block.shell_env
-          env.merge!(block.shell_env)
         end
         env
       end

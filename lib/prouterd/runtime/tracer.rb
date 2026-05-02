@@ -186,16 +186,22 @@ module Prouterd
         process.blocks.each do |block|
           summary = {}
           summary[:type] = block.execution_type if block.execution_type
-          if block.docker?
-            summary[:image] = block.image if block.image
-          elsif block.shell?
-            summary[:exec] = block.shell_exec if block.shell_exec
-            summary[:cwd] = block.shell_cwd if block.shell_cwd
+
+          plugin = Prouterd::Runner::Registry.lookup(block.execution_type)
+          if plugin
+            plugin.fields.each do |field|
+              value = block.type_fields[field.storage_key]
+              next if value.nil?
+              next if !field.default.nil? && value == field.default
+              next if value.respond_to?(:empty?) && value.empty?
+
+              summary[field.name] = value
+            end
           end
+
           summary[:retry_policy] = block.retry_policy_name if block.retry_policy_name
           summary[:timeout_ms] = block.timeout_ms if block.timeout_ms
           summary[:contract] = block.contract_name if block.contract_name
-          summary[:network] = block.network unless block.network == "on"
           @result.policies[block.name] = summary unless summary.empty?
         end
       end

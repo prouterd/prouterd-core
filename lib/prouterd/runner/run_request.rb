@@ -1,26 +1,26 @@
 module Prouterd
   module Runner
-    # Inputs the orchestrator hands to a Runner. Designed to be runner-agnostic:
-    # DockerRunner / ShellRunner / StubRunner all consume the same shape.
+    # Inputs the orchestrator hands to a Runner. Common fields are named;
+    # runner-type-specific fields live in `type_fields` (a Hash keyed by
+    # the plugin's field storage_key). A new runner reads what it needs
+    # from `type_fields` — no edits to this struct required.
     RunRequest = Struct.new(
       :run_uid,
       :process_name,
       :block_name,
-      :execution_type, # "docker" | "shell" — runner picks based on this
+      :execution_type, # plugin type name — runner is dispatched by this
       :attempt,
-      :image,
-      :command,        # Optional shell-quoted string (Docker only)
       :env,            # Hash<String, String> — includes PROUTER_* and resolved secrets
       :input_json,     # Ruby Hash — runner serializes to {input.json}
       :timeout_ms,     # Optional Integer
-      :network,        # "on" | "off"
-      :cwd,            # Optional String — shell cwd
-      :shell_path,     # Optional String — shell binary (defaults to /bin/sh via Open3)
-      :pull,           # Optional String — Docker pull policy
-      :user,           # Optional String — Docker user
-      :memory,         # Optional String — Docker memory limit
-      :cpu,            # Optional String — Docker CPU limit
+      :type_fields,    # Hash<String, Object> — plugin-defined fields (image, exec, ...)
       keyword_init: true
-    )
+    ) do
+      # Convenience for runners that want a single key without typing out
+      # `type_fields["foo"]` everywhere. Returns nil for missing keys.
+      def field(key)
+        (type_fields || {})[key.to_s]
+      end
+    end
   end
 end

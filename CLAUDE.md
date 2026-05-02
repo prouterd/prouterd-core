@@ -47,15 +47,16 @@ might also want a typed handler in the corresponding mode for
 auto-completion or special UX, but the default fall-through works.
 
 For block fields, decide whether the field is **type-specific** (only
-applies to `type docker` or `type shell`) or **common**:
+applies to one runner type) or **common**:
 
-- Type-specific (image, command, network, pull, user, memory, cpu, exec,
-  cwd, shell, env): handled in `apply_docker_type_field` /
-  `apply_shell_type_field` and rendered in `render_docker_type` /
-  `render_shell_type`.
-- Common (input, output, timeout, retry, contract, secret, enable/disable):
-  handled in `parse_block_field` and rendered between the type sub-section
-  and the closing `exit` of the block.
+- **Type-specific** (image/command/pull/... for docker; exec/cwd/... for
+  shell): declared on the runner's plugin class via `field :foo, kind: :...`.
+  See "Adding a new runner type" below — adding a type-specific field is
+  one line in one plugin file, no edits to parser/renderer/validator.
+- **Common** (input, output, timeout, retry, contract, secret,
+  enable/disable): handled in `parse_block_field` and rendered between the
+  type sub-section and the closing `exit` of the block. The 5-step
+  recipe above applies for these.
 
 ## Adding a new shell command
 
@@ -94,22 +95,89 @@ runs only the pending ones on `DB.open`.
   `Shell::CommandError` for user-visible CLI errors, `Storage::StorageError`
   for persistence, `Runtime::TriggerError` for orchestration. Never
   raise `RuntimeError` directly.
-- **Runner dispatch.** Block execution type is declared via the
-  `type` sub-section (`type docker` / `type shell`). The Orchestrator
-  takes `runner:` as `Hash<String, Runner>` and picks the right one
-  per-block via `block.execution_type`. A new runner type (e.g.
-  Kubernetes, Lambda) plugs in by:
-    1. Adding the kind to `AST::Block::EXECUTION_TYPES`
-    2. A `parse_<kind>_type_field` branch in the parser
-    3. Validator rules in `check_block_type`
-    4. Renderer's `render_<kind>_type` for canonical output
-    5. A new Runner class with `#run(RunRequest) -> ExecutionResult`
-    6. Wire into `CLI::Main#build_runner` so the daemon includes it
-       in the runners hash.
-  The `/prouter/{input.json,output.json,artifacts}` contract is the
-  invariant — the runner decides where those paths actually live (host
-  fs for shell, container mount for docker, CRD for k8s, etc.) but the
-  block author writes the same code regardless.
+- **Runner dispatch is plugin-driven.** The set of legal `type <name>`
+  keywords inside a block is whatever's currently registered in
+  `Runner::Registry`. Parser, validator, renderer, `show`, tracer, and
+  CLI all iterate over the registry and the plugin's declared field
+  schema — they hardcode no type names. See "Adding a new runner type"
+  below.
+
+## Adding a new runner type
+
+A runner type is one plugin file + one Runner class. **Nothing else in the
+codebase needs to change** — parser/validator/renderer/show/tracer/CLI all
+discover the new type through `Runner::Registry`.
+
+### 1. Write the runner
+
+Implement `#run(RunRequest) -> ExecutionResult`. Read your inputs from
+`request.field("foo")` (a thin wrapper over `request.type_fields["foo"]`).
+The `/prouter/{input.json,output.json,artifacts}` contract is the
+invariant — your runner decides where those paths physically live (host
+fs for shell, container mount for docker, CRD for k8s, etc.); block
+authors write the same code regardless.
+
+```ruby
+# lib/prouterd/runner/lambda_runner.rb
+module Prouterd::Runner
+  class LambdaRunner
+    def initialize(in_flight: nil); @in_flight = in_flight; end
+
+    def run(request)
+      arn = request.field("arn")
+      payload = request.input_json
+      # ... invoke AWS Lambda, capture result, build ExecutionResult ...
+    end
+  end
+end
+```
+
+### 2. Write the plugin
+
+Subclass `Runner::Plugin`, declare the `type` keyword, list the fields,
+point at the runner class. One file, no boilerplate elsewhere.
+
+```ruby
+# lib/prouterd/runner/plugins/lambda.rb
+require_relative "../plugin"
+require_relative "../registry"
+
+module Prouterd::Runner::Plugins
+  class Lambda < Prouterd::Runner::Plugin
+    type "lambda"
+
+    field :arn,    kind: :string, required: true, description: "Lambda function ARN"
+    field :region, kind: :string, default: "us-east-1"
+    field :sync,   kind: :enum, enum: %w[on off], default: "on"
+
+    runner "Prouterd::Runner::LambdaRunner"
+  end
+
+  Prouterd::Runner::Registry.register!(Lambda)
+end
+```
+
+Field kinds:
+
+- `:string` — single token (word or quoted string)
+- `:enum` — must match `enum:` list
+- `:command` — joins all remaining tokens, always quoted in canonical render
+- `:env_pair` — `KEY value` accumulating into a Hash<String,String>
+
+Pass `runner` as a class OR a String class name. Strings are resolved
+lazily — useful when the runner pulls in a heavy dependency (e.g.
+`docker-api`) that you only want loaded when the runner is actually used.
+
+### 3. Make Prouterd load it
+
+Built-in plugins are required from `lib/prouterd/runner.rb`. Third-party
+plugins (in a separate gem) just `require` their plugin file at boot;
+the `Registry.register!` call at the bottom of the file does the rest.
+
+That's it. `prouter check`, `prouter render`, `prouter shell`, `prouter
+trigger`, and the daemon all immediately understand `type lambda`. The
+test in `spec/prouterd/runner/plugin_spec.rb` exercises the full chain on
+a fake `printer` plugin and is the worked reference.
 
 ## Gotchas (real bugs caught the hard way)
 

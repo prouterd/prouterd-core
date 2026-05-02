@@ -172,10 +172,40 @@
   one-shot CLI invocations work via `docker run ... <command>`,
   persistent volume preserves DB across container lifecycles.
 
+### Phase 16: Plugin-driven runner types
+- New `Runner::Plugin` base class + `Runner::Registry`. A new runner
+  type is one plugin file (declares `type "name"`, lists fields with
+  `field :foo, kind: :string|:enum|:command|:env_pair`, points at a
+  Runner class) plus the runner itself — no edits to parser, validator,
+  renderer, show, tracer, or CLI.
+- Built-in `docker` and `shell` types extracted into
+  `lib/prouterd/runner/plugins/{docker,shell}.rb`. Same DSL surface,
+  100% backward compatible (legacy inline `image foo` form still
+  parses and auto-infers `type docker`).
+- `AST::Block` switched from named slots (image/command/network/...)
+  to a generic `type_fields` Hash. Parser/validator/renderer/show/
+  tracer all iterate over the active plugin's declared fields rather
+  than hardcoding type names.
+- `RunRequest` consolidated: type-specific fields collapsed into
+  `type_fields:` hash. Runners read what they need via
+  `request.field("image")` etc. Adding a runner type doesn't change
+  the struct.
+- CLI `build_runner` builds the runners hash from the registry —
+  `prouter serve --runner real` (default) instantiates one runner per
+  registered plugin. `--runner stub` swaps every type to StubRunner
+  for tests.
+- `spec/prouterd/runner/plugin_spec.rb` is the worked reference: defines
+  a fake `printer` plugin in-test and asserts parse → validate →
+  render → orchestrate end-to-end on it. 9 specs.
+- CLAUDE.md gains a self-contained "Adding a new runner type" section
+  with copy-paste plugin + runner skeleton.
+
 ## Status
 
-- 15 phases shipped, one git commit per phase
-- 461+ RSpec specs, 0 failures
+- 16 phases shipped, one git commit per phase
+- 471 RSpec specs, 0 failures
 - All spec §28 acceptance criteria + production hardening + IPC + contracts
 - End-to-end smoke-tested against real Docker + Puma + cron + shell exec
 - Distributable as a Docker image (`docker build . && docker run`)
+- Pluggable runners: third-party gems can register a new `type` without
+  forking the core.

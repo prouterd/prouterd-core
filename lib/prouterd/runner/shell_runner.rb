@@ -32,9 +32,9 @@ module Prouterd
         work_dir = Dir.mktmpdir(WORK_DIR_PREFIX)
         prepare_work_dir(work_dir, request.input_json)
 
-        cmd = parse_command(request.command)
+        cmd = parse_command(request.field("exec"), request.field("shell"))
         env = build_env(request, work_dir)
-        cwd = request.cwd || Dir.pwd
+        cwd = request.field("cwd") || Dir.pwd
 
         unless File.directory?(cwd)
           return error_result("invalid_cwd", "shell cwd does not exist: #{cwd}")
@@ -97,16 +97,22 @@ module Prouterd
         FileUtils.mkdir_p(File.join(dir, ARTIFACTS_DIRNAME))
       end
 
-      def parse_command(command)
-        return ["sh", "-c", "true"] if command.nil? || command.empty?
+      def parse_command(command, shell_path)
+        shell = shell_path || "/bin/sh"
+        return [shell, "-c", "true"] if command.nil? || command.empty?
 
         Shellwords.split(command)
       rescue ArgumentError
-        ["sh", "-c", command]
+        [shell, "-c", command]
       end
 
       def build_env(request, work_dir)
         env = (request.env || {}).dup
+        # Per-block env declared via `env KEY VALUE` in the shell type
+        # section. Merged AFTER PROUTER_* so users can intentionally override.
+        if (custom = request.field("env")).is_a?(Hash)
+          env.merge!(custom)
+        end
         # Override the daemon's PROUTER_* (Docker uses /prouter mount; shell
         # uses the actual host path). The orchestrator-built env values that
         # reference /prouter/... need to be redirected to work_dir.

@@ -1,4 +1,5 @@
 require_relative "../util/duration_parser"
+require_relative "../runner/registry"
 
 module Prouterd
   module Config
@@ -337,16 +338,16 @@ module Prouterd
         node
       end
 
-      # Parse the `type <docker|shell> ... exit` sub-section. New Phase 12+
-      # form. Old Phase 1-11 form (image/exec directly in block body) is
-      # still parsed via parse_block_field for backward compatibility — when
-      # `image` is set without an explicit type, we infer `docker`.
+      # Parse the `type <name> ... exit` sub-section. The set of legal type
+      # names is whatever's currently registered with Runner::Registry —
+      # adding a runner type doesn't require editing this file.
       def parse_block_type_section(node, header)
-        expect_token_count(header, 2, "type <docker|shell>")
+        expect_token_count(header, 2, "type <#{Runner::Registry.types.join('|')}>")
         kind = expect_word(header.tokens[1], "block type")
-        unless AST::Block::EXECUTION_TYPES.include?(kind)
+        plugin = Runner::Registry.lookup(kind)
+        unless plugin
           raise ParseError.new(
-            "invalid block type '#{kind}' (allowed: #{AST::Block::EXECUTION_TYPES.join(', ')})",
+            "invalid block type '#{kind}' (registered: #{Runner::Registry.types.join(', ')})",
             line: header.number
           )
         end
@@ -357,93 +358,66 @@ module Prouterd
         advance
 
         each_body_line("type #{kind}") do |line|
-          case kind
-          when "docker" then apply_docker_type_field(node, line)
-          when "shell"  then apply_shell_type_field(node, line)
-          end
+          apply_plugin_field(plugin, node, line)
         end
       end
 
-      def apply_docker_type_field(node, line)
+      # Generic per-line dispatch driven by the plugin's field schema. The
+      # plugin declares `field :foo, kind: :string|:enum|:command|:env_pair`
+      # and this method does the actual token-shape parsing.
+      def apply_plugin_field(plugin, node, line)
         head = line.head.value
-        case head
-        when "image"
-          expect_token_count(line, 2, "image <reference>")
-          node.image = expect_word_or_string(line.tokens[1], "image reference")
-        when "command"
-          expect_min_tokens(line, 2, "command <args...>")
-          node.command = line.tokens[1..].map(&:value).join(" ")
-        when "pull"
-          expect_token_count(line, 2, "pull <#{AST::Block::PULL_VALUES.join('|')}>")
-          value = expect_word(line.tokens[1], "pull policy")
-          unless AST::Block::PULL_VALUES.include?(value)
-            raise ParseError.new("invalid pull '#{value}' (allowed: #{AST::Block::PULL_VALUES.join(', ')})", line: line.number)
-          end
-          node.pull = value
-        when "network"
-          expect_token_count(line, 2, "network <on|off>")
-          value = expect_word(line.tokens[1], "network")
-          unless AST::Block::NETWORK_VALUES.include?(value)
-            raise ParseError.new("invalid network value '#{value}' (allowed: on, off)", line: line.number)
-          end
-          node.network = value
-        when "user"
-          expect_token_count(line, 2, "user <user>")
-          node.user = expect_word_or_string(line.tokens[1], "user")
-        when "memory"
-          expect_token_count(line, 2, "memory <limit>")
-          node.memory = expect_word_or_string(line.tokens[1], "memory")
-        when "cpu"
-          expect_token_count(line, 2, "cpu <limit>")
-          node.cpu = expect_word_or_string(line.tokens[1], "cpu")
-        else
-          raise ParseError.new("unknown directive '#{head}' in 'type docker' block", line: line.number)
+        field = plugin.field_for(head)
+        unless field
+          raise ParseError.new(
+            "unknown directive '#{head}' in 'type #{plugin.type_name}' block",
+            line: line.number
+          )
         end
-      end
 
-      def apply_shell_type_field(node, line)
-        head = line.head.value
-        case head
-        when "exec"
-          expect_min_tokens(line, 2, "exec <command>")
-          node.shell_exec = line.tokens[1..].map(&:value).join(" ")
-        when "cwd"
-          expect_token_count(line, 2, "cwd <path>")
-          node.shell_cwd = expect_word_or_string(line.tokens[1], "cwd")
-        when "shell"
-          expect_token_count(line, 2, "shell <path>")
-          node.shell_path = expect_word_or_string(line.tokens[1], "shell")
-        when "env"
-          expect_token_count(line, 3, "env <KEY> <VALUE>")
-          key = expect_word(line.tokens[1], "env key")
-          value = expect_word_or_string(line.tokens[2], "env value")
-          node.shell_env[key] = value
+        case field.kind
+        when :string
+          expect_token_count(line, 2, "#{field.dsl_keyword} <value>")
+          node.type_fields[field.storage_key] = expect_word_or_string(line.tokens[1], field.dsl_keyword)
+        when :enum
+          expect_token_count(line, 2, "#{field.dsl_keyword} <#{field.enum.join('|')}>")
+          value = expect_word(line.tokens[1], field.dsl_keyword)
+          unless field.enum.include?(value)
+            raise ParseError.new(
+              "invalid #{field.dsl_keyword} '#{value}' (allowed: #{field.enum.join(', ')})",
+              line: line.number
+            )
+          end
+          node.type_fields[field.storage_key] = value
+        when :command
+          expect_min_tokens(line, 2, "#{field.dsl_keyword} <args...>")
+          node.type_fields[field.storage_key] = line.tokens[1..].map(&:value).join(" ")
+        when :env_pair
+          expect_token_count(line, 3, "#{field.dsl_keyword} <KEY> <VALUE>")
+          key = expect_word(line.tokens[1], "#{field.dsl_keyword} key")
+          value = expect_word_or_string(line.tokens[2], "#{field.dsl_keyword} value")
+          (node.type_fields[field.storage_key] ||= {})[key] = value
         else
-          raise ParseError.new("unknown directive '#{head}' in 'type shell' block", line: line.number)
+          raise ParseError.new("plugin '#{plugin.type_name}' field '#{field.name}' has unknown kind #{field.kind.inspect}", line: line.number)
         end
       end
 
       def parse_block_field(node, line)
         head = line.head.value
 
-        case head
-        # ---- Phase 1-11 inline shape: image/command/network are accepted
-        # directly inside `block` (without a `type docker` wrapper). The
-        # block's execution_type is inferred as 'docker' when `image` lands.
-        when "image"
-          expect_token_count(line, 2, "image <reference>")
-          node.image = expect_word_or_string(line.tokens[1], "image reference")
+        # ---- Phase 1-11 inline shape: docker fields (image/command/network)
+        # are accepted directly inside `block` without a `type docker`
+        # wrapper. We delegate to the docker plugin's field schema so the
+        # rules live in one place. execution_type is inferred as 'docker'
+        # the first time we see one of these.
+        docker_plugin = Runner::Registry.lookup("docker")
+        if docker_plugin&.field_for(head)
           node.execution_type ||= "docker"
-        when "command"
-          expect_min_tokens(line, 2, "command <args...>")
-          node.command = line.tokens[1..].map(&:value).join(" ")
-        when "network"
-          expect_token_count(line, 2, "network <on|off>")
-          value = expect_word(line.tokens[1], "network")
-          unless AST::Block::NETWORK_VALUES.include?(value)
-            raise ParseError.new("invalid network value '#{value}' (allowed: on, off)", line: line.number)
-          end
-          node.network = value
+          apply_plugin_field(docker_plugin, node, line)
+          return
+        end
+
+        case head
         # ---- Common block fields
         when "timeout"
           expect_token_count(line, 2, "timeout <duration>")

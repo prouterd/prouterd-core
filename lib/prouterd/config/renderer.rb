@@ -1,4 +1,5 @@
 require_relative "../util/duration_parser"
+require_relative "../runner/registry"
 
 module Prouterd
   module Config
@@ -112,10 +113,8 @@ module Prouterd
       def render_block(block, level)
         emit(level, "block #{block.name}")
 
-        case block.execution_type
-        when "docker" then render_docker_type(block, level + 1)
-        when "shell"  then render_shell_type(block, level + 1)
-        end
+        plugin = Runner::Registry.lookup(block.execution_type)
+        render_type_section(plugin, block, level + 1) if plugin
 
         # Common block fields, post-type, in spec order
         emit(level + 1, "input #{block.input}") if block.input
@@ -129,30 +128,38 @@ module Prouterd
         emit(level, "exit")
       end
 
-      def render_docker_type(block, level)
-        emit(level, "type docker")
-        emit(level + 1, "image #{block.image}") if block.image
-        # Always quote the command — embedded shell metacharacters (spaces,
-        # quotes, redirects) would otherwise be lost on re-parse since the
-        # lexer would re-tokenize each whitespace-separated word.
-        emit(level + 1, "command #{quote_string(block.command)}") if block.command
-        emit(level + 1, "pull #{block.pull}") if block.pull
-        emit(level + 1, "network #{block.network}") if block.network && block.network != "on"
-        emit(level + 1, "user #{block.user}") if block.user
-        emit(level + 1, "memory #{block.memory}") if block.memory
-        emit(level + 1, "cpu #{block.cpu}") if block.cpu
+      # Generic per-plugin renderer. Walks the plugin's declared fields in
+      # declaration order so the canonical output is stable across runs.
+      def render_type_section(plugin, block, level)
+        emit(level, "type #{plugin.type_name}")
+        plugin.fields.each do |field|
+          value = block.type_fields[field.storage_key]
+          next if skip_value?(value, field)
+
+          case field.kind
+          when :string
+            emit(level + 1, "#{field.dsl_keyword} #{quote_if_needed(value)}")
+          when :enum
+            emit(level + 1, "#{field.dsl_keyword} #{value}")
+          when :command
+            # Always quote — embedded shell metacharacters would otherwise
+            # be lost on re-parse since the lexer re-tokenizes whitespace.
+            emit(level + 1, "#{field.dsl_keyword} #{quote_string(value)}")
+          when :env_pair
+            value.each do |k, v|
+              emit(level + 1, "#{field.dsl_keyword} #{k} #{quote_if_needed(v)}")
+            end
+          end
+        end
         emit(level, "exit")
       end
 
-      def render_shell_type(block, level)
-        emit(level, "type shell")
-        emit(level + 1, "exec #{quote_string(block.shell_exec)}") if block.shell_exec
-        emit(level + 1, "cwd #{quote_if_needed(block.shell_cwd)}") if block.shell_cwd
-        emit(level + 1, "shell #{quote_if_needed(block.shell_path)}") if block.shell_path
-        block.shell_env.each do |k, v|
-          emit(level + 1, "env #{k} #{quote_if_needed(v)}")
-        end
-        emit(level, "exit")
+      def skip_value?(value, field)
+        return true if value.nil?
+        return true if value.respond_to?(:empty?) && value.empty?
+        return true if !field.default.nil? && value == field.default
+
+        false
       end
 
       def render_process_route(route, level)

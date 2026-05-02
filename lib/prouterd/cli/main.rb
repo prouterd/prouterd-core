@@ -754,24 +754,32 @@ module Prouterd
         :error
       end
 
+      # Build the per-execution-type runner map. The default mode (`real`)
+      # asks each registered Plugin to instantiate its runner — adding a new
+      # runner type is purely a plugin file, no edits here. `stub` swaps in
+      # the test-fixture runner for every type. `shell` is a docker-less
+      # convenience: route the docker plugin's slot to ShellRunner so blocks
+      # without docker still execute (they'll fail without an `image`).
       def build_runner(kind, in_flight: nil)
+        opts = { in_flight: in_flight }
         case kind
-        when "docker", nil
-          # Both runners always available — block.execution_type picks at runtime.
-          {
-            "docker" => Prouterd::Runner::DockerRunner.new(in_flight: in_flight),
-            "shell"  => Prouterd::Runner::ShellRunner.new
-          }
+        when nil, "real", "docker"
+          Prouterd::Runner::Registry.all.each_with_object({}) do |plugin, h|
+            h[plugin.type_name] = plugin.build_runner(opts)
+          end
         when "shell"
-          # Shell-only: a single ShellRunner shared for both keys (Docker
-          # blocks would still try to run via shell — they'd fail without
-          # an `image`, but that's a config validation issue).
-          { "docker" => Prouterd::Runner::ShellRunner.new, "shell" => Prouterd::Runner::ShellRunner.new }
+          shell = Prouterd::Runner::ShellRunner.new
+          Prouterd::Runner::Registry.types.each_with_object({}) do |type, h|
+            h[type] = shell
+          end
         when "stub"
           stub = Prouterd::Runner::StubRunner.new
-          { "docker" => stub, "shell" => stub }
+          Prouterd::Runner::Registry.types.each_with_object({}) do |type, h|
+            h[type] = stub
+          end
         else
-          @stderr.puts "prouter: unknown runner kind '#{kind}' (docker|shell|stub)"
+          allowed = (%w[real shell stub] + Prouterd::Runner::Registry.types).uniq.join("|")
+          @stderr.puts "prouter: unknown runner kind '#{kind}' (#{allowed})"
           :error
         end
       rescue LoadError, StandardError => e

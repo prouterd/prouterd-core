@@ -5,11 +5,14 @@ RSpec.describe Prouterd::Runner::ShellRunner do
   let(:runner) { described_class.new }
 
   def request(command:, **opts)
+    fields = { "exec" => command }
+    fields["cwd"] = opts[:cwd] if opts.key?(:cwd)
+    fields["env"] = opts[:custom_env] if opts.key?(:custom_env)
     Prouterd::Runner::RunRequest.new(
       run_uid: "run_test", process_name: "p", block_name: "b",
       execution_type: "shell", attempt: 1,
-      command: command, env: opts[:env] || {}, input_json: opts[:input] || {},
-      timeout_ms: opts[:timeout_ms], cwd: opts[:cwd]
+      env: opts[:env] || {}, input_json: opts[:input] || {},
+      timeout_ms: opts[:timeout_ms], type_fields: fields
     )
   end
 

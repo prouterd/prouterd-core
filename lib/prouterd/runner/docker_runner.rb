@@ -113,22 +113,22 @@ module Prouterd
       end
 
       def create_container(request, work_dir)
-        cmd = parse_command(request.command)
+        cmd = parse_command(request.field("command"))
         env = build_env(request)
         host_config = {
           "Binds" => ["#{work_dir}:/prouter:rw"],
-          "NetworkMode" => network_mode(request.network),
+          "NetworkMode" => network_mode(request.field("network")),
           "AutoRemove" => false
         }
-        if (mem_bytes = parse_memory(request.memory))
+        if (mem_bytes = parse_memory(request.field("memory")))
           host_config["Memory"] = mem_bytes
         end
-        if (nano_cpus = parse_cpu(request.cpu))
+        if (nano_cpus = parse_cpu(request.field("cpu")))
           host_config["NanoCpus"] = nano_cpus
         end
 
         params = {
-          "Image" => request.image,
+          "Image" => request.field("image"),
           "Env" => env.map { |k, v| "#{k}=#{v}" },
           "WorkingDir" => "/prouter",
           "HostConfig" => host_config,
@@ -141,7 +141,8 @@ module Prouterd
           }
         }
         params["Cmd"] = cmd if cmd
-        params["User"] = request.user if request.user && !request.user.empty?
+        user = request.field("user")
+        params["User"] = user if user && !user.empty?
 
         Docker::Container.create(params)
       end
@@ -151,12 +152,13 @@ module Prouterd
       # racing with a missing image. `if-missing` (the default) only pulls
       # when the image isn't present locally.
       def ensure_image(request)
-        policy = request.pull || "if-missing"
+        policy = request.field("pull") || "if-missing"
         return if policy == "never"
 
-        return if policy == "if-missing" && image_present?(request.image)
+        image = request.field("image")
+        return if policy == "if-missing" && image_present?(image)
 
-        Docker::Image.create("fromImage" => request.image)
+        Docker::Image.create("fromImage" => image)
       end
 
       def image_present?(reference)

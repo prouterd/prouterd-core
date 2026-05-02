@@ -387,14 +387,7 @@ module Prouterd
         out.puts "  shutdown:    #{p.shutdown}"
         out.puts "  blocks (#{p.blocks.length}):"
         p.blocks.each do |b|
-          tag = if b.docker?
-                  "docker image=#{b.image || '-'}"
-                elsif b.shell?
-                  "shell exec=#{(b.shell_exec || '-')[0, 30]}"
-                else
-                  "(no type)"
-                end
-          out.puts "    #{b.name}  #{tag}"
+          out.puts "    #{b.name}  #{block_summary_tag(b)}"
         end
         out.puts "  routes (#{p.routes.length}):"
         p.routes.each do |r|
@@ -531,11 +524,11 @@ module Prouterd
             out.puts "No blocks in process '#{process_name}'."
             return
           end
-          out.puts "%-25s %-40s %-10s" % ["NAME", "IMAGE", "TIMEOUT"]
+          out.puts "%-25s %-40s %-10s" % ["NAME", "SUMMARY", "TIMEOUT"]
           p.blocks.each do |b|
             out.puts "%-25s %-40s %-10s" % [
               b.name,
-              (b.image || "-").to_s[0, 40],
+              block_summary_tag(b)[0, 40],
               b.timeout_ms ? Util::DurationParser.render(b.timeout_ms) : "-"
             ]
           end
@@ -557,20 +550,21 @@ module Prouterd
 
         out.puts "block #{pname}/#{b.name}"
         out.puts "  type:    #{b.execution_type || '(none)'}"
-        if b.docker?
-          out.puts "  image:   #{b.image || '-'}"
-          out.puts "  command: #{b.command || '-'}"
-          out.puts "  network: #{b.network}"
-          out.puts "  pull:    #{b.pull}" if b.pull
-          out.puts "  user:    #{b.user}" if b.user
-          out.puts "  memory:  #{b.memory}" if b.memory
-          out.puts "  cpu:     #{b.cpu}"   if b.cpu
-        elsif b.shell?
-          out.puts "  exec:    #{b.shell_exec || '-'}"
-          out.puts "  cwd:     #{b.shell_cwd || '(daemon cwd)'}"
-          out.puts "  shell:   #{b.shell_path}" if b.shell_path
-          unless b.shell_env.empty?
-            out.puts "  env:     #{b.shell_env.map { |k, v| "#{k}=#{v}" }.join(', ')}"
+        plugin = Prouterd::Runner::Registry.lookup(b.execution_type)
+        if plugin
+          plugin.fields.each do |field|
+            value = b.type_fields[field.storage_key]
+            label = "#{field.dsl_keyword}:".ljust(8)
+            case field.kind
+            when :env_pair
+              next if value.nil? || value.empty?
+
+              out.puts "  #{label} #{value.map { |k, v| "#{k}=#{v}" }.join(', ')}"
+            else
+              next if value.nil? && !field.required
+
+              out.puts "  #{label} #{value || '-'}"
+            end
           end
         end
         out.puts "  timeout: #{b.timeout_ms ? Util::DurationParser.render(b.timeout_ms) : '-'}"
@@ -632,6 +626,22 @@ module Prouterd
         return if rest.length == count
 
         raise CommandError, "syntax: #{syntax}"
+      end
+
+      # One-line summary of a block for table/list views. Each plugin
+      # decides what's the most informative single field by convention:
+      # the first :string or :command field declared (typically image / exec).
+      # Callers truncate as needed (e.g. column-aligned tables).
+      def block_summary_tag(block)
+        plugin = Prouterd::Runner::Registry.lookup(block.execution_type)
+        return "(no type)" unless plugin
+
+        headline_field = plugin.fields.find { |f| %i[string command].include?(f.kind) }
+        return plugin.type_name unless headline_field
+
+        value = block.type_fields[headline_field.storage_key].to_s
+        value = "-" if value.empty?
+        "#{plugin.type_name} #{headline_field.dsl_keyword}=#{value}"
       end
 
       # Minimal line-by-line diff using LCS over arrays of lines.

@@ -122,6 +122,7 @@ module Prouterd
 
       def read_input(prompt)
         if @interactive && reline_available?
+          install_completer
           # Reline provides line editing, history, and Ctrl-C handling
           # without bringing in any extra gem dependency. Returns nil on EOF.
           line = Reline.readline(prompt, true)
@@ -144,6 +145,29 @@ module Prouterd
         rescue LoadError
           false
         end
+      end
+
+      # router-style tab completion. Reline calls completion_proc with the
+      # current "word" being completed; we pull the full line via
+      # Reline.line_buffer and dispatch through Completer for context-aware
+      # suggestions (commands, show targets, process names, run uids, etc.).
+      #
+      # Token-separator override: by default Reline only uses spaces as word
+      # boundaries; that's exactly what we want for `prouter` syntax.
+      def install_completer
+        return if @completer_installed
+
+        @completer = Completer.new(@session)
+        Reline.completion_proc = lambda do |partial|
+          line = (Reline.respond_to?(:line_buffer) ? Reline.line_buffer : partial).to_s
+          @completer.call(partial.to_s, line)
+        end
+        # Append a trailing space after a completed token, like a real shell.
+        Reline.completion_append_character = " " if Reline.respond_to?(:completion_append_character=)
+        @completer_installed = true
+      rescue StandardError => e
+        @error&.puts("warning: tab completion not installed: #{e.message}")
+        @completer_installed = true # don't retry every keystroke
       end
 
       def handle_result(result)

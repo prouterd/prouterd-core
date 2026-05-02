@@ -15,6 +15,7 @@ require_relative "shell/modes/config"
 require_relative "shell/modes/privileged"
 require_relative "shell/modes/user"
 
+require_relative "shell/completer"
 require_relative "shell/shell"
 
 module Prouterd

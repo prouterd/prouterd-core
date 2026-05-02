@@ -41,10 +41,11 @@ A new feature usually slots cleanly into one of:
    parsing AND a roundtrip through the renderer.
 
 The Section sub-modes in the shell pick up new fields automatically
-because they delegate to the parser's `apply_X_field` methods. If your
-field is on `Process` / `Block` / `ProcessRoute` / `GlobalRoute` you
-might also want a typed handler in the corresponding mode for
-auto-completion or special UX, but the default fall-through works.
+because they override `apply_field` to delegate to the parser's
+`apply_X_field` methods. If your field is on `Process` / `Block` /
+`ProcessRoute` / `GlobalRoute` you might also want a typed handler in
+the corresponding mode for auto-completion or special UX, but the
+default fall-through works.
 
 For block fields, decide whether the field is **type-specific** (only
 applies to one runner type) or **common**:
@@ -61,7 +62,12 @@ applies to one runner type) or **common**:
 ## Adding a new shell command
 
 1. Add the dispatch entry in the relevant mode's `commands` hash
-   (`lib/prouterd/shell/modes/*.rb`).
+   (`lib/prouterd/shell/modes/*.rb`). The base `Mode#execute` does
+   router-style unique-prefix expansion against `commands.keys` for free —
+   `sh run` resolves to `show running-config` without any extra wiring.
+   Inside multi-word commands (`copy running-config startup-config`),
+   call `match_keyword?(tokens[i].value, "expected")` instead of `==`
+   so abbreviated keywords (`co ru st`) work too.
 2. Implement `cmd_<name>(tokens, session, out, err)`. Raise `CommandError`
    for user-visible errors; the shell catches and prints with `% ` prefix.
 3. Update the mode's `cmd_help` text.

@@ -419,8 +419,9 @@ Storage schema (SQLite, WAL):
 bundle exec rspec
 ```
 
-494 specs cover lexer/parser/validator/renderer, shell flows + router-style
-tab completion, storage repositories, ConfigStore lifecycle, orchestrator
+525 specs cover lexer/parser/validator/renderer, shell flows + router-style
+prefix abbreviation / `end` / `do` / context-sensitive `?` / `copy run
+start`, tab completion, storage repositories, ConfigStore lifecycle, orchestrator
 with stub runner, match evaluator, contract validation, retry/replay/
 cancel/diff/scheduler, webhook handler, IPC events bus + WebSocket
 endpoints, plugin registration end-to-end on a fake runner type, the
@@ -463,6 +464,11 @@ Implemented (all of the spec's §28 acceptance criteria):
   register new `type <foo>` keywords without forking the core
 - ✅ Output contract validation (`contract <name>` with type/range/
   format/pattern/enum constraints, `on violation fail|retry|warn`)
+- ✅ router-CLI compatibility: prefix abbreviation (`sh run`, `conf t`,
+  `wr m`), `end`, `do <command>`, context-sensitive `?` (`show ?`,
+  `show run ?`), `copy running-config startup-config`, `logout`/
+  `quit` aliases, `show clock`/`logging`/`history`, multi-word
+  `description` (router-style free-text)
 - ✅ Production hardening: structured Logger, request body limits
   (1 MB / 4 MB for config), HTTPS via Puma SSL, chunked artifact
   download, capped container log capture, graceful container stop

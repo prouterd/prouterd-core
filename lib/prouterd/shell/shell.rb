@@ -14,6 +14,7 @@ module Prouterd
     #   :quit          — terminate the shell entirely
     #   :commit        — pop modes back to Privileged, run commit
     #   :abort         — pop modes back to Privileged, run abort
+    #   :end           — pop modes back to Privileged, leave candidate intact
     #   {signal: :enter, mode: <Mode>} — push the new mode onto the stack
     class Shell
       def self.run(session: nil, input: $stdin, output: $stdout, error: $stderr,
@@ -192,6 +193,9 @@ module Prouterd
           run_commit
         when :abort
           run_abort
+        when :end
+          # router `end`: jump to privileged without committing or aborting.
+          @session.mode_stack.pop while @session.mode_stack.last && !@session.mode_stack.last.is_a?(Modes::Privileged)
         when Hash
           if result[:signal] == :enter && result[:mode]
             @session.mode_stack << result[:mode]

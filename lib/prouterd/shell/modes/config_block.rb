@@ -20,22 +20,35 @@ module Prouterd
           "(config-block)#"
         end
 
-        def execute(tokens, session, out, err)
-          head = tokens.first.value
-          case head
-          when "show"      then cmd_show(tokens, session, out, err)
-          when "no"        then cmd_no(tokens)
-          when "exit"      then :exit
-          when "commit"    then :commit
-          when "abort"     then :abort
-          when "help", "?" then cmd_help(out)
-          else
-            apply_block_field(tokens)
-            :handled
-          end
+        def commands
+          {
+            "show"   => :cmd_show,
+            "no"     => :cmd_no,
+            "do"     => :cmd_do,
+            "commit" => :cmd_commit,
+            "abort"  => :cmd_abort,
+            "end"    => :cmd_end,
+            "exit"   => :cmd_exit,
+            "help"   => :cmd_help,
+            "?"      => :cmd_help
+          }
         end
 
-        def cmd_no(tokens)
+        def apply_field(tokens, _session)
+          apply_block_field(tokens)
+          :handled
+        end
+
+        def cmd_do(tokens, session, out, err)
+          run_do(tokens, session, out, err)
+        end
+
+        def cmd_commit(_tokens, _session, _out, _err); :commit; end
+        def cmd_abort(_tokens, _session, _out, _err); :abort; end
+        def cmd_end(_tokens, _session, _out, _err); :end; end
+        def cmd_exit(_tokens, _session, _out, _err); :exit; end
+
+        def cmd_no(tokens, _session = nil, _out = nil, _err = nil)
           expect_min_args(tokens, 2, "no <kind> [args]")
           kind = tokens[1].value
           case kind
@@ -86,7 +99,7 @@ module Prouterd
           raise CommandError, e.message.sub(/\Aline \d+(?:, col \d+)?: /, "")
         end
 
-        def cmd_help(out)
+        def cmd_help(_tokens, _session, out, _err)
           out.puts <<~HELP
             Block editor commands:
               image <ref>              Set container image
@@ -100,8 +113,10 @@ module Prouterd
               shutdown / no shutdown   Toggle block state
               no <kind> [args]         Remove a field (no secret X, no command, no timeout, etc.)
               show <target>            Read-only inspection
+              do <command>             Run a privileged command without leaving config
               commit                   Validate and apply candidate as running
               abort                    Discard candidate, return to privileged
+              end                      Return to privileged, leave candidate intact
               exit                     Return to (config-process)#
               help, ?                  Show this help
           HELP

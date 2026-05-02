@@ -313,8 +313,14 @@ module Prouterd
         head = line.head.value
         case head
         when "description"
-          expect_token_count(line, 2, "description <string>")
-          node.description = expect_word_or_string(line.tokens[1], "description")
+          # router-style: `description` consumes the rest of the line as free
+          # text. Quoted strings still work (and stay as a single token);
+          # bare words concatenate with single spaces. Renderer re-quotes on
+          # output if the result contains whitespace, so roundtrip is safe.
+          if line.tokens.length < 2
+            raise ParseError.new("description requires text", line: line.number)
+          end
+          node.description = line.tokens[1..].map(&:value).join(" ")
         when "queue"
           expect_token_count(line, 2, "queue <name>")
           node.queue_name = expect_identifier(line.tokens[1], "queue name")

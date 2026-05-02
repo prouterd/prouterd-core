@@ -35,8 +35,10 @@ module Prouterd
             "route"     => :cmd_route,
             "no"        => :cmd_no,
             "show"      => :cmd_show,
+            "do"        => :cmd_do,
             "commit"    => :cmd_commit,
             "abort"     => :cmd_abort,
+            "end"       => :cmd_end,
             "exit"      => :cmd_exit,
             "help"      => :cmd_help,
             "?"         => :cmd_help
@@ -221,10 +223,20 @@ module Prouterd
           :abort
         end
 
+        def cmd_end(_tokens, _session, _out, _err)
+          # router `end`: jump straight back to privileged from any config mode
+          # without committing or aborting. The candidate is preserved.
+          :end
+        end
+
+        def cmd_do(tokens, session, out, err)
+          run_do(tokens, session, out, err)
+        end
+
         def cmd_exit(_tokens, _session, _out, _err)
           # In Phase 2 we treat top-level exit as an explicit-confirmation
           # request to keep users from losing work silently.
-          raise CommandError, "uncommitted candidate changes; use 'commit' or 'abort'"
+          raise CommandError, "uncommitted candidate changes; use 'commit', 'abort', or 'end'"
         end
 
         def cmd_help(_tokens, _session, out, _err)
@@ -239,8 +251,10 @@ module Prouterd
               route interface I process P   Add or edit a global route
               no <kind> [name]              Remove a section (no router|secret|policy|queue|interface|process|route ...)
               show <target>                 Read-only inspection
+              do <command>                  Run a privileged command without leaving config
               commit                        Validate and apply candidate as running
               abort                         Discard candidate, return to privileged
+              end                           Return to privileged, leave candidate intact
               help, ?                       Show this help
           HELP
           :handled

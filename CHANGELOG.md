@@ -260,11 +260,78 @@ Configurability / portability:
 eviction, log capture cap), bringing the suite to 494 specs / 0
 failures.
 
+### Phase 18: router-CLI compatibility pass
+
+Closes the «router-CLI conformance» audit. The shell now matches
+real OS muscle memory in the places where it diverged: prefix
+abbreviation, `end`, `do`, `?`-as-context-help, `copy run start`,
+`logout`/`quit`, the iconic `show clock`/`logging`/`history` targets,
+the `show run` collision, and unquoted `description` text.
+
+Dispatch refactor — single source of truth:
+- `Mode#execute` does prefix expansion (`sh run` → `show running-config`,
+  `conf t` → `configure terminal`, `wr m` → `write memory`, `dis` →
+  `disable`). Exact match always wins; an ambiguous prefix raises with
+  the candidate list (`% ambiguous command 'c': cancel, configure, copy`).
+- All five config sub-modes (Section, ConfigProcess, ConfigBlock,
+  ConfigGlobalRoute, ConfigProcessRoute) now declare commands via the
+  base `commands` Hash and override `apply_field` for the
+  parser-delegating fall-through. Per-mode custom `execute` overrides
+  are gone — one dispatch path everywhere.
+- Multi-word command keywords (`configure terminal`, `write memory`,
+  `copy running-config startup-config`, `rollback commit <id>`,
+  `trigger process <name> input <file>`, `replay run <uid> from <block>`,
+  `cancel run <uid>`, `trace event <file> [interface <name>]`,
+  `diff <file> running-config`) all accept abbreviated keywords via
+  `match_keyword?`.
+
+New commands:
+- `end` — from any config sub-mode, jumps straight back to privileged.
+  Candidate is preserved (use `commit` to promote it, `abort` to drop).
+- `do <command>` — runs a privileged-mode command from inside any
+  config sub-mode without exiting first. Mode-changing commands
+  (`configure`, `disable`, `exit`/`end`/etc.) are blocked so `do`
+  can't accidentally push or pop modes.
+- `logout` / `quit` — aliases for `exit` in user and privileged modes.
+- `copy running-config startup-config` — modern router-OS spelling for
+  `write memory` (legacy form still works).
+
+Context-sensitive `?`:
+- Bare `?` runs the mode's help (unchanged).
+- A trailing `?` (`show ?`, `show run ?`, `replay ?`) is intercepted by
+  `Mode#execute` before dispatch and routed to `Completer` for the
+  enumeration of valid next tokens. router CLIs print `<cr>` when no further
+  input is expected — we mirror that.
+
+Show subsystem:
+- New targets: `show clock` (UTC timestamp + day/month), `show logging`
+  (level + format + capture cap from the actual env), `show history`
+  (Reline session command history; politely declines without Reline).
+- Bare `show run` (no UID) now means `show running-config` — the router
+  habit. `show run <uid>` keeps its prouter-native run-detail meaning.
+- Show targets get the same prefix expansion (`sh run-c`, `sh int`,
+  `sh pol`). Singular/plural pairs are disambiguated by argument
+  presence: bare `sh int` → `interfaces` (listing), `sh int demo` →
+  `interface` (detail). `show clock` is whitelisted in user mode.
+
+Free text:
+- `description` consumes the rest of the line as router-style free text
+  — quotes are no longer required for spaces. Renderer re-quotes on
+  output so roundtrip stays idempotent and pre-existing quoted forms
+  still parse identically.
+
+31 new specs in `spec/prouterd/shell/router_cli_compat_spec.rb` covering
+prefix expansion, ambiguity, `end`/`do`, `?` context help, `logout`/
+`quit`/`copy`/`show clock|logging|history`, `show run` collision, and
+multi-word `description` parser/render roundtrip. Suite now at 525
+examples / 0 failures.
+
 ## Status
 
-- 17 phases shipped, one git commit per phase
-- 494 RSpec specs, 0 failures
-- All spec §28 acceptance criteria + production hardening + IPC + contracts
+- 18 phases shipped, one git commit per phase
+- 525 RSpec specs, 0 failures
+- All spec §28 acceptance criteria + production hardening + IPC +
+  contracts + router-CLI compatibility
 - End-to-end smoke-tested against real Docker + Puma + cron + shell exec
 - Distributable as a Docker image (`docker build . && docker run`)
 - Pluggable runners: third-party gems can register a new `type` without

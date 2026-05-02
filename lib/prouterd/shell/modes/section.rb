@@ -44,36 +44,28 @@ module Prouterd
         end
 
         def commands
-          { "show" => :cmd_show, "exit" => :cmd_exit, "help" => :cmd_help, "?" => :cmd_help }
+          {
+            "show"   => :cmd_show,
+            "do"     => :cmd_do,
+            "commit" => :cmd_commit,
+            "abort"  => :cmd_abort,
+            "end"    => :cmd_end,
+            "exit"   => :cmd_exit,
+            "help"   => :cmd_help,
+            "?"      => :cmd_help
+          }
         end
 
-        # Override execute: instead of dispatching only on a fixed table, fall
-        # through to the parser's field-applier for any unrecognized command.
-        # That keeps the dispatch DRY and matches the file syntax exactly.
-        def execute(tokens, session, out, err)
-          head = tokens.first.value
-          case head
-          when "show"     then cmd_show(tokens, session, out, err)
-          when "exit"     then cmd_exit(tokens, session, out, err)
-          when "commit"   then :commit
-          when "abort"    then :abort
-          when "help", "?" then cmd_help(tokens, session, out, err)
-          else
-            apply_field(tokens, session)
-            :handled
-          end
-        end
-
-        def apply_field(tokens, session)
-          # Reconstruct a config Line so we can call the field applier. The
-          # applier raises Config::ParseError on invalid input; we translate
-          # to CommandError for shell display.
+        # Sub-modes here act as field editors: any command not in `commands`
+        # falls through to the file parser's field applier. That keeps
+        # shell and `.prc` syntax in lockstep.
+        def apply_field(tokens, _session)
           line = Prouterd::Config::Line.new(0, tokens)
           parser = Prouterd::Config::Parser.new([])
           method_name = FIELD_APPLIERS.fetch(@kind)
           parser.send(method_name, @node, line)
+          :handled
         rescue Prouterd::Config::ParseError => e
-          # Strip the "line N: " prefix; the shell knows the source.
           raise CommandError, e.message.sub(/\Aline \d+(?:, col \d+)?: /, "")
         end
 
@@ -85,6 +77,14 @@ module Prouterd
           :handled
         end
 
+        def cmd_do(tokens, session, out, err)
+          run_do(tokens, session, out, err)
+        end
+
+        def cmd_commit(_tokens, _session, _out, _err); :commit; end
+        def cmd_abort(_tokens, _session, _out, _err); :abort; end
+        def cmd_end(_tokens, _session, _out, _err); :end; end
+
         def cmd_exit(_tokens, _session, _out, _err)
           :exit
         end
@@ -94,8 +94,10 @@ module Prouterd
             #{@label.capitalize} editor:
               <field> <value>...    Set a field (see file DSL §8 for valid fields)
               show <target>         Read-only inspection
+              do <command>          Run a privileged command without leaving config
               commit                Validate and apply candidate as running
               abort                 Discard candidate, return to privileged
+              end                   Return to privileged, leave candidate intact
               exit                  Return to (config)#
               help, ?               Show this help
           HELP

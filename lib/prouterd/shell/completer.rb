@@ -95,7 +95,8 @@ module Prouterd
       # ---- show <target> ----
 
       SHOW_TOP_LEVEL = %w[
-        version status running-config startup-config candidate-config commits
+        version status clock logging history
+        running-config startup-config candidate-config commits
         commit diff processes process interfaces interface policies policy
         queues queue secrets secret blocks block routes runs run logs
         artifacts dead-letter

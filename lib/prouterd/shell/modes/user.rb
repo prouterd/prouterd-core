@@ -21,7 +21,9 @@ module Prouterd
             "show"   => :cmd_show,
             "help"   => :cmd_help,
             "?"      => :cmd_help,
-            "exit"   => :cmd_exit
+            "exit"   => :cmd_exit,
+            "logout" => :cmd_exit,
+            "quit"   => :cmd_exit
           }
         end
 
@@ -29,26 +31,40 @@ module Prouterd
           enter(Privileged.new)
         end
 
-        # User-mode `show` is restricted to non-privileged targets.
-        ALLOWED_SHOWS = %w[version status].freeze
+        # User-mode `show` is restricted to harmless inspection targets. The
+        # canonical set is small; abbreviated forms are expanded against it
+        # (so `sh ver` / `sh st` / `sh cl` resolve like router).
+        ALLOWED_SHOWS = %w[version status clock].freeze
 
         def cmd_show(tokens, session, out, err)
           target = tokens[1]&.value
-          unless ALLOWED_SHOWS.include?(target)
+          expanded = expand_allowed(target)
+          unless expanded
             raise CommandError, "show #{target || '<missing>'} requires privileged mode (use 'enable')"
           end
-          Show.execute(tokens[1..], session, out, err)
+          new_tokens = tokens.dup
+          new_tokens[1] = rebuild_head_token(tokens[1], expanded)
+          Show.execute(new_tokens[1..], session, out, err)
           :handled
+        end
+
+        def expand_allowed(target)
+          return nil if target.nil?
+          return target if ALLOWED_SHOWS.include?(target)
+
+          matches = ALLOWED_SHOWS.select { |t| t.length > target.length && t.start_with?(target) }
+          matches.length == 1 ? matches.first : nil
         end
 
         def cmd_help(_tokens, _session, out, _err)
           out.puts <<~HELP
             User mode commands:
-              enable           Enter privileged mode (#)
-              show version     Print prouter version
-              show status      Print runtime status
-              help, ?          Show this help
-              exit             Quit the shell
+              enable              Enter privileged mode (#)
+              show version        Print prouter version
+              show status         Print runtime status
+              show clock          Print current UTC time
+              help, ?             Show this help (or any command followed by `?`)
+              exit, logout, quit  Quit the shell
           HELP
           :handled
         end

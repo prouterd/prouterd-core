@@ -7,11 +7,30 @@ module Prouterd
     module Show
       module_function
 
+      # Canonical show-target keys. router-style unique-prefix expansion is
+      # applied before dispatch, so `sh ru` -> `running-config`, `sh int` ->
+      # `interfaces`, `sh pol` -> `policies`, etc. An ambiguous abbreviation
+      # raises CommandError listing the candidates.
+      TARGETS = %w[
+        version status clock logging history
+        running-config candidate-config startup-config
+        commits commit diff
+        processes process interfaces interface
+        policies policy queues queue secrets secret
+        blocks block routes
+        runs run logs artifacts dead-letter
+      ].freeze
+
       def execute(args, session, out, _err)
         head, *rest = args.map(&:value)
+        head = expand_target(head, has_args: !rest.empty?)
+
         case head
         when "version"           then show_version(out)
         when "status"            then show_status(session, out)
+        when "clock"             then show_clock(out)
+        when "logging"           then show_logging(out)
+        when "history"           then show_history(out)
         when "running-config"    then show_running(session, out)
         when "candidate-config"  then show_candidate(session, out)
         when "startup-config"    then show_startup(session, out)
@@ -32,12 +51,37 @@ module Prouterd
         when "block"             then show_block(rest, session, out)
         when "routes"            then list_routes(rest, session, out)
         when "runs"      then list_runs(rest, session, out)
-        when "run"       then show_run(rest, session, out)
+        when "run"
+          # router-CLI habit: bare `show run` (no UID) means `show running-config`.
+          # `show run <uid>` keeps its prouter-native meaning of "show one run".
+          rest.empty? ? show_running(session, out) : show_run(rest, session, out)
         when "logs"      then show_logs(rest, session, out)
         when "artifacts" then show_artifacts(rest, session, out)
         when "dead-letter" then show_dead_letter(rest, session, out)
         else
           raise CommandError, "unknown show target '#{head}'"
+        end
+      end
+
+      def expand_target(head, has_args: false)
+        return head if head.nil? || TARGETS.include?(head)
+
+        matches = TARGETS.select { |t| t.length > head.length && t.start_with?(head) }
+        case matches.length
+        when 0 then head
+        when 1 then matches.first
+        when 2
+          # Common singular/plural pair (interface/interfaces, policy/policies,
+          # queue/queues, log/logs/logging, ...). router-CLI habit: bare form lists
+          # everything; same word with an argument shows one record.
+          sg, pl = matches.sort_by(&:length)
+          if pl.start_with?(sg) && pl.length - sg.length <= 3
+            has_args ? sg : pl
+          else
+            raise CommandError, "ambiguous show target '#{head}': #{matches.sort.join(', ')}"
+          end
+        else
+          raise CommandError, "ambiguous show target '#{head}': #{matches.sort.join(', ')}"
         end
       end
 
@@ -54,6 +98,33 @@ module Prouterd
         out.puts "interfaces:      #{session.running_config.interfaces.length}"
         out.puts "processes:       #{session.running_config.processes.length}"
         out.puts "secrets:         #{session.running_config.secrets.length}"
+      end
+
+      # ----- router-iconic show targets -----
+
+      def show_clock(out)
+        out.puts Time.now.utc.strftime("%H:%M:%S.%3N UTC %a %b %e %Y")
+      end
+
+      def show_logging(out)
+        level = ENV["PROUTERD_LOG_LEVEL"] || "info"
+        capture_cap = ENV["PROUTERD_LOG_CAPTURE_BYTES"] || "1048576"
+        out.puts "Logging configuration:"
+        out.puts "  level:        #{level} (override via PROUTERD_LOG_LEVEL)"
+        out.puts "  format:       <ts> <LEVEL> prouterd: <message> k=v ..."
+        out.puts "  destination:  stdout (capture via journald / docker logs / k8s sidecar)"
+        out.puts "  capture cap:  #{capture_cap} bytes per container stream (override via PROUTERD_LOG_CAPTURE_BYTES)"
+      end
+
+      def show_history(out)
+        if defined?(Reline::HISTORY) && !Reline::HISTORY.empty?
+          width = Reline::HISTORY.length.to_s.length
+          Reline::HISTORY.to_a.each_with_index do |line, i|
+            out.puts "  %*d  %s" % [width, i + 1, line]
+          end
+        else
+          out.puts "(no history available — Reline not loaded or session has no commands)"
+        end
       end
 
       # ----- config dumps -----

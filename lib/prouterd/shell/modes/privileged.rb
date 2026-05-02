@@ -23,6 +23,7 @@ module Prouterd
             "load"      => :cmd_load,
             "apply"     => :cmd_apply,
             "write"     => :cmd_write,
+            "copy"      => :cmd_copy,
             "rollback"  => :cmd_rollback,
             "trigger"   => :cmd_trigger,
             "trace"     => :cmd_trace,
@@ -31,6 +32,8 @@ module Prouterd
             "diff"      => :cmd_diff,
             "disable"   => :cmd_disable,
             "exit"      => :cmd_exit,
+            "logout"    => :cmd_exit,
+            "quit"      => :cmd_exit,
             "help"      => :cmd_help,
             "?"         => :cmd_help
           }
@@ -45,7 +48,7 @@ module Prouterd
         end
 
         def cmd_configure(tokens, session, _out, _err)
-          unless tokens.length == 2 && tokens[1].value == "terminal"
+          unless tokens.length == 2 && match_keyword?(tokens[1].value, "terminal")
             raise CommandError, "syntax: configure terminal"
           end
           session.begin_candidate
@@ -109,9 +112,25 @@ module Prouterd
 
         # `write memory` — bless current running as startup config.
         def cmd_write(tokens, session, out, _err)
-          unless tokens.length == 2 && tokens[1].value == "memory"
+          unless tokens.length == 2 && match_keyword?(tokens[1].value, "memory")
             raise CommandError, "syntax: write memory"
           end
+          perform_write_memory(session, out)
+        end
+
+        # `copy running-config startup-config` — modern router-OS spelling for
+        # `write memory`. Both forms persist the current running config as
+        # the startup config; both accept abbreviated keywords (`co ru st`).
+        def cmd_copy(tokens, session, out, _err)
+          unless tokens.length == 3 &&
+                 match_keyword?(tokens[1].value, "running-config") &&
+                 match_keyword?(tokens[2].value, "startup-config")
+            raise CommandError, "syntax: copy running-config startup-config"
+          end
+          perform_write_memory(session, out)
+        end
+
+        def perform_write_memory(session, out)
           unless session.store
             raise CommandError, "no DB attached; nothing to persist (start shell with --db)"
           end
@@ -124,7 +143,7 @@ module Prouterd
 
         # `rollback commit <id>` — point running at an earlier commit.
         def cmd_rollback(tokens, session, out, _err)
-          unless tokens.length == 3 && tokens[1].value == "commit"
+          unless tokens.length == 3 && match_keyword?(tokens[1].value, "commit")
             raise CommandError, "syntax: rollback commit <id>"
           end
           unless session.store
@@ -144,7 +163,9 @@ module Prouterd
         # process for the given input event, prints a step-by-step summary,
         # and returns when the run terminates (success or failed).
         def cmd_trigger(tokens, session, out, _err)
-          unless tokens.length == 5 && tokens[1].value == "process" && tokens[3].value == "input"
+          unless tokens.length == 5 &&
+                 match_keyword?(tokens[1].value, "process") &&
+                 match_keyword?(tokens[3].value, "input")
             raise CommandError, "syntax: trigger process <name> input <file>"
           end
           process_name = tokens[2].value
@@ -178,9 +199,11 @@ module Prouterd
         # input and start at that block.
         def cmd_replay(tokens, session, out, _err)
           new_run =
-            if tokens.length == 3 && tokens[1].value == "run"
+            if tokens.length == 3 && match_keyword?(tokens[1].value, "run")
               session.replay(tokens[2].value)
-            elsif tokens.length == 5 && tokens[1].value == "run" && tokens[3].value == "from"
+            elsif tokens.length == 5 &&
+                  match_keyword?(tokens[1].value, "run") &&
+                  match_keyword?(tokens[3].value, "from")
               session.replay_from(tokens[2].value, tokens[4].value)
             else
               raise CommandError, "syntax: replay run <uid> [from <block>]"
@@ -201,7 +224,7 @@ module Prouterd
         # `diff <file> running-config` — show what would change if `file` were
         # applied. Operates entirely in-memory (no candidate side-effects).
         def cmd_diff(tokens, session, out, _err)
-          unless tokens.length == 3 && tokens[2].value == "running-config"
+          unless tokens.length == 3 && match_keyword?(tokens[2].value, "running-config")
             raise CommandError, "syntax: diff <file> running-config"
           end
           Show.diff_file_against_running([tokens[1].value], session, out)
@@ -212,7 +235,7 @@ module Prouterd
         # steps as canceled. The orchestrator polls run.status between levels
         # and aborts. In-flight containers complete naturally (or hit timeout).
         def cmd_cancel(tokens, session, out, _err)
-          unless tokens.length == 3 && tokens[1].value == "run"
+          unless tokens.length == 3 && match_keyword?(tokens[1].value, "run")
             raise CommandError, "syntax: cancel run <uid>"
           end
           uid = tokens[2].value
@@ -255,12 +278,12 @@ module Prouterd
         # routing decisions for the given event without running any blocks,
         # so users can predict pipeline behavior before triggering.
         def cmd_trace(tokens, session, out, _err)
-          unless tokens.length >= 3 && tokens[1].value == "event"
+          unless tokens.length >= 3 && match_keyword?(tokens[1].value, "event")
             raise CommandError, "syntax: trace event <file> [interface <name>]"
           end
           event_path = tokens[2].value
           iface = nil
-          if tokens.length == 5 && tokens[3].value == "interface"
+          if tokens.length == 5 && match_keyword?(tokens[3].value, "interface")
             iface = tokens[4].value
           elsif tokens.length != 3
             raise CommandError, "syntax: trace event <file> [interface <name>]"
@@ -298,13 +321,15 @@ module Prouterd
           out.puts <<~HELP
             Privileged mode commands:
               show <target>            See list below
-              configure terminal       Enter config mode
+              configure terminal       Enter config mode (abbrev: conf t)
               load <file>              Replace running config from .prc file (no commit)
               apply <file>             Load + commit a .prc file as a new commit
               write memory             Save current running as startup-config
+              copy running-config startup-config
+                                       Same as `write memory` (modern router-OS spelling)
               rollback commit <id>     Move running pointer back to an earlier commit
               disable                  Drop to user mode
-              exit                     Quit the shell
+              exit, logout, quit       Quit the shell
               help, ?                  Show this help
 
             Show targets:

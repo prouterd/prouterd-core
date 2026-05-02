@@ -22,24 +22,37 @@ module Prouterd
           "(config-process)#"
         end
 
-        def execute(tokens, session, out, err)
-          head = tokens.first.value
-          case head
-          when "block"      then cmd_block(tokens, session)
-          when "route"      then cmd_route(tokens, session)
-          when "no"         then cmd_no(tokens, session, out)
-          when "show"       then cmd_show(tokens, session, out, err)
-          when "exit"       then :exit
-          when "commit"     then :commit
-          when "abort"      then :abort
-          when "help", "?"  then cmd_help(out)
-          else
-            apply_process_field(tokens)
-            :handled
-          end
+        def commands
+          {
+            "block"  => :cmd_block,
+            "route"  => :cmd_route,
+            "no"     => :cmd_no,
+            "show"   => :cmd_show,
+            "do"     => :cmd_do,
+            "commit" => :cmd_commit,
+            "abort"  => :cmd_abort,
+            "end"    => :cmd_end,
+            "exit"   => :cmd_exit,
+            "help"   => :cmd_help,
+            "?"      => :cmd_help
+          }
         end
 
-        def cmd_block(tokens, _session)
+        def apply_field(tokens, _session)
+          apply_process_field(tokens)
+          :handled
+        end
+
+        def cmd_do(tokens, session, out, err)
+          run_do(tokens, session, out, err)
+        end
+
+        def cmd_commit(_tokens, _session, _out, _err); :commit; end
+        def cmd_abort(_tokens, _session, _out, _err); :abort; end
+        def cmd_end(_tokens, _session, _out, _err); :end; end
+        def cmd_exit(_tokens, _session, _out, _err); :exit; end
+
+        def cmd_block(tokens, _session = nil, _out = nil, _err = nil)
           expect_arg_count(tokens, 2, "block <name>")
           name = check_identifier(tokens[1].value, "block name")
           existing = @process.blocks.find { |b| b.name == name }
@@ -62,7 +75,7 @@ module Prouterd
         # exists, push the editor mode. If not, create the short-form record
         # and stay. To go straight to long-form on creation, supply the route
         # then immediately re-enter to edit conditions.
-        def cmd_route(tokens, _session)
+        def cmd_route(tokens, _session = nil, _out = nil, _err = nil)
           expect_arg_count(tokens, 3, "route <from_block> <to_block>")
           from = check_identifier(tokens[1].value, "from-block name")
           to = check_identifier(tokens[2].value, "to-block name")
@@ -76,7 +89,7 @@ module Prouterd
           end
         end
 
-        def cmd_no(tokens, _session, out)
+        def cmd_no(tokens, _session = nil, out = nil, _err = nil)
           expect_min_args(tokens, 2, "no <kind> ...")
           kind = tokens[1].value
           case kind
@@ -123,18 +136,20 @@ module Prouterd
           raise CommandError, e.message.sub(/\Aline \d+(?:, col \d+)?: /, "")
         end
 
-        def cmd_help(out)
+        def cmd_help(_tokens, _session, out, _err)
           out.puts <<~HELP
             Process editor commands:
-              description "<text>"     Set process description
+              description <text>       Set process description (rest of line)
               queue <name>             Bind to a queue
               shutdown / no shutdown   Toggle process state
               block <name>             Add or edit a block (enters config-block)
               route <from> <to>        Add a route between blocks (re-issue to edit conditions)
               no <kind> [name]         Remove (no block|route|shutdown|description|queue)
               show <target>            Read-only inspection
+              do <command>             Run a privileged command without leaving config
               commit                   Validate and apply candidate as running
               abort                    Discard candidate, return to privileged
+              end                      Return to privileged, leave candidate intact
               exit                     Return to (config)#
               help, ?                  Show this help
           HELP

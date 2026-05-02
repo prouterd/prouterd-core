@@ -164,6 +164,16 @@ module Prouterd
         end
         # Append a trailing space after a completed token, like a real shell.
         Reline.completion_append_character = " " if Reline.respond_to?(:completion_append_character=)
+
+        # Live autocomplete dialog: as the user types, Reline shows the
+        # candidate menu next to the cursor (IRB-style) using the same
+        # completion_proc above. Arrow keys navigate, Enter selects, Tab
+        # accepts the highlighted item.
+        Reline.autocompletion = true if Reline.respond_to?(:autocompletion=)
+        if defined?(Reline::DEFAULT_DIALOG_PROC_AUTOCOMPLETE) && Reline.respond_to?(:add_dialog_proc)
+          Reline.add_dialog_proc(:autocomplete, Reline::DEFAULT_DIALOG_PROC_AUTOCOMPLETE)
+        end
+
         @completer_installed = true
       rescue StandardError => e
         @error&.puts("warning: tab completion not installed: #{e.message}")

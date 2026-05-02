@@ -6,7 +6,6 @@
 !   $ prouter serve --db /tmp/o.db --port 8090
 !   # wait ~1 minute, then in another terminal:
 !   $ prouter exec "show runs" --db /tmp/o.db
-!     # one run per minute that passed
 
 router demo
 exit
@@ -24,11 +23,15 @@ exit
 
 process tick
  queue default
+ no shutdown
  block log_tick
-  image alpine:latest
-  command "sh -c 'echo TICK at $(date -u +%FT%TZ) >&2; echo \"{\\\"ok\\\":true}\" > /prouter/output.json'"
-  timeout 30s
+  type docker
+   image alpine:latest
+   command "sh -c 'echo TICK at $(date -u +%FT%TZ) >&2; echo \"{\\\"ok\\\":true}\" > /prouter/output.json'"
+  exit
   output result
+  timeout 30s
+  enable
  exit
 exit
 

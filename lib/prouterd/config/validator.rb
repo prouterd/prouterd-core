@@ -188,9 +188,8 @@ module Prouterd
 
       def check_blocks(process)
         process.blocks.each do |block|
-          if block.image.nil? || block.image.empty?
-            @result.error("block '#{process.name}/#{block.name}' missing 'image'", line: block.line)
-          end
+          check_block_type(process, block)
+
           if block.retry_policy_name && !policy_defined?(block.retry_policy_name)
             @result.error("block '#{process.name}/#{block.name}' references unknown policy '#{block.retry_policy_name}'", line: block.line)
           end
@@ -198,6 +197,38 @@ module Prouterd
             unless secret_defined?(secret_name)
               @result.error("block '#{process.name}/#{block.name}' references unknown secret '#{secret_name}'", line: block.line)
             end
+          end
+        end
+      end
+
+      def check_block_type(process, block)
+        # Spec §7.1/§7.4/§7.5: every block must have an execution_type set.
+        # Old DSL form (image directly in block) auto-infers to "docker"
+        # in the parser; an absent image AND absent exec means the user
+        # didn't declare a type at all.
+        unless block.execution_type
+          @result.error(
+            "block '#{process.name}/#{block.name}' missing 'type' section " \
+            "(use 'type docker' or 'type shell')",
+            line: block.line
+          )
+          return
+        end
+
+        case block.execution_type
+        when "docker"
+          if block.image.nil? || block.image.empty?
+            @result.error("block '#{process.name}/#{block.name}' (type docker) missing 'image'", line: block.line)
+          end
+          if block.shell_exec
+            @result.error("block '#{process.name}/#{block.name}' (type docker) cannot declare 'exec'", line: block.line)
+          end
+        when "shell"
+          if block.shell_exec.nil? || block.shell_exec.empty?
+            @result.error("block '#{process.name}/#{block.name}' (type shell) missing 'exec'", line: block.line)
+          end
+          if block.image
+            @result.error("block '#{process.name}/#{block.name}' (type shell) cannot declare 'image'", line: block.line)
           end
         end
       end

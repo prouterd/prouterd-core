@@ -123,7 +123,7 @@ RSpec.describe Prouterd::Config::Validator do
     expect(result.errors.map(&:message).join("\n")).to match(/self-loop/)
   end
 
-  it "detects missing image" do
+  it "detects missing block type (block declares neither image nor exec)" do
     _, result = validate(<<~SRC)
       router x
       exit
@@ -132,7 +132,35 @@ RSpec.describe Prouterd::Config::Validator do
        exit
       exit
     SRC
-    expect(result.errors.map(&:message).join("\n")).to match(/missing 'image'/)
+    expect(result.errors.map(&:message).join("\n")).to match(/missing 'type' section/)
+  end
+
+  it "detects missing image when block has type docker" do
+    _, result = validate(<<~SRC)
+      router x
+      exit
+      process p
+       block a
+        type docker
+        exit
+       exit
+      exit
+    SRC
+    expect(result.errors.map(&:message).join("\n")).to match(/\(type docker\) missing 'image'/)
+  end
+
+  it "detects missing exec when block has type shell" do
+    _, result = validate(<<~SRC)
+      router x
+      exit
+      process p
+       block a
+        type shell
+        exit
+       exit
+      exit
+    SRC
+    expect(result.errors.map(&:message).join("\n")).to match(/\(type shell\) missing 'exec'/)
   end
 
   it "detects unknown block in route" do

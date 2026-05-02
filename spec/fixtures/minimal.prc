@@ -16,10 +16,13 @@ process pipeline
  no shutdown
 
  block hello
-  image alpine:latest
-  command "echo hello"
-  timeout 5s
+  type docker
+   image alpine:latest
+   command "echo hello"
+  exit
   output result
+  timeout 5s
+  enable
  exit
 exit
 

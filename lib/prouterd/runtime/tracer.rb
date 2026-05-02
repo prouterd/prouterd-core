@@ -185,8 +185,16 @@ module Prouterd
       def collect_policies(process)
         process.blocks.each do |block|
           summary = {}
+          summary[:type] = block.execution_type if block.execution_type
+          if block.docker?
+            summary[:image] = block.image if block.image
+          elsif block.shell?
+            summary[:exec] = block.shell_exec if block.shell_exec
+            summary[:cwd] = block.shell_cwd if block.shell_cwd
+          end
           summary[:retry_policy] = block.retry_policy_name if block.retry_policy_name
           summary[:timeout_ms] = block.timeout_ms if block.timeout_ms
+          summary[:contract] = block.contract_name if block.contract_name
           summary[:network] = block.network unless block.network == "on"
           @result.policies[block.name] = summary unless summary.empty?
         end

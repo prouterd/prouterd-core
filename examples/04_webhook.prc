@@ -31,12 +31,16 @@ exit
 
 process pipeline
  queue default
+ no shutdown
  block extract
-  image alpine:latest
-  command "sh -c 'echo extracted >&2; echo \"{\\\"raw\\\":true}\" > /prouter/output.json'"
-  timeout 30s
+  type docker
+   image alpine:latest
+   command "sh -c 'echo extracted >&2; echo \"{\\\"raw\\\":true}\" > /prouter/output.json'"
+  exit
   input event.body
   output lead.raw
+  timeout 30s
+  enable
  exit
 exit
 

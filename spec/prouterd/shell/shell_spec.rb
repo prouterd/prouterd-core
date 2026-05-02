@@ -72,7 +72,7 @@ RSpec.describe Prouterd::Shell::Shell do
     it "shows process detail" do
       _, out, _ = drive("enable\nshow process lead_pipeline\nexit\n", session: loaded_session)
       expect(out).to include("blocks (4)")
-      expect(out).to include("extract  image=registry.local/blocks/extract-lead:v1")
+      expect(out).to include("extract  docker image=registry.local/blocks/extract-lead:v1")
     end
 
     it "shows interface detail" do

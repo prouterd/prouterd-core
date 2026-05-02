@@ -391,7 +391,16 @@ module Prouterd
         out.puts "  queue:       #{p.queue_name || '-'}"
         out.puts "  shutdown:    #{p.shutdown}"
         out.puts "  blocks (#{p.blocks.length}):"
-        p.blocks.each { |b| out.puts "    #{b.name}  image=#{b.image || '-'}" }
+        p.blocks.each do |b|
+          tag = if b.docker?
+                  "docker image=#{b.image || '-'}"
+                elsif b.shell?
+                  "shell exec=#{(b.shell_exec || '-')[0, 30]}"
+                else
+                  "(no type)"
+                end
+          out.puts "    #{b.name}  #{tag}"
+        end
         out.puts "  routes (#{p.routes.length}):"
         p.routes.each do |r|
           conds = r.matches.empty? ? "" : "  [#{r.matches.length} match]"
@@ -552,14 +561,29 @@ module Prouterd
         raise CommandError, "no such block '#{pname}/#{bname}'" unless b
 
         out.puts "block #{pname}/#{b.name}"
-        out.puts "  image:   #{b.image || '-'}"
-        out.puts "  command: #{b.command || '-'}"
+        out.puts "  type:    #{b.execution_type || '(none)'}"
+        if b.docker?
+          out.puts "  image:   #{b.image || '-'}"
+          out.puts "  command: #{b.command || '-'}"
+          out.puts "  network: #{b.network}"
+          out.puts "  pull:    #{b.pull}" if b.pull
+          out.puts "  user:    #{b.user}" if b.user
+          out.puts "  memory:  #{b.memory}" if b.memory
+          out.puts "  cpu:     #{b.cpu}"   if b.cpu
+        elsif b.shell?
+          out.puts "  exec:    #{b.shell_exec || '-'}"
+          out.puts "  cwd:     #{b.shell_cwd || '(daemon cwd)'}"
+          out.puts "  shell:   #{b.shell_path}" if b.shell_path
+          unless b.shell_env.empty?
+            out.puts "  env:     #{b.shell_env.map { |k, v| "#{k}=#{v}" }.join(', ')}"
+          end
+        end
         out.puts "  timeout: #{b.timeout_ms ? Util::DurationParser.render(b.timeout_ms) : '-'}"
         out.puts "  retry:   #{b.retry_policy_name || '-'}"
+        out.puts "  contract: #{b.contract_name || '-'}"
         out.puts "  input:   #{b.input || '-'}"
         out.puts "  output:  #{b.output || '-'}"
-        out.puts "  network: #{b.network}"
-        out.puts "  state:   #{b.shutdown ? 'shutdown' : 'no shutdown'}"
+        out.puts "  state:   #{b.shutdown ? 'disabled' : 'enabled'}"
         unless b.secret_names.empty?
           out.puts "  secrets: #{b.secret_names.join(', ')}"
         end

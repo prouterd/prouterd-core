@@ -326,15 +326,45 @@ module Prouterd
         advance
 
         each_body_line("block #{name}") do |line|
+          if line.head.value == "type"
+            parse_block_type_section(node, line)
+            next
+          end
           parse_block_field(node, line)
         end
 
         node
       end
 
-      def parse_block_field(node, line)
-        head = line.head.value
+      # Parse the `type <docker|shell> ... exit` sub-section. New Phase 12+
+      # form. Old Phase 1-11 form (image/exec directly in block body) is
+      # still parsed via parse_block_field for backward compatibility — when
+      # `image` is set without an explicit type, we infer `docker`.
+      def parse_block_type_section(node, header)
+        expect_token_count(header, 2, "type <docker|shell>")
+        kind = expect_word(header.tokens[1], "block type")
+        unless AST::Block::EXECUTION_TYPES.include?(kind)
+          raise ParseError.new(
+            "invalid block type '#{kind}' (allowed: #{AST::Block::EXECUTION_TYPES.join(', ')})",
+            line: header.number
+          )
+        end
+        if node.execution_type
+          raise ParseError.new("block '#{node.name}' already has a type section", line: header.number)
+        end
+        node.execution_type = kind
+        advance
 
+        each_body_line("type #{kind}") do |line|
+          case kind
+          when "docker" then apply_docker_type_field(node, line)
+          when "shell"  then apply_shell_type_field(node, line)
+          end
+        end
+      end
+
+      def apply_docker_type_field(node, line)
+        head = line.head.value
         case head
         when "image"
           expect_token_count(line, 2, "image <reference>")
@@ -342,28 +372,13 @@ module Prouterd
         when "command"
           expect_min_tokens(line, 2, "command <args...>")
           node.command = line.tokens[1..].map(&:value).join(" ")
-        when "timeout"
-          expect_token_count(line, 2, "timeout <duration>")
-          node.timeout_ms = expect_duration(line.tokens[1], "timeout")
-        when "retry"
-          expect_token_count(line, 3, "retry policy <name>")
-          unless line.tokens[1].value == "policy"
-            raise ParseError.new("expected 'policy' after 'retry' in block context", line: line.number)
+        when "pull"
+          expect_token_count(line, 2, "pull <#{AST::Block::PULL_VALUES.join('|')}>")
+          value = expect_word(line.tokens[1], "pull policy")
+          unless AST::Block::PULL_VALUES.include?(value)
+            raise ParseError.new("invalid pull '#{value}' (allowed: #{AST::Block::PULL_VALUES.join(', ')})", line: line.number)
           end
-          node.retry_policy_name = expect_identifier(line.tokens[2], "retry policy name")
-        when "secret"
-          expect_token_count(line, 2, "secret <NAME>")
-          secret_name = expect_env_name(line.tokens[1], "secret name")
-          if node.secret_names.include?(secret_name)
-            raise ParseError.new("duplicate secret '#{secret_name}' in block", line: line.number)
-          end
-          node.secret_names << secret_name
-        when "input"
-          expect_token_count(line, 2, "input <context.path>")
-          node.input = expect_context_path(line.tokens[1], "input")
-        when "output"
-          expect_token_count(line, 2, "output <context.path>")
-          node.output = expect_context_path(line.tokens[1], "output")
+          node.pull = value
         when "network"
           expect_token_count(line, 2, "network <on|off>")
           value = expect_word(line.tokens[1], "network")
@@ -371,6 +386,101 @@ module Prouterd
             raise ParseError.new("invalid network value '#{value}' (allowed: on, off)", line: line.number)
           end
           node.network = value
+        when "user"
+          expect_token_count(line, 2, "user <user>")
+          node.user = expect_word_or_string(line.tokens[1], "user")
+        when "memory"
+          expect_token_count(line, 2, "memory <limit>")
+          node.memory = expect_word_or_string(line.tokens[1], "memory")
+        when "cpu"
+          expect_token_count(line, 2, "cpu <limit>")
+          node.cpu = expect_word_or_string(line.tokens[1], "cpu")
+        else
+          raise ParseError.new("unknown directive '#{head}' in 'type docker' block", line: line.number)
+        end
+      end
+
+      def apply_shell_type_field(node, line)
+        head = line.head.value
+        case head
+        when "exec"
+          expect_min_tokens(line, 2, "exec <command>")
+          node.shell_exec = line.tokens[1..].map(&:value).join(" ")
+        when "cwd"
+          expect_token_count(line, 2, "cwd <path>")
+          node.shell_cwd = expect_word_or_string(line.tokens[1], "cwd")
+        when "shell"
+          expect_token_count(line, 2, "shell <path>")
+          node.shell_path = expect_word_or_string(line.tokens[1], "shell")
+        when "env"
+          expect_token_count(line, 3, "env <KEY> <VALUE>")
+          key = expect_word(line.tokens[1], "env key")
+          value = expect_word_or_string(line.tokens[2], "env value")
+          node.shell_env[key] = value
+        else
+          raise ParseError.new("unknown directive '#{head}' in 'type shell' block", line: line.number)
+        end
+      end
+
+      def parse_block_field(node, line)
+        head = line.head.value
+
+        case head
+        # ---- Phase 1-11 inline shape: image/command/network are accepted
+        # directly inside `block` (without a `type docker` wrapper). The
+        # block's execution_type is inferred as 'docker' when `image` lands.
+        when "image"
+          expect_token_count(line, 2, "image <reference>")
+          node.image = expect_word_or_string(line.tokens[1], "image reference")
+          node.execution_type ||= "docker"
+        when "command"
+          expect_min_tokens(line, 2, "command <args...>")
+          node.command = line.tokens[1..].map(&:value).join(" ")
+        when "network"
+          expect_token_count(line, 2, "network <on|off>")
+          value = expect_word(line.tokens[1], "network")
+          unless AST::Block::NETWORK_VALUES.include?(value)
+            raise ParseError.new("invalid network value '#{value}' (allowed: on, off)", line: line.number)
+          end
+          node.network = value
+        # ---- Common block fields
+        when "timeout"
+          expect_token_count(line, 2, "timeout <duration>")
+          node.timeout_ms = expect_duration(line.tokens[1], "timeout")
+        when "retry"
+          # Two accepted forms:
+          #   retry policy <name>   (Phase 1 verbose)
+          #   retry <name>          (Phase 12 short)
+          if line.tokens.length == 3 && line.tokens[1].value == "policy"
+            node.retry_policy_name = expect_identifier(line.tokens[2], "retry policy name")
+          elsif line.tokens.length == 2
+            node.retry_policy_name = expect_identifier(line.tokens[1], "retry policy name")
+          else
+            raise ParseError.new("syntax: retry <policy_name>  or  retry policy <policy_name>", line: line.number)
+          end
+        when "secret"
+          expect_token_count(line, 2, "secret <NAME>")
+          secret_name = expect_env_name(line.tokens[1], "secret name")
+          if node.secret_names.include?(secret_name)
+            raise ParseError.new("duplicate secret '#{secret_name}' in block", line: line.number)
+          end
+          node.secret_names << secret_name
+        when "contract"
+          expect_token_count(line, 2, "contract <name>")
+          node.contract_name = expect_identifier(line.tokens[1], "contract name")
+        when "input"
+          expect_token_count(line, 2, "input <context.path>")
+          node.input = expect_context_path(line.tokens[1], "input")
+        when "output"
+          expect_token_count(line, 2, "output <context.path>")
+          node.output = expect_context_path(line.tokens[1], "output")
+        # ---- enable/disable: spec §3 shorthand for shutdown semantics.
+        when "enable"
+          expect_token_count(line, 1, "enable")
+          node.shutdown = false
+        when "disable"
+          expect_token_count(line, 1, "disable")
+          node.shutdown = true
         when "shutdown"
           expect_token_count(line, 1, "shutdown")
           node.shutdown = true

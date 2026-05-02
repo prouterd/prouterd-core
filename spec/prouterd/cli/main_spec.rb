@@ -45,7 +45,7 @@ RSpec.describe Prouterd::CLI::Main do
       code, out, _err = run("check", tmp.path)
       expect(code).to eq(1)
       expect(out).to include("Config invalid.")
-      expect(out).to include("missing 'image'")
+      expect(out).to include("missing 'type' section")
     end
   end
 

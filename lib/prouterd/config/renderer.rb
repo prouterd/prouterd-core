@@ -110,18 +110,47 @@ module Prouterd
 
       def render_block(block, level)
         emit(level, "block #{block.name}")
+
+        case block.execution_type
+        when "docker" then render_docker_type(block, level + 1)
+        when "shell"  then render_shell_type(block, level + 1)
+        end
+
+        # Common block fields, post-type, in spec order
+        emit(level + 1, "input #{block.input}") if block.input
+        emit(level + 1, "output #{block.output}") if block.output
+        emit(level + 1, "timeout #{Util::DurationParser.render(block.timeout_ms)}") if block.timeout_ms
+        emit(level + 1, "retry #{block.retry_policy_name}") if block.retry_policy_name
+        emit(level + 1, "contract #{block.contract_name}") if block.contract_name
+        block.secret_names.each { |name| emit(level + 1, "secret #{name}") }
+        # enable/disable per spec §3 shorthand (block-level only).
+        emit(level + 1, block.shutdown ? "disable" : "enable")
+        emit(level, "exit")
+      end
+
+      def render_docker_type(block, level)
+        emit(level, "type docker")
         emit(level + 1, "image #{block.image}") if block.image
         # Always quote the command — embedded shell metacharacters (spaces,
         # quotes, redirects) would otherwise be lost on re-parse since the
         # lexer would re-tokenize each whitespace-separated word.
         emit(level + 1, "command #{quote_string(block.command)}") if block.command
-        emit(level + 1, "timeout #{Util::DurationParser.render(block.timeout_ms)}") if block.timeout_ms
-        emit(level + 1, "retry policy #{block.retry_policy_name}") if block.retry_policy_name
-        block.secret_names.each { |name| emit(level + 1, "secret #{name}") }
-        emit(level + 1, "input #{block.input}") if block.input
-        emit(level + 1, "output #{block.output}") if block.output
+        emit(level + 1, "pull #{block.pull}") if block.pull
         emit(level + 1, "network #{block.network}") if block.network && block.network != "on"
-        emit(level + 1, "shutdown") if block.shutdown
+        emit(level + 1, "user #{block.user}") if block.user
+        emit(level + 1, "memory #{block.memory}") if block.memory
+        emit(level + 1, "cpu #{block.cpu}") if block.cpu
+        emit(level, "exit")
+      end
+
+      def render_shell_type(block, level)
+        emit(level, "type shell")
+        emit(level + 1, "exec #{quote_string(block.shell_exec)}") if block.shell_exec
+        emit(level + 1, "cwd #{quote_if_needed(block.shell_cwd)}") if block.shell_cwd
+        emit(level + 1, "shell #{quote_if_needed(block.shell_path)}") if block.shell_path
+        block.shell_env.each do |k, v|
+          emit(level + 1, "env #{k} #{quote_if_needed(v)}")
+        end
         emit(level, "exit")
       end
 

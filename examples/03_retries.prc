@@ -29,12 +29,16 @@ exit
 
 process flaky_pipe
  queue default
+ no shutdown
  block flaky
-  image alpine:latest
-  command "sh -c 'echo always-fails >&2; exit 1'"
-  timeout 30s
-  retry policy r3_exp
+  type docker
+   image alpine:latest
+   command "sh -c 'echo always-fails >&2; exit 1'"
+  exit
   output result
+  timeout 30s
+  retry r3_exp
+  enable
  exit
 exit
 

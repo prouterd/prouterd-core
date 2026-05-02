@@ -21,28 +21,38 @@ exit
 
 process score_pipe
  queue default
+ no shutdown
 
  block scorer
-  image alpine:latest
-  command "sh -c 'echo \"{\\\"score\\\":85}\" > /prouter/output.json'"
-  timeout 30s
+  type docker
+   image alpine:latest
+   command "sh -c 'echo \"{\\\"score\\\":85}\" > /prouter/output.json'"
+  exit
   output lead.scored
+  timeout 30s
+  enable
  exit
 
  block notify_sales
-  image alpine:latest
-  command "sh -c 'echo HIGH-VALUE >&2; echo \"{\\\"sent\\\":\\\"sales\\\"}\" > /prouter/output.json'"
-  timeout 30s
+  type docker
+   image alpine:latest
+   command "sh -c 'echo HIGH-VALUE >&2; echo \"{\\\"sent\\\":\\\"sales\\\"}\" > /prouter/output.json'"
+  exit
   input lead.scored
   output sales.notified
+  timeout 30s
+  enable
  exit
 
  block notify_marketing
-  image alpine:latest
-  command "sh -c 'echo NURTURE >&2; echo \"{\\\"sent\\\":\\\"marketing\\\"}\" > /prouter/output.json'"
-  timeout 30s
+  type docker
+   image alpine:latest
+   command "sh -c 'echo NURTURE >&2; echo \"{\\\"sent\\\":\\\"marketing\\\"}\" > /prouter/output.json'"
+  exit
   input lead.scored
   output marketing.notified
+  timeout 30s
+  enable
  exit
 
  route scorer notify_sales

@@ -1,4 +1,4 @@
-! Lead processing pipeline (canonical example from the spec)
+! Lead processing pipeline (canonical example from the spec, Phase 12 form)
 router sales_ops
  version 1
  hostname prouter-01
@@ -37,33 +37,45 @@ process lead_pipeline
  no shutdown
 
  block extract
-  image registry.local/blocks/extract-lead:v1
-  timeout 30s
+  type docker
+   image registry.local/blocks/extract-lead:v1
+  exit
   input event.body
   output lead.raw
+  timeout 30s
+  enable
  exit
 
  block enrich
-  image registry.local/blocks/enrich-lead:v3
-  timeout 120s
-  retry policy retry_standard
-  secret CLEARBIT_API_KEY
+  type docker
+   image registry.local/blocks/enrich-lead:v3
+  exit
   input lead.raw
   output lead.enriched
+  timeout 120s
+  retry retry_standard
+  secret CLEARBIT_API_KEY
+  enable
  exit
 
  block score
-  image registry.local/blocks/score-lead:v2
-  timeout 20s
+  type docker
+   image registry.local/blocks/score-lead:v2
+  exit
   input lead.enriched
   output lead.scored
+  timeout 20s
+  enable
  exit
 
  block notify_sales
-  image registry.local/blocks/notify-sales:v1
-  timeout 15s
+  type docker
+   image registry.local/blocks/notify-sales:v1
+  exit
   input lead.scored
   output notification.result
+  timeout 15s
+  enable
  exit
 
  route extract enrich

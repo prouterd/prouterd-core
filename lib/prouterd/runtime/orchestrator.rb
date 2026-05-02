@@ -32,10 +32,14 @@ module Prouterd
     class Orchestrator
       attr_reader :runs
 
+      # `runner` is either a single runner (legacy, treated as docker) or a
+      # Hash<String, Runner> mapping execution_type → runner instance.
+      # Phase 12 introduced the `block ... type docker|shell` DSL; the
+      # orchestrator dispatches based on block.execution_type.
       def initialize(db:, runner:, artifact_store: nil, secret_resolver: nil, logger: nil,
                      max_parallelism: 8, in_flight: nil, metrics: nil)
         @db = db
-        @runner = runner
+        @runners = normalize_runners(runner)
         @runs = Storage::Repositories::Runs.new(db)
         @artifact_store = artifact_store || ArtifactStore.new
         @secret_resolver = secret_resolver || EnvSecretResolver.new
@@ -43,6 +47,20 @@ module Prouterd
         @max_parallelism = max_parallelism
         @in_flight = in_flight
         @metrics = metrics
+      end
+
+      def normalize_runners(runner)
+        return runner.transform_keys(&:to_s) if runner.is_a?(Hash)
+
+        # Legacy: single runner means "use this for everything". Treat as
+        # docker for backward compat — most existing tests use StubRunner
+        # for either kind, and StubRunner doesn't care about execution_type.
+        { "docker" => runner, "shell" => runner }
+      end
+
+      def runner_for(block)
+        kind = block.execution_type || "docker"
+        @runners[kind] || @runners["docker"] || raise(TriggerError, "no runner registered for type '#{kind}'")
       end
 
       # Trigger a process. Returns the Run record after execution completes.
@@ -324,20 +342,31 @@ module Prouterd
         end
 
         env = build_env(run, process, block, document)
+        # Shell type: prefer block.shell_exec as the command. Docker type:
+        # block.command (image's CMD override). The runner consults
+        # execution_type for which fields apply.
+        command = block.shell? ? block.shell_exec : block.command
         request = Runner::RunRequest.new(
           run_uid: run.uid,
           process_name: process.name,
           block_name: block.name,
+          execution_type: block.execution_type || "docker",
           attempt: attempt,
           image: block.image,
-          command: block.command,
+          command: command,
           env: env,
           input_json: input_payload,
           timeout_ms: block.timeout_ms,
-          network: block.network || "on"
+          network: block.network || "on",
+          cwd: block.shell_cwd,
+          shell_path: block.shell_path,
+          pull: block.pull,
+          user: block.user,
+          memory: block.memory,
+          cpu: block.cpu
         )
 
-        result = @runner.run(request)
+        result = runner_for(block).run(request)
 
         db_mutex.synchronize do
           persist_logs(run, step, result, redactor)
@@ -391,6 +420,13 @@ module Prouterd
           # forward an empty string so the container side can detect absence
           # without crashing on missing-key.
           env[secret_name] = value.to_s
+        end
+        # Shell blocks may declare custom env via `env KEY VALUE`. Merge
+        # AFTER PROUTER_* so the user can intentionally override them if
+        # they really want to. ShellRunner re-overrides the file-path env
+        # vars to point at its actual work_dir.
+        if block.shell? && block.shell_env
+          env.merge!(block.shell_env)
         end
         env
       end

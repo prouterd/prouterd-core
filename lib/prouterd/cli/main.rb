@@ -756,10 +756,22 @@ module Prouterd
 
       def build_runner(kind, in_flight: nil)
         case kind
-        when "docker", nil then Prouterd::Runner::DockerRunner.new(in_flight: in_flight)
-        when "stub"        then Prouterd::Runner::StubRunner.new
+        when "docker", nil
+          # Both runners always available — block.execution_type picks at runtime.
+          {
+            "docker" => Prouterd::Runner::DockerRunner.new(in_flight: in_flight),
+            "shell"  => Prouterd::Runner::ShellRunner.new
+          }
+        when "shell"
+          # Shell-only: a single ShellRunner shared for both keys (Docker
+          # blocks would still try to run via shell — they'd fail without
+          # an `image`, but that's a config validation issue).
+          { "docker" => Prouterd::Runner::ShellRunner.new, "shell" => Prouterd::Runner::ShellRunner.new }
+        when "stub"
+          stub = Prouterd::Runner::StubRunner.new
+          { "docker" => stub, "shell" => stub }
         else
-          @stderr.puts "prouter: unknown runner kind '#{kind}' (docker|stub)"
+          @stderr.puts "prouter: unknown runner kind '#{kind}' (docker|shell|stub)"
           :error
         end
       rescue LoadError, StandardError => e

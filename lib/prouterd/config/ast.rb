@@ -127,24 +127,56 @@ module Prouterd
       end
 
       class Block
-        attr_accessor :name, :image, :command, :timeout_ms, :retry_policy_name,
-                      :input, :output, :network, :shutdown, :line
+        # Common block fields (apply regardless of execution_type):
+        attr_accessor :name, :timeout_ms, :retry_policy_name, :contract_name,
+                      :input, :output, :shutdown, :line, :execution_type
         attr_reader :secret_names
 
+        # Docker-only fields:
+        attr_accessor :image, :command, :network, :pull, :user, :memory, :cpu
+
+        # Shell-only fields:
+        attr_accessor :shell_exec, :shell_cwd, :shell_path
+        attr_reader :shell_env
+
         NETWORK_VALUES = %w[on off].freeze
+        EXECUTION_TYPES = %w[docker shell].freeze
+        PULL_VALUES = %w[never if-missing always].freeze
 
         def initialize(name:, line:)
           @name = name
           @line = line
-          @image = nil
-          @command = nil
+          @execution_type = nil
           @timeout_ms = nil
           @retry_policy_name = nil
+          @contract_name = nil
           @secret_names = []
           @input = nil
           @output = nil
-          @network = "on"
           @shutdown = false
+
+          # Docker
+          @image = nil
+          @command = nil
+          @network = "on"
+          @pull = nil
+          @user = nil
+          @memory = nil
+          @cpu = nil
+
+          # Shell
+          @shell_exec = nil
+          @shell_cwd = nil
+          @shell_path = nil
+          @shell_env = {}
+        end
+
+        def docker?
+          execution_type == "docker"
+        end
+
+        def shell?
+          execution_type == "shell"
         end
       end
 

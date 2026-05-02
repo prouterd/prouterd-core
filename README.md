@@ -168,9 +168,12 @@ Graceful shutdown: SIGINT/SIGTERM stops accepting state-changing requests
 Common flags:
 
 - `--db PATH`     SQLite path (default `var/prouterd.db`, env `PROUTERD_DB`)
-- `--no-db`       skip persistence (in-memory)
 - `--config FILE` load this `.prc` file as the running config
 - `--runner KIND` `docker` (default) or `stub` (env `PROUTERD_RUNNER`)
+- `--no-db`       in-memory mode for read-only commands only
+                  (`check` / `render` / `shell` / `exec`); the daemon
+                  and any command that mutates state (`apply`, `trigger`,
+                  `serve`, `replay`, `cancel`, `cleanup`) requires `--db`
 
 ### Production env vars
 
@@ -431,7 +434,7 @@ end-to-end.
 
 ## Status
 
-Implemented (all of [the spec][] §28 acceptance criteria):
+Implemented (all of the spec's §28 acceptance criteria):
 
 - ✅ Config language: lexer/parser/AST/validator/canonical renderer
 - ✅ router-style shell with running/candidate/startup configs
@@ -479,5 +482,3 @@ Deliberately out of v0.1 scope (per spec §31, "workable without these for now")
 - ☐ Postgres adapter (`Storage::DB` abstraction ready)
 - ☐ Idempotency keys
 - ☐ Web UI
-
-[the spec]: spec.md

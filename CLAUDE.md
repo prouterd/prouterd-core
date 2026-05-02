@@ -297,7 +297,7 @@ spec; wait for a real driver:
 - **Web UI, distributed multi-daemon workers, advanced expression
   language.** Spec §3 ("non-goals") and §31 explicitly out of scope.
 
-## What spec.md says vs what's built
+## What the spec says vs what's built
 
 Spec §28 lists the acceptance criteria. All five categories pass.
 Spec §29 lists 8 phases — all 8 are committed in git history (one

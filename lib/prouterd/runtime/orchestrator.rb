@@ -378,7 +378,7 @@ module Prouterd
 
         result = runner_for(block).run(request)
 
-        # Phase 13: enforce output contract if the block declares one.
+        # Phase 14: enforce output contract if the block declares one.
         # A violation reshapes the result so the orchestrator's existing
         # retry / on-failure logic applies — we don't need a separate
         # parallel control flow.

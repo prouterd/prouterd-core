@@ -1,6 +1,6 @@
 module Prouterd
   module Runtime
-    # Runtime validator for contracts (Phase 13).
+    # Runtime validator for contracts (Phase 14).
     #
     # The DSL `contract <name> ... exit` declares constraints over a
     # block's output JSON. After a block produces a non-nil output_json,

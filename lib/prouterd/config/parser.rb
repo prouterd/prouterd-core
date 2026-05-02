@@ -561,7 +561,7 @@ module Prouterd
         end
       end
 
-      # ----- contracts (Phase 13) -----
+      # ----- contracts (Phase 14) -----
 
       # `contract <name>` — top-level section that declares constraints over
       # a block's output JSON. Multiple `require <path>` lines for the same

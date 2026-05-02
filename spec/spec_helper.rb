@@ -1,8 +1,15 @@
 $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 
 require "prouterd"
+require "tmpdir"
 
 FIXTURES_DIR = File.expand_path("fixtures", __dir__)
+
+# Per-test-run scratch dir. PROUTERD_DB defaults here so a stray `prouter shell`
+# in tests never lands a SQLite file in the project root.
+SPEC_TMPDIR = Dir.mktmpdir("prouterd-spec-")
+ENV["PROUTERD_DB"] = File.join(SPEC_TMPDIR, "test.sqlite3")
+at_exit { FileUtils.remove_entry(SPEC_TMPDIR) if File.directory?(SPEC_TMPDIR) }
 
 RSpec.configure do |config|
   config.expect_with :rspec do |expectations|
@@ -29,4 +36,17 @@ end
 
 def read_fixture(name)
   File.read(fixture_path(name))
+end
+
+# Helper for tests that need a fresh isolated SQLite DB.
+def with_temp_db
+  Tempfile.create(["prouterd-test-db", ".sqlite3"]) do |tmp|
+    tmp.close
+    db = Prouterd::Storage::DB.open(tmp.path)
+    begin
+      yield db
+    ensure
+      db.close
+    end
+  end
 end

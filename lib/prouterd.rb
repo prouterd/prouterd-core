@@ -7,6 +7,8 @@ require_relative "prouterd/config/ast"
 require_relative "prouterd/config/parser"
 require_relative "prouterd/config/validator"
 require_relative "prouterd/config/renderer"
+require_relative "prouterd/storage"
+require_relative "prouterd/control_plane"
 require_relative "prouterd/shell"
 
 module Prouterd

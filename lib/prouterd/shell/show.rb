@@ -19,8 +19,9 @@ module Prouterd
         when "status"            then show_status(session, out)
         when "running-config"    then show_running(session, out)
         when "candidate-config"  then show_candidate(session, out)
-        when "startup-config"    then not_yet(out, "Phase 3")
-        when "commits"           then not_yet(out, "Phase 3")
+        when "startup-config"    then show_startup(session, out)
+        when "commits"           then list_commits(session, out)
+        when "commit"            then show_commit(rest, session, out)
         when "diff"              then show_diff(session, out)
         when "processes"         then list_processes(session, out)
         when "process"           then show_process(rest, session, out)
@@ -62,6 +63,68 @@ module Prouterd
       def show_running(session, out)
         text = Config::Renderer.render(session.running_config)
         out.print(text.empty? ? "(empty configuration)\n" : text)
+      end
+
+      def show_startup(session, out)
+        unless session.store
+          out.puts "(no DB attached — startup-config not available)"
+          return
+        end
+        commit = session.store.startup_commit
+        if commit
+          out.puts "! startup-config is commit #{commit.id} (#{commit.short_checksum}) saved at #{commit.created_at}"
+          out.puts
+          out.print(commit.rendered_config)
+        else
+          out.puts "(startup-config not set; use 'write memory' to bless current running)"
+        end
+      end
+
+      def list_commits(session, out)
+        unless session.store
+          out.puts "(no DB attached — commits not available)"
+          return
+        end
+        commits = session.store.list_commits(limit: 100)
+        if commits.empty?
+          out.puts "No commits."
+          return
+        end
+        running_id = session.store.running_commit&.id
+        startup_id = session.store.startup_commit&.id
+        out.puts "%-6s %-14s %-19s %-12s %s" % ["ID", "CHECKSUM", "CREATED", "AUTHOR", "MESSAGE"]
+        commits.each do |c|
+          markers = []
+          markers << "running" if c.id == running_id
+          markers << "startup" if c.id == startup_id
+          marker_str = markers.empty? ? "" : " (#{markers.join(', ')})"
+          out.puts "%-6s %-14s %-19s %-12s %s%s" % [
+            c.id,
+            c.short_checksum,
+            c.created_at.to_s[0, 19],
+            (c.author || "-").to_s[0, 12],
+            (c.message || "").to_s[0, 60],
+            marker_str
+          ]
+        end
+      end
+
+      def show_commit(rest, session, out)
+        require_args(rest, 1, "show commit <id>")
+        unless session.store
+          out.puts "(no DB attached — commits not available)"
+          return
+        end
+        id = Integer(rest.first) rescue (raise CommandError, "commit id must be an integer")
+        commit = session.store.get_commit(id)
+        raise CommandError, "no such commit #{id}" unless commit
+
+        out.puts "! commit #{commit.id} (#{commit.short_checksum})"
+        out.puts "! created: #{commit.created_at}"
+        out.puts "! author:  #{commit.author || '-'}"
+        out.puts "! message: #{commit.message || '-'}"
+        out.puts
+        out.print(commit.rendered_config)
       end
 
       def show_candidate(session, out)

@@ -21,6 +21,9 @@ module Prouterd
             "show"      => :cmd_show,
             "configure" => :cmd_configure,
             "load"      => :cmd_load,
+            "apply"     => :cmd_apply,
+            "write"     => :cmd_write,
+            "rollback"  => :cmd_rollback,
             "disable"   => :cmd_disable,
             "exit"      => :cmd_exit,
             "help"      => :cmd_help,
@@ -66,6 +69,72 @@ module Prouterd
           raise CommandError, "load failed: #{e.message}"
         end
 
+        # `apply <file>` — load file, validate, COMMIT as a new persisted commit.
+        # Equivalent to `configure terminal` + replace + `commit` in one step,
+        # but driven from a file. Without a store, falls through to a load
+        # plus a synthetic commit so the running config still updates.
+        def cmd_apply(tokens, session, out, _err)
+          unless tokens.length == 2
+            raise CommandError, "syntax: apply <file>"
+          end
+          path = tokens[1].value
+          source = File.read(path)
+          document = Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(source))
+          result = Prouterd::Config::Validator.validate(document)
+          unless result.valid?
+            result.errors.each { |e| out.puts "apply: #{path}: #{e}" }
+            raise CommandError, "apply failed: #{result.errors.length} error(s)"
+          end
+
+          if session.store
+            commit = session.store.commit(document, author: ENV["USER"], message: "apply #{File.basename(path)}")
+            session.replace_running(document)
+            session.instance_variable_set(:@last_commit, commit)
+            out.puts "Applied #{path} as commit #{commit.id} (#{commit.short_checksum})"
+          else
+            session.replace_running(document)
+            out.puts "Applied #{path} (no DB attached; not persisted)"
+          end
+          :handled
+        rescue Errno::ENOENT
+          raise CommandError, "no such file: #{tokens[1].value}"
+        rescue Prouterd::Config::ConfigError => e
+          raise CommandError, "apply failed: #{e.message}"
+        end
+
+        # `write memory` — bless current running as startup config.
+        def cmd_write(tokens, session, out, _err)
+          unless tokens.length == 2 && tokens[1].value == "memory"
+            raise CommandError, "syntax: write memory"
+          end
+          unless session.store
+            raise CommandError, "no DB attached; nothing to persist (start shell with --db)"
+          end
+          commit = session.write_memory
+          out.puts "Startup configuration saved (commit #{commit.id})."
+          :handled
+        rescue Prouterd::ControlPlane::ConfigStoreError => e
+          raise CommandError, e.message
+        end
+
+        # `rollback commit <id>` — point running at an earlier commit.
+        def cmd_rollback(tokens, session, out, _err)
+          unless tokens.length == 3 && tokens[1].value == "commit"
+            raise CommandError, "syntax: rollback commit <id>"
+          end
+          unless session.store
+            raise CommandError, "no DB attached; rollback requires --db"
+          end
+          id = Integer(tokens[2].value)
+          commit = session.rollback_to(id)
+          out.puts "Rolled back running configuration to commit #{commit.id} (#{commit.short_checksum})."
+          :handled
+        rescue ArgumentError
+          raise CommandError, "commit id must be an integer"
+        rescue Prouterd::ControlPlane::ConfigStoreError, Prouterd::Shell::ShellError => e
+          raise CommandError, e.message
+        end
+
         def cmd_disable(_tokens, _session, _out, _err)
           :exit
         end
@@ -77,9 +146,12 @@ module Prouterd
         def cmd_help(_tokens, _session, out, _err)
           out.puts <<~HELP
             Privileged mode commands:
-              show <target>            See 'show ?' for available targets
+              show <target>            See list below
               configure terminal       Enter config mode
-              load <file>              Replace running config from .prc file
+              load <file>              Replace running config from .prc file (no commit)
+              apply <file>             Load + commit a .prc file as a new commit
+              write memory             Save current running as startup-config
+              rollback commit <id>     Move running pointer back to an earlier commit
               disable                  Drop to user mode
               exit                     Quit the shell
               help, ?                  Show this help
@@ -88,7 +160,10 @@ module Prouterd
               version                  prouter version
               status                   shell session status
               running-config           current running config
+              startup-config           saved startup config (after `write memory`)
               candidate-config         current candidate (only in config mode)
+              commits                  history of commits (newest first)
+              commit <id>              specific commit detail
               processes / process N    list / detail
               interfaces / interface N
               policies / policy N

@@ -15,6 +15,8 @@ Gem::Specification.new do |spec|
   spec.executables = ["prouter"]
   spec.require_paths = ["lib"]
 
+  spec.add_dependency "sqlite3", "~> 2.1"
+
   spec.add_development_dependency "rspec", "~> 3.13"
   spec.add_development_dependency "rake", "~> 13.2"
 end

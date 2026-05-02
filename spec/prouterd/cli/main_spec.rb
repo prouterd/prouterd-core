@@ -93,7 +93,7 @@ RSpec.describe Prouterd::CLI::Main do
     end
 
     it "runs a single show command against a loaded config" do
-      code, out, _ = run_exec("show processes", "--config", fixture_path("sales_ops.prc"))
+      code, out, _ = run_exec("show processes", "--no-db", "--config", fixture_path("sales_ops.prc"))
       expect(code).to eq(0)
       expect(out).to include("lead_pipeline")
     end
@@ -108,9 +108,56 @@ RSpec.describe Prouterd::CLI::Main do
       Tempfile.create(["bad", ".prc"]) do |tmp|
         tmp.write("router x\nexit\nprocess p\nexit\n")
         tmp.flush
-        code, _, err = run_exec("show running-config", "--config", tmp.path)
+        code, _, err = run_exec("show running-config", "--no-db", "--config", tmp.path)
         expect(code).to eq(1)
         expect(err).to include("has no blocks")
+      end
+    end
+  end
+
+  describe "apply" do
+    def run_apply(*argv)
+      out = StringIO.new
+      err = StringIO.new
+      stdin = StringIO.new
+      code = described_class.run(["apply", *argv], stdin: stdin, stdout: out, stderr: err)
+      [code, out.string, err.string]
+    end
+
+    it "validates and persists a commit when --db is provided" do
+      Tempfile.create(["prouterd-apply-", ".sqlite3"]) do |tmp|
+        tmp.close
+        code, out, _ = run_apply(fixture_path("minimal.prc"), "--db", tmp.path)
+        expect(code).to eq(0)
+        expect(out).to match(/Applied .* as commit 1/)
+
+        # Second apply creates commit 2.
+        code, out, _ = run_apply(fixture_path("sales_ops.prc"), "--db", tmp.path)
+        expect(code).to eq(0)
+        expect(out).to match(/Applied .* as commit 2/)
+      end
+    end
+
+    it "without DB warns that nothing was persisted" do
+      code, out, _ = run_apply(fixture_path("minimal.prc"), "--no-db")
+      expect(code).to eq(0)
+      expect(out).to include("not persisted")
+    end
+
+    it "exits 1 on validation failure (does not persist)" do
+      Tempfile.create(["prouterd-apply-bad-", ".sqlite3"]) do |sqltmp|
+        sqltmp.close
+        Tempfile.create(["bad", ".prc"]) do |bad|
+          bad.write("router x\nexit\nprocess p\nexit\n")
+          bad.flush
+          code, _, err = run_apply(bad.path, "--db", sqltmp.path)
+          expect(code).to eq(1)
+          expect(err).to include("has no blocks")
+        end
+        # Verify no commits landed.
+        db = Prouterd::Storage::DB.open(sqltmp.path)
+        expect(db.execute("SELECT COUNT(*) FROM config_commits").first.first).to eq(0)
+        db.close
       end
     end
   end
@@ -125,13 +172,16 @@ RSpec.describe Prouterd::CLI::Main do
     end
 
     it "runs interactive shell to completion via piped stdin" do
-      code, out, _ = run_shell("show version\nexit\n")
+      code, out, _ = run_shell("show version\nexit\n", "--no-db")
       expect(code).to eq(0)
       expect(out).to include("prouter #{Prouterd::VERSION}")
     end
 
     it "loads --config and shows it from privileged mode" do
-      code, out, _ = run_shell("enable\nshow running-config\nexit\n", "--config", fixture_path("minimal.prc"))
+      code, out, _ = run_shell(
+        "enable\nshow running-config\nexit\n",
+        "--no-db", "--config", fixture_path("minimal.prc")
+      )
       expect(code).to eq(0)
       expect(out).to include("router demo")
     end

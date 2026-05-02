@@ -12,15 +12,29 @@ module Prouterd
     # Candidate-config-style commit semantics, not router CLI's apply-live model.
     class Session
       attr_accessor :running_config, :candidate_config, :mode_stack
-      attr_reader :startup_path
+      attr_reader :store, :last_commit
 
       DEFAULT_HOSTNAME = "process-router".freeze
 
-      def initialize(running_config: nil, startup_path: nil)
-        @running_config = running_config || Config::AST::Document.new
+      # `store` is an optional ControlPlane::ConfigStore. When provided:
+      #   - The constructor loads running_config from the store's running pointer
+      #     (unless an explicit running_config argument is given).
+      #   - commit_candidate persists a new commit and updates the running pointer.
+      #   - rollback / write_memory delegate to the store.
+      # Without a store, the Session is in-memory-only (Phase 2 mode).
+      def initialize(running_config: nil, store: nil)
+        @store = store
+        @running_config =
+          if running_config
+            running_config
+          elsif store
+            store.load_running
+          else
+            Config::AST::Document.new
+          end
         @candidate_config = nil
         @mode_stack = []
-        @startup_path = startup_path
+        @last_commit = store&.running_commit
       end
 
       def hostname
@@ -48,17 +62,37 @@ module Prouterd
         @candidate_config = deep_clone(@running_config)
       end
 
-      # Validate the candidate and, if valid, swap it into running. Returns
-      # a Validator::Result so callers can render errors on failure.
-      def commit_candidate
+      # Validate the candidate and, if valid, swap it into running. When a
+      # store is attached, also persist a new commit and update the running
+      # pointer atomically. Returns a Validator::Result.
+      def commit_candidate(author: nil, message: nil)
         raise ShellError, "no candidate to commit" unless in_config_mode?
 
         result = Config::Validator.validate(@candidate_config)
         return result unless result.valid?
 
+        if @store
+          @last_commit = @store.commit(@candidate_config, author: author, message: message)
+        end
         @running_config = @candidate_config
         @candidate_config = nil
         result
+      end
+
+      def rollback_to(commit_id)
+        raise ShellError, "rollback requires a config store" unless @store
+        raise ShellError, "cannot rollback while in config mode; commit or abort first" if in_config_mode?
+
+        commit = @store.rollback(commit_id)
+        # Reload running from the store so AST and pointer agree.
+        @running_config = @store.load_running
+        @last_commit = commit
+        commit
+      end
+
+      def write_memory
+        raise ShellError, "write memory requires a config store" unless @store
+        @store.write_memory
       end
 
       def abort_candidate

@@ -17,8 +17,9 @@ module Prouterd
     #   {signal: :enter, mode: <Mode>} — push the new mode onto the stack
     class Shell
       def self.run(session: nil, input: $stdin, output: $stdout, error: $stderr,
-                   interactive: nil, banner: true, initial_config_path: nil)
-        session ||= Session.new
+                   interactive: nil, banner: true, initial_config_path: nil,
+                   store: nil)
+        session ||= Session.new(store: store)
         if initial_config_path
           load_initial(session, initial_config_path, error)
         end

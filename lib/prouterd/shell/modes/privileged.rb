@@ -26,6 +26,7 @@ module Prouterd
             "rollback"  => :cmd_rollback,
             "trigger"   => :cmd_trigger,
             "trace"     => :cmd_trace,
+            "replay"    => :cmd_replay,
             "disable"   => :cmd_disable,
             "exit"      => :cmd_exit,
             "help"      => :cmd_help,
@@ -167,6 +168,26 @@ module Prouterd
         def parse_input_file(path)
           source = File.read(path)
           JSON.parse(source)
+        end
+
+        # `replay run <uid>` — re-execute a previous run with the same event
+        # and the config commit it was originally pinned to. Stores the new
+        # run with replay_of_run_id pointing back at the original.
+        def cmd_replay(tokens, session, out, _err)
+          unless tokens.length == 3 && tokens[1].value == "run"
+            raise CommandError, "syntax: replay run <uid>"
+          end
+          new_run = session.replay(tokens[2].value)
+          out.puts "Replayed #{tokens[2].value} as #{new_run.uid} (#{new_run.status})"
+          steps = Prouterd::Storage::Repositories::Runs.new(session.store.db).list_steps(new_run.id)
+          steps.each do |s|
+            duration = s.duration_ms ? "#{s.duration_ms}ms" : "-"
+            out.puts "  %-25s %-9s %s" % [s.block_name, s.status, duration]
+          end
+          out.puts "  error: #{new_run.error_summary}" if new_run.error_summary
+          :handled
+        rescue Prouterd::Shell::ShellError, Prouterd::Runtime::TriggerError => e
+          raise CommandError, e.message
         end
 
         # `trace event <file> [interface <name>]` — static analysis. Walks the

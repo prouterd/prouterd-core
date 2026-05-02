@@ -60,18 +60,22 @@ module Prouterd
           row && row_to_run(row)
         end
 
-        def list_runs(limit: 50, offset: 0, process_name: nil)
+        def list_runs(limit: 50, offset: 0, process_name: nil, status: nil)
+          conditions = []
+          params = []
           if process_name
-            rows = @db.execute(
-              "SELECT #{run_columns} FROM runs WHERE process_name = ? ORDER BY id DESC LIMIT ? OFFSET ?",
-              [process_name, limit, offset]
-            )
-          else
-            rows = @db.execute(
-              "SELECT #{run_columns} FROM runs ORDER BY id DESC LIMIT ? OFFSET ?",
-              [limit, offset]
-            )
+            conditions << "process_name = ?"
+            params << process_name
           end
+          if status
+            conditions << "status = ?"
+            params << status
+          end
+          where = conditions.empty? ? "" : "WHERE #{conditions.join(' AND ')}"
+          rows = @db.execute(
+            "SELECT #{run_columns} FROM runs #{where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            params + [limit, offset]
+          )
           rows.map { |r| row_to_run(r) }
         end
 

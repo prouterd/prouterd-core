@@ -48,7 +48,10 @@ module Prouterd
       # `document` is the AST::Document to interpret the trigger against
       # (typically session.running_config or the running commit).
       # `commit_id` is the optional ID of the config commit pinning the run.
-      def trigger(document, process_name, input_event:, interface_name: nil, commit_id: nil)
+      # `replay_of_run_id` is set when replaying an existing run so the
+      # lineage can be queried (`show run` references it as "replay of <uid>").
+      def trigger(document, process_name, input_event:, interface_name: nil,
+                  commit_id: nil, replay_of_run_id: nil)
         process = document.processes.find { |p| p.name == process_name }
         raise TriggerError, "no such process '#{process_name}'" unless process
 
@@ -56,7 +59,8 @@ module Prouterd
           process_name: process_name,
           process_config_commit_id: commit_id,
           interface_name: interface_name,
-          input_event: input_event
+          input_event: input_event,
+          replay_of_run_id: replay_of_run_id
         )
 
         execute(run, process, document)
@@ -112,18 +116,27 @@ module Prouterd
           # Persist accumulated context once after the level drains.
           db_mutex.synchronize { update_run_context(run, context) }
 
-          first_failure = results.find { |_, r| !r.success? }
-          if first_failure
-            block_name, result = first_failure
-            failure_reason = "block '#{block_name}' #{result.error_type || 'failed'}: " \
-                             "#{result.error_message || "exit #{result.exit_code}"}"
-            break
-          end
+          # For failed blocks, consult the incoming route's on-failure policy.
+          # `stop` (default) aborts the run; `continue` lets the run proceed
+          # with remaining branches but the failed block's downstream is pruned.
+          failed_blocks = []
+          results.each do |block_name, result|
+            next if result.success?
 
-          # Build the next level: every successfully completed block contributes
-          # the downstream blocks whose match conditions pass.
+            failed_blocks << block_name
+            policy = on_failure_for(process, block_name)
+            if policy == "stop"
+              failure_reason = "block '#{block_name}' #{result.error_type || 'failed'}: " \
+                               "#{result.error_message || "exit #{result.exit_code}"}"
+            end
+          end
+          break if failure_reason
+
+          # Build the next level: ONLY successfully completed blocks contribute
+          # downstream (failed-but-continue blocks have no output to feed).
+          successful = level.reject { |b| failed_blocks.include?(b.name) }
           next_ready = []
-          level.each do |block|
+          successful.each do |block|
             passing_routes = process.routes.select do |r|
               r.from_block == block.name && route_passes?(r, context, ctx_mutex)
             end
@@ -145,22 +158,67 @@ module Prouterd
       end
 
       # Execute a level (a set of blocks ready to run concurrently) and
-      # return [[block_name, ExecutionResult], ...] in arbitrary order.
+      # return [[block_name, ExecutionResult], ...] in arbitrary order. Each
+      # entry includes the LAST attempt's result — retry history is in DB.
       def run_level_in_parallel(run, process, document, level, context, db_mutex, ctx_mutex)
         return [] if level.empty?
 
         if level.length == 1 || @max_parallelism <= 1
           return level.map do |block|
-            [block.name, execute_block_threadsafe(run, process, block, context, document, db_mutex, ctx_mutex)]
+            [block.name, execute_block_with_retries(run, process, block, context, document, db_mutex, ctx_mutex)]
           end
         end
 
         threads = level.map do |block|
           Thread.new do
-            [block.name, execute_block_threadsafe(run, process, block, context, document, db_mutex, ctx_mutex)]
+            [block.name, execute_block_with_retries(run, process, block, context, document, db_mutex, ctx_mutex)]
           end
         end
         threads.map(&:value)
+      end
+
+      # Per-block retry driver. Each attempt creates its own step row so the
+      # full retry history is queryable via show run / show logs. Sleeps
+      # happen OUTSIDE both mutexes (with an unlocked Kernel#sleep).
+      def execute_block_with_retries(run, process, block, context, document, db_mutex, ctx_mutex)
+        policy = lookup_policy(document, block.retry_policy_name)
+        attempt = 1
+        result = nil
+
+        loop do
+          if attempt > 1
+            delay_ms = RetryCalculator.delay_ms_before(policy, attempt)
+            sleep(delay_ms / 1000.0) if delay_ms.positive?
+            db_mutex.synchronize do
+              @runs.append_log(
+                run_id: run.id, stream: "system",
+                content: "retrying block '#{block.name}' attempt #{attempt}/#{policy.retry_attempts} after #{delay_ms}ms backoff"
+              )
+            end
+          end
+
+          result = execute_single_attempt(run, process, block, attempt, context, document, db_mutex, ctx_mutex)
+          break if result.success?
+          break unless RetryCalculator.more_attempts?(policy, attempt)
+
+          attempt += 1
+        end
+
+        result
+      end
+
+      def lookup_policy(document, policy_name)
+        return nil if policy_name.nil?
+
+        document.policies.find { |p| p.name == policy_name }
+      end
+
+      def on_failure_for(process, block_name)
+        # Block fails -> its incoming route's on-failure governs run fate.
+        # Single-incoming is enforced at config time, so .find is exhaustive.
+        # Entry blocks (no incoming) default to stop.
+        incoming = process.routes.find { |r| r.to_block == block_name }
+        incoming ? incoming.on_failure : "stop"
       end
 
       def route_passes?(route, context, ctx_mutex)
@@ -180,9 +238,10 @@ module Prouterd
         process.routes.select { |r| r.from_block == from_block }.map(&:to_block)
       end
 
-      # Thread-safe variant. DB writes go through db_mutex; context read for
-      # input + write for output go through ctx_mutex.
-      def execute_block_threadsafe(run, process, block, context, document, db_mutex, ctx_mutex)
+      # One attempt of one block. DB writes go through db_mutex; Context get
+      # for input + set for output go through ctx_mutex. Runner.run() runs
+      # OUTSIDE both — that's where the actual concurrency happens.
+      def execute_single_attempt(run, process, block, attempt, context, document, db_mutex, ctx_mutex)
         input_payload = nil
         ctx_mutex.synchronize do
           input_value = block.input ? context.get(block.input) : nil
@@ -194,15 +253,16 @@ module Prouterd
           step = @runs.create_step(
             run_id: run.id,
             block_name: block.name,
-            attempt: 1,
+            attempt: attempt,
             image: block.image
           )
           @runs.update_step(
             step.id,
-            status: "running",
+            status: attempt == 1 ? "running" : "retrying",
             started_at: Time.now.utc.iso8601(3),
             input_json: JSON.dump(input_payload)
           )
+          @runs.update_step(step.id, status: "running") if attempt > 1
         end
 
         env = build_env(run, process, block, document)
@@ -210,7 +270,7 @@ module Prouterd
           run_uid: run.uid,
           process_name: process.name,
           block_name: block.name,
-          attempt: 1,
+          attempt: attempt,
           image: block.image,
           command: block.command,
           env: env,
@@ -219,7 +279,6 @@ module Prouterd
           network: block.network || "on"
         )
 
-        # Runner call happens OUTSIDE both mutexes — that's the whole point.
         result = @runner.run(request)
 
         db_mutex.synchronize do
@@ -237,8 +296,8 @@ module Prouterd
           )
         end
 
-        ctx_mutex.synchronize do
-          update_context_with_output(block, context, result)
+        if result.success?
+          ctx_mutex.synchronize { update_context_with_output(block, context, result) }
         end
 
         result

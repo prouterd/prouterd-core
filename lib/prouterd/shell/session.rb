@@ -49,6 +49,34 @@ module Prouterd
         )
       end
 
+      # Replay a previous run with the same input event and the same config
+      # commit it was originally pinned to. Returns the new Run.
+      def replay(run_uid)
+        raise ShellError, "no DB attached; replay requires --db" unless @store
+
+        repo = Storage::Repositories::Runs.new(@store.db)
+        original = repo.get_run_by_uid(run_uid)
+        raise ShellError, "no such run '#{run_uid}'" unless original
+        unless original.process_config_commit_id
+          raise ShellError, "run '#{run_uid}' was not pinned to a config commit; cannot replay"
+        end
+
+        commit = @store.get_commit(original.process_config_commit_id)
+        raise ShellError, "config commit #{original.process_config_commit_id} no longer exists" unless commit
+
+        document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
+        event = original.input_event_json ? JSON.parse(original.input_event_json) : {}
+
+        orchestrator.trigger(
+          document,
+          original.process_name,
+          input_event: event,
+          interface_name: original.interface_name,
+          commit_id: commit.id,
+          replay_of_run_id: original.id
+        )
+      end
+
       def hostname
         config = active_config
         config.router&.hostname || DEFAULT_HOSTNAME

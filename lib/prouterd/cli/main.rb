@@ -34,6 +34,7 @@ module Prouterd
         when "apply"             then cmd_apply
         when "trigger"           then cmd_trigger
         when "trace"             then cmd_trace
+        when "replay"            then cmd_replay
         when "version", "--version", "-v" then cmd_version
         when "help", "--help", "-h", nil  then cmd_help
         else
@@ -56,6 +57,7 @@ module Prouterd
             apply   <file>                     Validate + commit a .prc file as a new commit
             trigger process <name> input <file>
                                                Synchronously run a process for the given event
+            replay  run <uid>                  Re-execute a previous run with the same event + commit
             trace   event <file>               Static routing analysis (no execution)
             shell                              Start interactive router-style shell
             exec    "<cmd>"                    Run a single shell command and print result
@@ -185,6 +187,48 @@ module Prouterd
 
       # Standalone non-interactive `apply <file> [--db PATH]` — validates the
       # file, persists it as a new commit, and updates running pointer.
+      # `prouter replay run <uid>` — re-runs a previous run.
+      def cmd_replay
+        store = nil
+        unless @argv.length >= 2 && @argv[0] == "run"
+          @stderr.puts "prouter replay: usage: replay run <uid> [--db PATH] [--runner KIND]"
+          return 2
+        end
+        run_uid = @argv[1]
+        @argv = @argv[2..]
+
+        opts = parse_runtime_options("replay")
+        return 2 if opts == :error
+
+        store = open_store(opts[:db_path], opts[:no_db])
+        return 1 if store == :error
+        unless store
+          @stderr.puts "prouter replay: requires --db (replays must be persisted)"
+          return 2
+        end
+
+        runner = build_runner(opts[:runner_kind])
+        return 1 if runner == :error
+
+        session = Prouterd::Shell::Session.new(store: store, runner: runner)
+        new_run = session.replay(run_uid)
+
+        repo = Prouterd::Storage::Repositories::Runs.new(store.db)
+        @stdout.puts "Replayed #{run_uid} as #{new_run.uid} (#{new_run.status})"
+        repo.list_steps(new_run.id).each do |s|
+          duration = s.duration_ms ? "#{s.duration_ms}ms" : "-"
+          @stdout.puts "  %-25s %-9s %s" % [s.block_name, s.status, duration]
+        end
+        @stdout.puts "  error: #{new_run.error_summary}" if new_run.error_summary
+
+        new_run.status == "success" ? 0 : 1
+      rescue Prouterd::Shell::ShellError, Prouterd::Runtime::TriggerError => e
+        @stderr.puts "prouter replay: #{e.message}"
+        1
+      ensure
+        store&.db&.close if store && store != :error
+      end
+
       # `prouter trace event <file> [--interface NAME]` — static routing
       # analysis without executing any blocks. Reads config from --config or
       # from the running pointer in --db.

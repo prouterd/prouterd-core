@@ -40,8 +40,7 @@ module Prouterd
         when "run"       then show_run(rest, session, out)
         when "logs"      then show_logs(rest, session, out)
         when "artifacts" then show_artifacts(rest, session, out)
-        when "dead-letter"
-          not_yet(out, "Phase 6")
+        when "dead-letter" then show_dead_letter(rest, session, out)
         else
           raise CommandError, "unknown show target '#{head}'"
         end
@@ -110,6 +109,44 @@ module Prouterd
             (c.message || "").to_s[0, 60],
             marker_str
           ]
+        end
+      end
+
+      # ----- dead-letter -----
+
+      def show_dead_letter(rest, session, out)
+        unless session.store
+          out.puts "(no DB attached — dead-letter not available)"
+          return
+        end
+        repo = Prouterd::Storage::Repositories::Runs.new(session.store.db)
+
+        if rest.empty?
+          failed = repo.list_runs(limit: 100, status: "failed")
+          if failed.empty?
+            out.puts "No failed runs."
+            return
+          end
+          out.puts "%-15s %-25s %-19s %s" % ["UID", "PROCESS", "FINISHED", "ERROR"]
+          failed.each do |r|
+            err = (r.error_summary || "").to_s[0, 60]
+            out.puts "%-15s %-25s %-19s %s" % [
+              r.uid,
+              r.process_name[0, 25],
+              (r.finished_at || r.started_at || r.created_at).to_s[0, 19],
+              err
+            ]
+          end
+        elsif rest.length == 2 && rest[0] == "run"
+          run = repo.get_run_by_uid(rest[1])
+          raise CommandError, "no such run '#{rest[1]}'" unless run
+          unless run.status == "failed"
+            out.puts "Run '#{run.uid}' is in status '#{run.status}', not 'failed'."
+            return
+          end
+          show_run([rest[1]], session, out) # delegate to detail renderer
+        else
+          raise CommandError, "syntax: show dead-letter [run <uid>]"
         end
       end
 

@@ -44,7 +44,7 @@ RSpec.describe Prouterd::Runtime::Scheduler do
   end
 
   it "fires the cron interface when its schedule has come due" do
-    scheduler = described_class.new(store: store, runner: runner, jobs: jobs, output: StringIO.new)
+    scheduler = described_class.new(store: store, runner: runner, jobs: jobs, logger: Prouterd::NullLogger.new)
     # Pretend we last fired far enough in the past that one minute-tick is due.
     scheduler.instance_variable_set(:@last_fired_warm, Time.now - 120)
     scheduler.tick(now: Time.now)
@@ -103,7 +103,7 @@ RSpec.describe Prouterd::Runtime::Scheduler do
     store.commit(doc)
 
     out = StringIO.new
-    scheduler = described_class.new(store: store, runner: runner, jobs: jobs, output: out)
+    scheduler = described_class.new(store: store, runner: runner, jobs: jobs, logger: Prouterd::Logger.build(out))
     scheduler.instance_variable_set(:@last_fired_warm, Time.now - 120)
     scheduler.tick(now: Time.now)
 
@@ -112,7 +112,7 @@ RSpec.describe Prouterd::Runtime::Scheduler do
   end
 
   it "advances @last_fired so the next tick at the same minute does not double-fire" do
-    scheduler = described_class.new(store: store, runner: runner, jobs: jobs, output: StringIO.new)
+    scheduler = described_class.new(store: store, runner: runner, jobs: jobs, logger: Prouterd::NullLogger.new)
     scheduler.instance_variable_set(:@last_fired_warm, Time.now - 120)
 
     now = Time.now
@@ -144,7 +144,7 @@ RSpec.describe Prouterd::Runtime::Scheduler do
     store.commit(doc)
 
     out = StringIO.new
-    scheduler = described_class.new(store: store, runner: runner, jobs: jobs, output: out)
+    scheduler = described_class.new(store: store, runner: runner, jobs: jobs, logger: Prouterd::Logger.build(out))
     scheduler.instance_variable_set(:@last_fired_warm, Time.now - 120)
     scheduler.tick(now: Time.now)
 

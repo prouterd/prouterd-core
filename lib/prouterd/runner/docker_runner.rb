@@ -223,20 +223,41 @@ module Prouterd
         Timeout.timeout(seconds) { container.wait }
       end
 
+      # Two-stage stop: SIGTERM first with a short grace window so the
+      # process can flush logs / write output.json / clean up partial
+      # state, then SIGKILL if it didn't exit. Override the grace via
+      # PROUTERD_CONTAINER_STOP_TIMEOUT (seconds, default 10).
+      DEFAULT_STOP_TIMEOUT = 10
+
       def force_stop(container)
-        container.kill rescue nil
+        timeout = (ENV["PROUTERD_CONTAINER_STOP_TIMEOUT"] || DEFAULT_STOP_TIMEOUT).to_i
+        container.stop("t" => timeout)
+      rescue Docker::Error::DockerError, StandardError
+        begin
+          container.kill
+        rescue Docker::Error::DockerError, StandardError
+          # nothing more we can do; the container may already be gone.
+        end
       end
 
+      # Per-stream cap to keep a misbehaving block from OOM-ing the daemon.
+      # Override via PROUTERD_LOG_CAPTURE_BYTES (per stream). The block can
+      # still write more — it'll show up in `docker logs` directly — but
+      # what we persist into run_logs is bounded.
+      DEFAULT_LOG_CAPTURE_BYTES = 1 * 1024 * 1024
+
       def capture_logs(container)
+        cap = (ENV["PROUTERD_LOG_CAPTURE_BYTES"] || DEFAULT_LOG_CAPTURE_BYTES).to_i
         # docker-api returns multiplexed log frames for non-TTY containers;
-        # demuxing here is more reliable than relying on the gem's filtering.
+        # we demux ourselves and clamp each side to `cap` bytes so a 5GB
+        # stdout can't allocate a 5GB Ruby string.
         raw = container.logs(stdout: true, stderr: true, tail: "all")
-        demultiplex_logs(raw)
+        demultiplex_logs(raw, cap: cap)
       rescue Docker::Error::DockerError
         ["", ""]
       end
 
-      def demultiplex_logs(raw)
+      def demultiplex_logs(raw, cap: DEFAULT_LOG_CAPTURE_BYTES)
         return ["", ""] if raw.nil? || raw.empty?
 
         raw = raw.b # binary
@@ -244,6 +265,8 @@ module Prouterd
         err = String.new(encoding: "UTF-8")
         pos = 0
         len = raw.bytesize
+        out_truncated = false
+        err_truncated = false
 
         while pos + 8 <= len
           stream = raw.getbyte(pos)
@@ -254,17 +277,33 @@ module Prouterd
           payload_str = payload.dup.force_encoding("UTF-8")
           payload_str.scrub!("?")
           case stream
-          when 1 then out << payload_str
-          when 2 then err << payload_str
+          when 1 then out_truncated ||= !append_capped(out, payload_str, cap)
+          when 2 then err_truncated ||= !append_capped(err, payload_str, cap)
           else
             # Unknown stream byte often means the daemon is returning raw
-            # un-multiplexed output (TTY-mode). Treat the whole buffer as stdout.
-            return [raw.force_encoding("UTF-8").scrub("?"), ""]
+            # un-multiplexed output (TTY-mode). Treat the whole buffer as
+            # stdout and apply the same cap.
+            buf = raw.force_encoding("UTF-8").scrub("?")
+            buf = "#{buf[0, cap]}\n…[truncated to #{cap} bytes]" if buf.bytesize > cap
+            return [buf, ""]
           end
           pos += 8 + size
         end
 
+        out << "\n…[truncated to #{cap} bytes]" if out_truncated
+        err << "\n…[truncated to #{cap} bytes]" if err_truncated
         [out, err]
+      end
+
+      def append_capped(buffer, chunk, cap)
+        if (buffer.bytesize + chunk.bytesize) <= cap
+          buffer << chunk
+          return true
+        end
+
+        remaining = cap - buffer.bytesize
+        buffer << chunk.byteslice(0, remaining) if remaining.positive?
+        false
       end
 
       def classify_outcome(work_dir, exit_code)

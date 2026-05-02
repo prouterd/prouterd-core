@@ -36,7 +36,8 @@ module Prouterd
       # Hash<String, Runner> mapping execution_type → runner instance.
       # Phase 12 introduced the `block ... type docker|shell` DSL; the
       # orchestrator dispatches based on block.execution_type.
-      def initialize(db:, runner:, artifact_store: nil, secret_resolver: nil, logger: nil,
+      def initialize(db:, runner:, artifact_store: nil, secret_resolver: nil,
+                     logger: Prouterd::NullLogger.new,
                      max_parallelism: 8, in_flight: nil, metrics: nil,
                      events: Prouterd::Events.default)
         @db = db
@@ -588,15 +589,37 @@ module Prouterd
       end
     end
 
-    # Resolves a secret reference into a runtime value. Spec §8.3 only
-    # supports `source env`; other backends (vault, aws) get added as
-    # additional resolvers later.
+    # Resolves a secret reference into a runtime value. Two sources are
+    # supported out of the box:
+    #
+    #   `source env <NAME>` — reads from the daemon's environment.
+    #   `source file <path>` — reads the file's contents (trimmed of
+    #       trailing newlines so a value cleanly drops into `KEY=VALUE`
+    #       env vars). Useful for Docker/Compose secrets which mount at
+    #       /run/secrets/<name>, and for Kubernetes secret volumes.
+    #
+    # Vault / AWS Secrets Manager / GCP Secret Manager: add a new resolver
+    # class with a `#resolve(secret)` method and inject it via the
+    # `secret_resolver:` constructor kwarg.
     class EnvSecretResolver
       def resolve(secret)
         case secret.source_type
-        when "env" then ENV[secret.source_value]
+        when "env"  then ENV[secret.source_value]
+        when "file" then read_secret_file(secret.source_value)
         else raise TriggerError, "unsupported secret source '#{secret.source_type}'"
         end
+      end
+
+      def read_secret_file(path)
+        return nil unless path && !path.empty?
+        return nil unless File.file?(path)
+
+        # Trailing newlines are a frequent gotcha — `echo "tok" > /run/secrets/x`
+        # writes 4 bytes, of which one is "\n" that should NOT be part of
+        # the bearer token. Trim once on read.
+        File.read(path).chomp
+      rescue SystemCallError
+        nil
       end
     end
   end

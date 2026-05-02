@@ -23,16 +23,16 @@ module Prouterd
     class Scheduler
       TICK_SECONDS = 1.0
 
-      def self.run(store:, runner:, jobs:, output: nil, in_flight: nil, metrics: nil)
-        new(store: store, runner: runner, jobs: jobs, output: output,
+      def self.run(store:, runner:, jobs:, logger: NullLogger.new, in_flight: nil, metrics: nil)
+        new(store: store, runner: runner, jobs: jobs, logger: logger,
             in_flight: in_flight, metrics: metrics).run
       end
 
-      def initialize(store:, runner:, jobs:, output: nil, in_flight: nil, metrics: nil)
+      def initialize(store:, runner:, jobs:, logger: NullLogger.new, in_flight: nil, metrics: nil)
         @store = store
         @runner = runner
         @jobs = jobs
-        @output = output
+        @logger = logger
         @in_flight = in_flight
         @metrics = metrics
         @stopping = false
@@ -53,7 +53,7 @@ module Prouterd
             tick
             sleep(@tick_seconds)
           rescue StandardError => e
-            @output&.puts("scheduler: tick error: #{e.class}: #{e.message}")
+            @logger.error("scheduler: tick error", error: e.class.name, message: e.message)
           end
         end
       end
@@ -104,19 +104,21 @@ module Prouterd
         expr = iface.timezone ? "#{iface.schedule} #{iface.timezone}" : iface.schedule
         Fugit.parse_cron(expr)
       rescue StandardError
-        @output&.puts("scheduler: invalid cron expression for interface '#{iface.name}': #{iface.schedule.inspect}")
+        @logger.warn("scheduler: invalid cron expression",
+                     interface: iface.name, schedule: iface.schedule.inspect)
         nil
       end
 
       def dispatch(iface, document, fired_at)
         route = document.global_routes.find { |r| r.interface_name == iface.name }
         unless route
-          @output&.puts("scheduler: cron '#{iface.name}' has no global route — skipping fire")
+          @logger.warn("scheduler: cron has no global route — skipping fire", interface: iface.name)
           return
         end
         process = document.processes.find { |p| p.name == route.process_name }
         unless process
-          @output&.puts("scheduler: cron '#{iface.name}' targets unknown process '#{route.process_name}'")
+          @logger.warn("scheduler: cron targets unknown process",
+                       interface: iface.name, process: route.process_name)
           return
         end
         return if process.shutdown
@@ -135,7 +137,8 @@ module Prouterd
           commit_id: @store.running_commit&.id
         )
         @metrics&.increment(:cron_fires_total, interface: iface.name)
-        @output&.puts("scheduler: fired '#{iface.name}' -> run #{run.uid} at #{fired_at.utc.iso8601(0)}")
+        @logger.info("scheduler: fired cron",
+                     interface: iface.name, run_id: run.uid, fired_at: fired_at.utc.iso8601(0))
 
         @jobs.enqueue(run_id: run.id, kind: "execute")
       end

@@ -101,6 +101,17 @@ runs only the pending ones on `DB.open`.
   CLI all iterate over the registry and the plugin's declared field
   schema — they hardcode no type names. See "Adding a new runner type"
   below.
+- **Logging is structured.** Build one `Prouterd::Logger` in `cmd_serve`
+  and thread it through all components via `logger:` kwarg. Format is
+  `<ts> <LEVEL> prouterd: <message> k=v k=v…` — single-line, grep-able,
+  no JSON unless a value contains spaces/`=`. Do NOT use `puts` /
+  `@output.puts` in `lib/`. Tests pass `Prouterd::NullLogger.new`.
+- **Operational knobs go through ENV.** New behavior that an operator
+  might want to tune (cap, timeout, path) reads
+  `PROUTERD_<UPPER_SNAKE>` with a sensible compile-time default. Never
+  put operational tunables in `.prc` files — those are for *intent*,
+  ENV is for *deployment*. Document the new var in README's "Production
+  env vars" table.
 
 ## Adding a new runner type
 

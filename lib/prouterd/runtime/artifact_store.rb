@@ -18,8 +18,17 @@ module Prouterd
 
       attr_reader :root
 
-      def initialize(root = DEFAULT_ROOT)
-        @root = root
+      # Override the on-disk location with `PROUTERD_ARTIFACTS_ROOT` so
+      # operators can mount the daemon's data directory wherever it
+      # makes sense (e.g. /var/lib/prouterd/artifacts on a systemd box,
+      # /data/artifacts in the container image, an NFS mount in k8s).
+      def self.default_root
+        env = ENV["PROUTERD_ARTIFACTS_ROOT"]
+        env && !env.empty? ? env : DEFAULT_ROOT
+      end
+
+      def initialize(root = nil)
+        @root = root || self.class.default_root
       end
 
       # Persist a list of ArtifactDescriptors emitted by a runner. Returns the

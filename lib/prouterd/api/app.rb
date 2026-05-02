@@ -41,7 +41,8 @@ module Prouterd
       WEBHOOK_PATH = %r{\A/i/(?<name>[A-Za-z_][A-Za-z0-9_-]*)\z}.freeze
       CLI_WS_PATH  = %r{\A/v1/cli/(?<session_id>[A-Za-z0-9._-]+)\z}.freeze
 
-      def initialize(store:, runner:, jobs:, secret_resolver: nil, logger: nil,
+      def initialize(store:, runner:, jobs:, secret_resolver: nil,
+                     logger: Prouterd::NullLogger.new,
                      in_flight: nil, metrics: nil, admin_token: nil,
                      rate_limiter: nil,
                      events: Prouterd::Events.default)
@@ -107,6 +108,15 @@ module Prouterd
           return json_response(503, error: "daemon is shutting down — try again later")
         end
 
+        # Reject oversized bodies before any handler reads them. Puma streams
+        # the body through, so a 5GB POST would otherwise block a worker
+        # thread plus eat memory. Limit is per-request and configurable via
+        # PROUTERD_MAX_BODY_BYTES (default 1MB for ingest, lifted to 4MB for
+        # /v1/config/apply since DSL files can grow).
+        if (err = enforce_body_limit(method, path, request))
+          return err
+        end
+
         if path.start_with?("/v1/")
           return dispatch_v1(method, path, request)
         end
@@ -117,14 +127,46 @@ module Prouterd
 
         not_found
       rescue StandardError => e
-        @logger&.error("API error: #{e.class}: #{e.message}\n#{e.backtrace.first(5).join("\n")}")
+        @logger.error("API error",
+                      error: e.class.name, message: e.message,
+                      backtrace: e.backtrace.first(5).join(" | "))
         json_response(500, error: "internal server error")
       end
+
+      DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024     # 1 MB for /i/* + most /v1
+      DEFAULT_MAX_CONFIG_BYTES = 4 * 1024 * 1024   # 4 MB for /v1/config/apply (DSL files)
 
       private
 
       def readonly?(method, path)
         method == "GET"
+      end
+
+      def enforce_body_limit(method, path, request)
+        # GETs and DELETEs have no body to police. Only police writes.
+        return nil if %w[GET HEAD DELETE].include?(method)
+
+        cap = body_cap_for(path)
+        # Content-Length header is the cheap path — reject before even
+        # reading bytes off the socket. (Puma still streams through to
+        # body.read, but Rack exposes the header.)
+        cl = request.content_length
+        if cl && cl.to_i > cap
+          return json_response(413, error: "request body too large",
+                                    limit_bytes: cap, content_length: cl.to_i)
+        end
+        nil
+      end
+
+      def body_cap_for(path)
+        env_override = ENV["PROUTERD_MAX_BODY_BYTES"]&.to_i
+        config_override = ENV["PROUTERD_MAX_CONFIG_BYTES"]&.to_i
+
+        if path == "/v1/config/apply" || path == "/v1/config/check"
+          (config_override && config_override.positive? ? config_override : DEFAULT_MAX_CONFIG_BYTES)
+        else
+          (env_override && env_override.positive? ? env_override : DEFAULT_MAX_BODY_BYTES)
+        end
       end
 
       def dispatch_ws(env, path)

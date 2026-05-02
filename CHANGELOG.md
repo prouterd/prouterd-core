@@ -200,10 +200,70 @@
 - CLAUDE.md gains a self-contained "Adding a new runner type" section
   with copy-paste plugin + runner skeleton.
 
+### Phase 17: Production hardening pass
+
+Closes the rough edges from the Phase-16 audit. Every new behavior
+is gated by an env var with a sensible default, and every component
+that already accepted a `logger:` kwarg now actually receives a real
+one when launched through `prouter serve`.
+
+Operational:
+- `Prouterd::Logger` — single-line, kv-pair format with timestamp/level.
+  Built once in `cmd_serve` and threaded through Server, Recovery,
+  WorkerPool, Scheduler, App, V1, WebhookHandler, Orchestrator. No more
+  `@logger&.error(...)` no-ops in production. Level via
+  `PROUTERD_LOG_LEVEL` (debug/info/warn/error/fatal).
+- HTTPS: `prouter serve` reads `PROUTERD_SSL_CERT` / `PROUTERD_SSL_KEY`
+  and binds via Puma's MiniSSL when both are set, otherwise plain HTTP
+  on the same `--bind --port`.
+
+Resource caps (the daemon will not OOM on a misbehaving block or
+attacker):
+- Body size limit: `PROUTERD_MAX_BODY_BYTES` (default 1 MB) applies to
+  webhooks and most `/v1` POSTs; `PROUTERD_MAX_CONFIG_BYTES`
+  (default 4 MB) applies specifically to `/v1/config/apply` and
+  `/v1/config/check` since DSL files can grow. Returns 413 with the
+  cap reported in the body.
+- Container log capture cap: `PROUTERD_LOG_CAPTURE_BYTES` (default 1 MB
+  per stream) — `DockerRunner` truncates persisted stdout/stderr after
+  the cap with a `…[truncated to N bytes]` marker. Block can still
+  write more — `docker logs <cid>` shows the rest.
+- Artifact download streaming: `/v1/artifacts/:id/download` now uses
+  a chunked Rack body (64 KB reads) so multi-GB artifacts no longer
+  materialize in daemon memory.
+
+Robustness:
+- Graceful container stop: `DockerRunner#force_stop` and
+  `POST /v1/runs/:uid/cancel` now SIGTERM via `container.stop(t: 10)`
+  (configurable via `PROUTERD_CONTAINER_STOP_TIMEOUT`) and only escalate
+  to SIGKILL on failure. Blocks get a chance to flush logs / write
+  output.json before being torn down.
+- `RateLimiter` periodically evicts empty buckets (default every 60s)
+  so the bucket map can't grow unbounded across many distinct webhook
+  interface names over a long-running daemon.
+- Recovery sweep's job-lock timeout is now configurable via
+  `PROUTERD_JOB_LOCK_TIMEOUT` (default 60s) — relevant for blocks whose
+  per-attempt `timeout` exceeds 60s.
+
+Configurability / portability:
+- File-based secrets: `secret X / source file /run/secrets/x` reads
+  the file (trailing newline trimmed). Works with Docker Compose
+  secrets, Kubernetes secret volumes, systemd LoadCredential.
+- `PROUTERD_ARTIFACTS_ROOT` overrides where `ArtifactStore` writes —
+  for systemd boxes (`/var/lib/prouterd/artifacts`), container images
+  (`/data/artifacts`), or shared mounts.
+- `prouter cleanup --batch-size N` (default 500) splits the delete
+  pass into small transactions so a million-run sweep doesn't lock
+  the DB for minutes.
+
+23 new specs (Logger, body limit, secret resolver, rate-limiter
+eviction, log capture cap), bringing the suite to 494 specs / 0
+failures.
+
 ## Status
 
-- 16 phases shipped, one git commit per phase
-- 471 RSpec specs, 0 failures
+- 17 phases shipped, one git commit per phase
+- 494 RSpec specs, 0 failures
 - All spec §28 acceptance criteria + production hardening + IPC + contracts
 - End-to-end smoke-tested against real Docker + Puma + cron + shell exec
 - Distributable as a Docker image (`docker build . && docker run`)

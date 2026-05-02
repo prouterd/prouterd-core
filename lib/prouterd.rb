@@ -1,4 +1,5 @@
 require_relative "prouterd/version"
+require_relative "prouterd/logger"
 require_relative "prouterd/util/duration_parser"
 require_relative "prouterd/config/errors"
 require_relative "prouterd/config/token"

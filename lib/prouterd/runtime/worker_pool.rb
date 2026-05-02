@@ -24,20 +24,20 @@ module Prouterd
       POLL_INTERVAL = 0.25
 
       def initialize(store:, runner:, in_flight: nil, metrics: nil,
-                     workers: DEFAULT_WORKERS, output: nil)
+                     workers: DEFAULT_WORKERS, logger: NullLogger.new)
         @store = store
         @runner = runner
         @in_flight = in_flight
         @metrics = metrics
         @workers = workers
-        @output = output
+        @logger = logger
         @threads = []
         @stopping = false
         @worker_id_prefix = "worker-#{SecureRandom.hex(2)}"
       end
 
       def run
-        @output&.puts("worker-pool: starting #{@workers} worker(s)")
+        @logger.info("worker-pool: starting", workers: @workers)
         @workers.times do |i|
           @threads << Thread.new { worker_loop("#{@worker_id_prefix}-#{i}") }
         end
@@ -61,7 +61,8 @@ module Prouterd
               sleep POLL_INTERVAL
             end
           rescue StandardError => e
-            @output&.puts("worker-pool[#{worker_id}]: claim error: #{e.class}: #{e.message}")
+            @logger.error("worker-pool: claim error",
+                          worker: worker_id, error: e.class.name, message: e.message)
             sleep POLL_INTERVAL
           end
         end
@@ -98,7 +99,9 @@ module Prouterd
         orchestrator.execute_run(run, document, **kwargs)
         jobs.complete(job.id)
       rescue StandardError => e
-        @output&.puts("worker-pool[#{worker_id}]: run #{job.run_id} crashed: #{e.class}: #{e.message}")
+        @logger.error("worker-pool: run crashed",
+                      worker: worker_id, run_id: job.run_id,
+                      error: e.class.name, message: e.message)
         runs_repo&.update_run(
           job.run_id,
           status: "failed",

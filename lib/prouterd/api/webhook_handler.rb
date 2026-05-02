@@ -15,7 +15,8 @@ module Prouterd
     #      `{run_id, status: queued}` immediately. The WorkerPool drains
     #      the queue; daemon crash mid-run is recoverable.
     class WebhookHandler
-      def initialize(store:, runner:, jobs:, secret_resolver: nil, logger: nil,
+      def initialize(store:, runner:, jobs:, secret_resolver: nil,
+                     logger: Prouterd::NullLogger.new,
                      in_flight: nil, metrics: nil, rate_limiter: nil)
         @store = store
         @runner = runner

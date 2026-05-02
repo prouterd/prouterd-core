@@ -176,10 +176,9 @@ RSpec.describe Prouterd::Runner::Plugin do
     end
     orchestrator = Prouterd::Runtime::Orchestrator.new(db: db, runner: runners)
     run = orchestrator.trigger(document, "echo", input_event: {}, commit_id: commit.id)
-    db.close
-
-    repo = Prouterd::Storage::Repositories::Runs.new(Prouterd::Storage::DB.open(":memory:"))
     expect(run.status).to eq("success")
+  ensure
+    db&.close
   end
 
   it "lists the new type in `Registry.types`" do

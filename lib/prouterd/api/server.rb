@@ -23,30 +23,47 @@ module Prouterd
       DEFAULT_PORT = 8080
       DEFAULT_DRAIN_TIMEOUT = 30
 
-      def self.run(app:, bind: DEFAULT_BIND, port: DEFAULT_PORT, output: $stdout,
-                   in_flight: nil, drain_timeout: DEFAULT_DRAIN_TIMEOUT, &on_started)
+      def self.run(app:, bind: DEFAULT_BIND, port: DEFAULT_PORT,
+                   logger: Prouterd::NullLogger.new,
+                   in_flight: nil, drain_timeout: DEFAULT_DRAIN_TIMEOUT,
+                   ssl_cert: nil, ssl_key: nil, &on_started)
         new(
-          app: app, bind: bind, port: port, output: output,
-          in_flight: in_flight, drain_timeout: drain_timeout
+          app: app, bind: bind, port: port, logger: logger,
+          in_flight: in_flight, drain_timeout: drain_timeout,
+          ssl_cert: ssl_cert, ssl_key: ssl_key
         ).run(&on_started)
       end
 
       attr_reader :bind, :port
 
-      def initialize(app:, bind:, port:, output:, in_flight: nil, drain_timeout: DEFAULT_DRAIN_TIMEOUT)
+      def initialize(app:, bind:, port:, logger: Prouterd::NullLogger.new,
+                     in_flight: nil, drain_timeout: DEFAULT_DRAIN_TIMEOUT,
+                     ssl_cert: nil, ssl_key: nil)
         @app = app
         @bind = bind
         @port = Integer(port)
-        @output = output
+        @logger = logger
         @in_flight = in_flight
         @drain_timeout = drain_timeout
+        @ssl_cert = ssl_cert.is_a?(String) && !ssl_cert.empty? ? ssl_cert : nil
+        @ssl_key  = ssl_key.is_a?(String)  && !ssl_key.empty?  ? ssl_key  : nil
         @stop_pipe_r, @stop_pipe_w = IO.pipe
       end
 
       def run
         server = Puma::Server.new(@app)
-        server.add_tcp_listener(@bind, @port)
-        @output.puts "prouter serve: listening on http://#{@bind}:#{@port}"
+        if @ssl_cert && @ssl_key
+          require "puma/minissl"
+          ctx = Puma::MiniSSL::Context.new
+          ctx.cert = @ssl_cert
+          ctx.key  = @ssl_key
+          server.add_ssl_listener(@bind, @port, ctx)
+          @logger.info("daemon: listening (TLS)",
+                       url: "https://#{@bind}:#{@port}", cert: @ssl_cert)
+        else
+          server.add_tcp_listener(@bind, @port)
+          @logger.info("daemon: listening", url: "http://#{@bind}:#{@port}")
+        end
 
         install_signal_handlers(server)
 
@@ -55,12 +72,12 @@ module Prouterd
 
         @stop_pipe_r.read(1)
 
-        @output.puts "prouter serve: shutdown signal received; refusing new state-changing requests"
+        @logger.info("daemon: shutdown signal received; refusing new state-changing requests")
         @app.stop_accepting if @app.respond_to?(:stop_accepting)
 
         drain_in_flight if @in_flight
 
-        @output.puts "prouter serve: stopping HTTP listener…"
+        @logger.info("daemon: stopping HTTP listener")
         server.stop(true)
       end
 
@@ -78,11 +95,14 @@ module Prouterd
 
           if Time.now >= deadline
             uids = @in_flight.in_flight_uids
-            @output.puts "prouter serve: drain timed out with #{remaining} run(s) still in flight: #{uids.join(', ')}"
+            @logger.warn("daemon: drain timed out",
+                         remaining: remaining, run_uids: uids.join(","))
             break
           end
 
-          @output.puts "prouter serve: waiting for #{remaining} in-flight run(s) to finish…" if (Time.now.to_i % 5).zero?
+          if (Time.now.to_i % 5).zero?
+            @logger.info("daemon: draining in-flight runs", remaining: remaining)
+          end
           sleep 0.2
         end
       end

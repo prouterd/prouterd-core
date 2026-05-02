@@ -14,7 +14,8 @@ module Prouterd
     #   { "data": ..., "meta": { ... } }   on success
     #   { "error": "...", "details": [..] } on failure
     class V1
-      def initialize(store:, runner:, secret_resolver:, in_flight:, metrics:, jobs:, logger: nil)
+      def initialize(store:, runner:, secret_resolver:, in_flight:, metrics:, jobs:,
+                     logger: Prouterd::NullLogger.new)
         @store = store
         @runner = runner
         @secret_resolver = secret_resolver
@@ -202,7 +203,8 @@ module Prouterd
       end
 
       # GET /v1/artifacts/:id/download — stream the persisted bytes to the
-      # caller. Path is read from the artifacts row server-side; the client
+      # caller chunk-by-chunk so multi-GB artifacts don't OOM the daemon.
+      # Path is read from the artifacts row server-side; the client
       # never gets to specify it (closed against directory traversal).
       def get_artifact_download(_request, id)
         repo = Storage::Repositories::Runs.new(@store.db)
@@ -215,7 +217,26 @@ module Prouterd
           "content-length"      => artifact.size_bytes.to_s,
           "content-disposition" => %(attachment; filename="#{artifact.name.to_s.gsub(/"/, "")}")
         }
-        [200, headers, [File.binread(artifact.path)]]
+        [200, headers, FileStreamBody.new(artifact.path)]
+      end
+
+      # Rack body that yields a file in 64KB chunks so multi-GB artifacts
+      # don't materialize in memory. Each yielded String is binary; Puma
+      # writes them straight to the socket.
+      class FileStreamBody
+        CHUNK_SIZE = 64 * 1024
+
+        def initialize(path)
+          @path = path
+        end
+
+        def each
+          File.open(@path, "rb") do |f|
+            while (chunk = f.read(CHUNK_SIZE))
+              yield chunk
+            end
+          end
+        end
       end
 
       def get_run_artifacts(_request, uid)
@@ -285,17 +306,25 @@ module Prouterd
         end
 
         # Hard-cancel: if the daemon's runner attached containers for this run,
-        # kill them. The orchestrator's between-level poll picks up the
-        # status flip and aborts further scheduling.
+        # send SIGTERM with a short grace window, then SIGKILL. The
+        # orchestrator's between-level poll picks up the status flip and
+        # aborts further scheduling.
         killed = []
         if @in_flight
+          stop_timeout = (ENV["PROUTERD_CONTAINER_STOP_TIMEOUT"] || 10).to_i
           @in_flight.container_ids_for(run.uid).each do |cid|
             begin
               container = Docker::Container.get(cid)
-              container.kill rescue nil
+              begin
+                container.stop("t" => stop_timeout)
+              rescue Docker::Error::DockerError, StandardError
+                container.kill rescue nil
+              end
               killed << cid
-            rescue StandardError
-              # container may already be gone
+            rescue StandardError => e
+              @logger.warn("v1: cancel container failed",
+                           run_uid: run.uid, container: cid,
+                           error: e.class.name, message: e.message)
             end
           end
         end

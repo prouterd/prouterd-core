@@ -15,16 +15,18 @@ module Prouterd
     class Recovery
       ABANDONED_TYPE = "abandoned".freeze
       ABANDONED_REASON = "orchestrator restart — run was in-flight when the previous process exited".freeze
+      DEFAULT_LOCK_TIMEOUT = 60
 
       Result = Struct.new(:runs_swept, :steps_swept, keyword_init: true)
 
-      def self.sweep(db, output: nil)
-        new(db, output).sweep
+      def self.sweep(db, logger: NullLogger.new, lock_timeout: nil)
+        new(db, logger: logger, lock_timeout: lock_timeout).sweep
       end
 
-      def initialize(db, output = nil)
+      def initialize(db, logger: NullLogger.new, lock_timeout: nil)
         @db = db
-        @output = output
+        @logger = logger
+        @lock_timeout = lock_timeout || (ENV["PROUTERD_JOB_LOCK_TIMEOUT"] || DEFAULT_LOCK_TIMEOUT).to_i
       end
 
       def sweep
@@ -38,9 +40,9 @@ module Prouterd
         runs  = sweep_runs
 
         if (runs + steps + jobs).positive?
-          @output&.puts(
-            "recovery: re-queued #{jobs} job(s); marked #{runs} run(s) and #{steps} step(s) as failed (abandoned)"
-          )
+          @logger.info("recovery: swept abandoned state on boot",
+                       requeued_jobs: jobs, failed_runs: runs, failed_steps: steps,
+                       lock_timeout_s: @lock_timeout)
         end
 
         Result.new(runs_swept: runs, steps_swept: steps)
@@ -54,7 +56,7 @@ module Prouterd
       # below skip rows that have a queued job.
       def sweep_jobs
         repo = Storage::Repositories::Jobs.new(@db)
-        ids = repo.requeue_abandoned(threshold_seconds: 60)
+        ids = repo.requeue_abandoned(threshold_seconds: @lock_timeout)
         ids.length
       rescue SQLite3::SQLException
         # jobs table may not exist on a pre-Phase-11 DB; not fatal.

@@ -18,13 +18,13 @@ RSpec.describe Prouterd::Runtime::Recovery do
     repo.update_run(run.id, status: "running", started_at: Time.now.utc.iso8601(3))
 
     out = StringIO.new
-    described_class.sweep(db, output: out)
+    described_class.sweep(db, logger: Prouterd::Logger.build(out))
 
     refreshed = repo.get_run(run.id)
     expect(refreshed.status).to eq("failed")
     expect(refreshed.error_summary).to include("orchestrator restart")
     expect(refreshed.finished_at).not_to be_nil
-    expect(out.string).to match(/recovery:.*marked 1 run/)
+    expect(out.string).to match(/recovery: swept abandoned state.*failed_runs=1/)
   end
 
   it "marks abandoned queued runs as failed" do

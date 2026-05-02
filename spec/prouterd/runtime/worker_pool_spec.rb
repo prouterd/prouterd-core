@@ -42,7 +42,7 @@ RSpec.describe Prouterd::Runtime::WorkerPool do
   end
 
   it "drains queued jobs and updates run status" do
-    pool = described_class.new(store: store, runner: runner, workers: 2, output: StringIO.new)
+    pool = described_class.new(store: store, runner: runner, workers: 2, logger: Prouterd::NullLogger.new)
     pool.run
 
     orchestrator = Prouterd::Runtime::Orchestrator.new(db: db, runner: runner)
@@ -58,7 +58,7 @@ RSpec.describe Prouterd::Runtime::WorkerPool do
   it "marks run failed when orchestrator raises" do
     runner.default { |_req| raise "boom" }
 
-    pool = described_class.new(store: store, runner: runner, workers: 1, output: StringIO.new)
+    pool = described_class.new(store: store, runner: runner, workers: 1, logger: Prouterd::NullLogger.new)
     pool.run
 
     orch = Prouterd::Runtime::Orchestrator.new(db: db, runner: runner)
@@ -70,7 +70,7 @@ RSpec.describe Prouterd::Runtime::WorkerPool do
   end
 
   it "skips a run that was already canceled before the worker claimed it" do
-    pool = described_class.new(store: store, runner: runner, workers: 1, output: StringIO.new)
+    pool = described_class.new(store: store, runner: runner, workers: 1, logger: Prouterd::NullLogger.new)
 
     orch = Prouterd::Runtime::Orchestrator.new(db: db, runner: runner)
     run = orch.enqueue(document, "pipeline", input_event: {}, commit_id: store.running_commit.id)
@@ -113,7 +113,7 @@ RSpec.describe Prouterd::Runtime::WorkerPool do
     jobs_repo.enqueue(run_id: run.id, kind: "execute_from_block",
                       payload: { "from_block" => "b", "seed_context" => { "seeded" => true } })
 
-    pool = described_class.new(store: store, runner: runner, workers: 1, output: StringIO.new)
+    pool = described_class.new(store: store, runner: runner, workers: 1, logger: Prouterd::NullLogger.new)
     pool.run
     expect(wait_for { runs_repo.get_run(run.id).status == "success" }).to be(true)
     pool.stop

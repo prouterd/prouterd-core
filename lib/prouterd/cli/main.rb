@@ -241,6 +241,14 @@ module Prouterd
           return 2
         end
 
+        # Single Logger instance shared across all components. Level
+        # comes from PROUTERD_LOG_LEVEL (default info); output is the
+        # daemon's stdout so journald/Docker logs/k8s-style sidecars
+        # capture everything in one stream.
+        logger = Prouterd::Logger.build(@stdout)
+        logger.info("daemon: starting", bind: bind, port: port, db: db_path,
+                                        workers: workers, runner: runner_kind)
+
         # Build a fresh runner that knows about the daemon's in-flight registry
         # — so DockerRunner can report active container IDs for hard cancel.
         in_flight = Prouterd::Runtime::InFlightRegistry.new
@@ -250,13 +258,13 @@ module Prouterd
 
         admin_token = ENV["PROUTERD_ADMIN_TOKEN"]
         if admin_token.nil? || admin_token.empty?
-          @stdout.puts "prouter serve: WARNING — PROUTERD_ADMIN_TOKEN not set; /v1/* endpoints are open"
+          logger.warn("daemon: PROUTERD_ADMIN_TOKEN not set; /v1/* endpoints are open")
         end
 
         # Crash recovery: any run/step left in `running`/`queued` from a
         # previous daemon process must be marked failed before we accept
         # new traffic. Otherwise replay/show would still see them as live.
-        Prouterd::Runtime::Recovery.sweep(store.db, output: @stdout)
+        Prouterd::Runtime::Recovery.sweep(store.db, logger: logger)
 
         # Persistent job queue: the daemon's worker pool drains it. Webhook /
         # /v1 trigger / scheduler enqueue jobs here instead of spawning ad-hoc
@@ -265,14 +273,14 @@ module Prouterd
 
         worker_pool = Prouterd::Runtime::WorkerPool.new(
           store: store, runner: runner, in_flight: in_flight, metrics: metrics,
-          workers: workers, output: @stdout
+          workers: workers, logger: logger
         )
         worker_pool.run
 
         # Cron scheduler runs alongside the HTTP listener. Started before
         # serve so any cron whose next_time is "now" can fire immediately.
         scheduler = Prouterd::Runtime::Scheduler.new(
-          store: store, runner: runner, output: @stdout,
+          store: store, runner: runner, logger: logger,
           in_flight: in_flight, metrics: metrics, jobs: jobs
         )
         scheduler.run
@@ -280,18 +288,20 @@ module Prouterd
         rate_limiter = Prouterd::API::RateLimiter.from_env
 
         app = Prouterd::API::App.new(
-          store: store, runner: runner,
+          store: store, runner: runner, logger: logger,
           in_flight: in_flight, metrics: metrics,
           admin_token: admin_token, jobs: jobs, rate_limiter: rate_limiter
         )
         begin
           Prouterd::API::Server.run(
-            app: app, bind: bind, port: port, output: @stdout,
-            in_flight: in_flight
+            app: app, bind: bind, port: port, logger: logger,
+            in_flight: in_flight,
+            ssl_cert: ENV["PROUTERD_SSL_CERT"], ssl_key: ENV["PROUTERD_SSL_KEY"]
           )
         ensure
           scheduler.stop
           worker_pool.stop
+          logger.info("daemon: stopped")
         end
         0
       ensure
@@ -318,6 +328,7 @@ module Prouterd
         dry_run = false
         db_path = nil
         no_db = false
+        batch_size = Prouterd::ControlPlane::Cleanup::DEFAULT_BATCH_SIZE
 
         until @argv.empty?
           case @argv.first
@@ -333,6 +344,11 @@ module Prouterd
           when "--no-db"
             @argv.shift
             no_db = true
+          when "--batch-size"
+            @argv.shift
+            n = @argv.shift or return missing_arg("cleanup", "--batch-size")
+            batch_size = Integer(n) rescue (return invalid_arg("cleanup", "--batch-size must be a positive integer"))
+            return invalid_arg("cleanup", "--batch-size must be a positive integer") if batch_size < 1
           else
             @stderr.puts "prouter cleanup: unknown option '#{@argv.first}'"
             return 2
@@ -357,7 +373,8 @@ module Prouterd
         result = Prouterd::ControlPlane::Cleanup.sweep(
           store.db,
           older_than: seconds,
-          dry_run: dry_run
+          dry_run: dry_run,
+          batch_size: batch_size
         )
 
         verb = dry_run ? "would delete" : "deleted"

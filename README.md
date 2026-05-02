@@ -171,6 +171,26 @@ Common flags:
 - `--config FILE` load this `.prc` file as the running config
 - `--runner KIND` `docker` (default) or `stub` (env `PROUTERD_RUNNER`)
 
+### Production env vars
+
+The daemon reads everything operationally tunable from the environment so
+secrets and limits don't end up in `.prc` files or `ps` output:
+
+| Var                              | Default       | What it does                                    |
+|----------------------------------|---------------|-------------------------------------------------|
+| `PROUTERD_ADMIN_TOKEN`            | _(unset → open)_ | Bearer token for `/v1/*`                     |
+| `PROUTERD_LOG_LEVEL`              | `info`        | `debug` / `info` / `warn` / `error` / `fatal`   |
+| `PROUTERD_SSL_CERT` + `..._KEY`   | _(plain HTTP)_ | PEM cert + key paths for HTTPS                 |
+| `PROUTERD_MAX_BODY_BYTES`         | `1048576` (1 MB) | Reject `/i/*` and most `/v1` POSTs above this |
+| `PROUTERD_MAX_CONFIG_BYTES`       | `4194304` (4 MB) | Higher cap for `/v1/config/{check,apply}`     |
+| `PROUTERD_LOG_CAPTURE_BYTES`      | `1048576` (1 MB) | Per-stream cap on persisted container logs    |
+| `PROUTERD_CONTAINER_STOP_TIMEOUT` | `10` (s)      | SIGTERM grace before SIGKILL on cancel          |
+| `PROUTERD_JOB_LOCK_TIMEOUT`       | `60` (s)      | Recovery: re-queue job locks older than this    |
+| `PROUTERD_WEBHOOK_RATE`           | `60/1`        | `MAX/WINDOW` per-interface webhook rate limit   |
+| `PROUTERD_ARTIFACTS_ROOT`         | `var/artifacts` | Where `ArtifactStore` writes block outputs    |
+| `PROUTERD_DB`                     | `var/prouterd.db` | SQLite path                                  |
+| `PROUTERD_RUNNER`                 | `docker`      | Default for `--runner`                          |
+
 ## DSL cheatsheet (`.prc` files)
 
 ```prc
@@ -180,7 +200,10 @@ router demo
 exit
 
 secret WEBHOOK_TOKEN
- source env WEBHOOK_TOKEN
+ source env WEBHOOK_TOKEN              ! reads $WEBHOOK_TOKEN from daemon env
+exit
+secret API_TOKEN
+ source file /run/secrets/api_token    ! Docker/Compose/k8s secret volumes
 exit
 
 policy retry_standard
@@ -352,12 +375,14 @@ Storage schema (SQLite, WAL):
 bundle exec rspec
 ```
 
-471 specs cover lexer/parser/validator/renderer, shell flows + router-style
+494 specs cover lexer/parser/validator/renderer, shell flows + router-style
 tab completion, storage repositories, ConfigStore lifecycle, orchestrator
 with stub runner, match evaluator, contract validation, retry/replay/
 cancel/diff/scheduler, webhook handler, IPC events bus + WebSocket
-endpoints, plugin registration end-to-end on a fake runner type, and a
-full apply→trigger→replay→rollback integration test.
+endpoints, plugin registration end-to-end on a fake runner type, the
+structured logger, body-size enforcement, secret resolvers (env + file),
+rate-limiter eviction, log-capture cap, and a full
+apply→trigger→replay→rollback integration test.
 
 The Docker-dependent paths are tested with a `StubRunner`. To exercise
 real Docker, the `examples/` scripts run pipelines against `alpine:latest`
@@ -394,13 +419,22 @@ Implemented (all of [the spec][] §28 acceptance criteria):
   register new `type <foo>` keywords without forking the core
 - ✅ Output contract validation (`contract <name>` with type/range/
   format/pattern/enum constraints, `on violation fail|retry|warn`)
+- ✅ Production hardening: structured Logger, request body limits
+  (1 MB / 4 MB for config), HTTPS via Puma SSL, chunked artifact
+  download, capped container log capture, graceful container stop
+  (SIGTERM → SIGKILL with timeout), `RateLimiter` bucket eviction,
+  file-based secrets (`source file /run/secrets/x`), batched
+  `cleanup`, `PROUTERD_ARTIFACTS_ROOT` / `PROUTERD_JOB_LOCK_TIMEOUT` /
+  `PROUTERD_LOG_LEVEL` env knobs
 
 Deliberately out of v0.1 scope (per spec §31, "workable without these for now"):
 
 - ☐ KubernetesRunner / LambdaRunner / ... (the plugin interface is
   ready — write a plugin file and a Runner class, no core edits)
 - ☐ S3 / object-store artifacts (`ArtifactStore` interface ready)
-- ☐ RBAC / mTLS / OIDC (basic admin bearer is in)
+- ☐ Vault / AWS Secrets Manager (write a class with `#resolve(secret)`,
+  inject via `secret_resolver:` — env + file are built-in)
+- ☐ RBAC / mTLS / OIDC (basic admin bearer is in; HTTPS is on)
 - ☐ Postgres adapter (`Storage::DB` abstraction ready)
 - ☐ Idempotency keys
 - ☐ Web UI

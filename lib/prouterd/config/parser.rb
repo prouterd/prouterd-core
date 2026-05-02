@@ -99,16 +99,27 @@ module Prouterd
         node
       end
 
+      SECRET_SOURCES = %w[env file].freeze
+
       def apply_secret_field(node, line)
         head = line.head.value
         case head
         when "source"
-          expect_min_tokens(line, 3, "source env <NAME>")
+          expect_min_tokens(line, 3, "source <#{SECRET_SOURCES.join('|')}> <ref>")
           kind = line.tokens[1].value
-          raise ParseError.new("unsupported secret source '#{kind}', only 'env' is supported", line: line.number) unless kind == "env"
-          expect_token_count(line, 3, "source env <NAME>")
-          node.source_type = "env"
-          node.source_value = expect_env_name(line.tokens[2], "env variable")
+          unless SECRET_SOURCES.include?(kind)
+            raise ParseError.new(
+              "unsupported secret source '#{kind}' (allowed: #{SECRET_SOURCES.join(', ')})",
+              line: line.number
+            )
+          end
+          expect_token_count(line, 3, "source #{kind} <ref>")
+          node.source_type = kind
+          node.source_value = if kind == "env"
+                                expect_env_name(line.tokens[2], "env variable")
+                              else
+                                expect_word_or_string(line.tokens[2], "file path")
+                              end
         else
           raise ParseError.new("unknown directive '#{head}' in secret", line: line.number)
         end

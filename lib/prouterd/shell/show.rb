@@ -1,0 +1,394 @@
+require_relative "../util/duration_parser"
+
+module Prouterd
+  module Shell
+    # Read-only `show` subsystem. Used by Privileged and Config modes (and
+    # any sub-mode that wants to expose `show` from inside a session).
+    #
+    # Phase 2 covers config-domain shows: running-config, candidate-config,
+    # processes, interfaces, queues, policies, secrets, blocks, routes, status,
+    # version. Phase 3+ adds startup-config, commits, runs, logs, artifacts,
+    # dead-letter — these emit a "not yet available" message until then.
+    module Show
+      module_function
+
+      def execute(args, session, out, _err)
+        head, *rest = args.map(&:value)
+        case head
+        when "version"           then show_version(out)
+        when "status"            then show_status(session, out)
+        when "running-config"    then show_running(session, out)
+        when "candidate-config"  then show_candidate(session, out)
+        when "startup-config"    then not_yet(out, "Phase 3")
+        when "commits"           then not_yet(out, "Phase 3")
+        when "diff"              then show_diff(session, out)
+        when "processes"         then list_processes(session, out)
+        when "process"           then show_process(rest, session, out)
+        when "interfaces"        then list_interfaces(session, out)
+        when "interface"         then show_interface(rest, session, out)
+        when "policies"          then list_policies(session, out)
+        when "policy"            then show_policy(rest, session, out)
+        when "queues"            then list_queues(session, out)
+        when "queue"             then show_queue(rest, session, out)
+        when "secrets"           then list_secrets(session, out)
+        when "secret"            then show_secret(rest, session, out)
+        when "blocks"            then list_blocks(rest, session, out)
+        when "block"             then show_block(rest, session, out)
+        when "routes"            then list_routes(rest, session, out)
+        when "runs", "run", "logs", "artifacts", "dead-letter"
+          not_yet(out, "Phase 4")
+        else
+          raise CommandError, "unknown show target '#{head}'"
+        end
+      end
+
+      # ----- generic / status -----
+
+      def show_version(out)
+        out.puts "prouter #{Prouterd::VERSION}"
+      end
+
+      def show_status(session, out)
+        out.puts "hostname:        #{session.hostname}"
+        out.puts "router:          #{session.running_config.router&.name || '(none)'}"
+        out.puts "config mode:     #{session.in_config_mode? ? 'editing candidate' : 'idle'}"
+        out.puts "interfaces:      #{session.running_config.interfaces.length}"
+        out.puts "processes:       #{session.running_config.processes.length}"
+        out.puts "secrets:         #{session.running_config.secrets.length}"
+      end
+
+      # ----- config dumps -----
+
+      def show_running(session, out)
+        text = Config::Renderer.render(session.running_config)
+        out.print(text.empty? ? "(empty configuration)\n" : text)
+      end
+
+      def show_candidate(session, out)
+        if session.in_config_mode?
+          text = Config::Renderer.render(session.candidate_config)
+          out.print(text.empty? ? "(empty candidate)\n" : text)
+        else
+          out.puts "No candidate configuration. Use 'configure terminal' first."
+        end
+      end
+
+      def show_diff(session, out)
+        if !session.in_config_mode?
+          out.puts "No candidate configuration."
+          return
+        end
+
+        a = Config::Renderer.render(session.running_config).split("\n", -1)
+        b = Config::Renderer.render(session.candidate_config).split("\n", -1)
+        diff = simple_diff(a, b)
+        if diff.empty?
+          out.puts "No changes."
+        else
+          diff.each { |line| out.puts(line) }
+        end
+      end
+
+      # ----- list / detail commands -----
+
+      def list_processes(session, out)
+        processes = session.active_config.processes
+        if processes.empty?
+          out.puts "No processes defined."
+          return
+        end
+        out.puts "%-30s %-12s %-8s %-8s" % ["NAME", "QUEUE", "BLOCKS", "ROUTES"]
+        processes.each do |p|
+          out.puts "%-30s %-12s %-8d %-8d" % [
+            p.name, p.queue_name || "-", p.blocks.length, p.routes.length
+          ]
+        end
+      end
+
+      def show_process(rest, session, out)
+        require_args(rest, 1, "show process <name>")
+        name = rest.first
+        p = session.active_config.processes.find { |x| x.name == name }
+        raise CommandError, "no such process '#{name}'" unless p
+
+        out.puts "process #{p.name}"
+        out.puts "  description: #{p.description.inspect}" if p.description
+        out.puts "  queue:       #{p.queue_name || '-'}"
+        out.puts "  shutdown:    #{p.shutdown}"
+        out.puts "  blocks (#{p.blocks.length}):"
+        p.blocks.each { |b| out.puts "    #{b.name}  image=#{b.image || '-'}" }
+        out.puts "  routes (#{p.routes.length}):"
+        p.routes.each do |r|
+          conds = r.matches.empty? ? "" : "  [#{r.matches.length} match]"
+          out.puts "    #{r.from_block} -> #{r.to_block}#{conds}"
+        end
+      end
+
+      def list_interfaces(session, out)
+        ifaces = session.active_config.interfaces
+        if ifaces.empty?
+          out.puts "No interfaces defined."
+          return
+        end
+        out.puts "%-30s %-10s %-8s %s" % ["NAME", "TYPE", "STATE", "DETAIL"]
+        ifaces.each do |i|
+          state = i.shutdown ? "down" : "up"
+          detail = case i.type
+                   when "webhook" then "#{i.method || '?'} #{i.path || '?'}"
+                   when "cron"    then "schedule=#{i.schedule.inspect}"
+                   else                "-"
+                   end
+          out.puts "%-30s %-10s %-8s %s" % [i.name, i.type, state, detail]
+        end
+      end
+
+      def show_interface(rest, session, out)
+        require_args(rest, 1, "show interface <name>")
+        name = rest.first
+        i = session.active_config.interfaces.find { |x| x.name == name }
+        raise CommandError, "no such interface '#{name}'" unless i
+
+        out.puts "interface #{i.type} #{i.name}"
+        out.puts "  state:    #{i.shutdown ? 'shutdown' : 'no shutdown'}"
+        case i.type
+        when "webhook"
+          out.puts "  path:     #{i.path || '(unset)'}"
+          out.puts "  method:   #{i.method || '(unset)'}"
+          if i.auth
+            out.puts "  auth:     #{i.auth.scheme} secret=#{i.auth.secret_name}"
+          end
+        when "cron"
+          out.puts "  schedule: #{i.schedule || '(unset)'}"
+          out.puts "  timezone: #{i.timezone || '(unset)'}"
+        end
+      end
+
+      def list_policies(session, out)
+        ps = session.active_config.policies
+        if ps.empty?
+          out.puts "No policies defined."
+          return
+        end
+        out.puts "%-25s %-10s %-12s %-12s %-10s" % ["NAME", "ATTEMPTS", "BACKOFF", "INIT", "MAX"]
+        ps.each do |p|
+          out.puts "%-25s %-10s %-12s %-12s %-10s" % [
+            p.name,
+            p.retry_attempts || "-",
+            p.retry_backoff || "-",
+            p.retry_initial_delay_ms ? Util::DurationParser.render(p.retry_initial_delay_ms) : "-",
+            p.retry_max_delay_ms ? Util::DurationParser.render(p.retry_max_delay_ms) : "-"
+          ]
+        end
+      end
+
+      def show_policy(rest, session, out)
+        require_args(rest, 1, "show policy <name>")
+        p = session.active_config.policies.find { |x| x.name == rest.first }
+        raise CommandError, "no such policy '#{rest.first}'" unless p
+
+        out.puts "policy #{p.name}"
+        out.puts "  attempts:      #{p.retry_attempts || '-'}"
+        out.puts "  backoff:       #{p.retry_backoff || '-'}"
+        out.puts "  initial-delay: #{p.retry_initial_delay_ms ? Util::DurationParser.render(p.retry_initial_delay_ms) : '-'}"
+        out.puts "  max-delay:     #{p.retry_max_delay_ms ? Util::DurationParser.render(p.retry_max_delay_ms) : '-'}"
+        out.puts "  timeout:       #{p.timeout_ms ? Util::DurationParser.render(p.timeout_ms) : '-'}"
+      end
+
+      def list_queues(session, out)
+        qs = session.active_config.queues
+        if qs.empty?
+          out.puts "No queues defined."
+          return
+        end
+        out.puts "%-25s %-12s %-12s" % ["NAME", "CONCURRENCY", "TIMEOUT"]
+        qs.each do |q|
+          out.puts "%-25s %-12s %-12s" % [
+            q.name,
+            q.concurrency || "-",
+            q.timeout_ms ? Util::DurationParser.render(q.timeout_ms) : "-"
+          ]
+        end
+      end
+
+      def show_queue(rest, session, out)
+        require_args(rest, 1, "show queue <name>")
+        q = session.active_config.queues.find { |x| x.name == rest.first }
+        raise CommandError, "no such queue '#{rest.first}'" unless q
+
+        out.puts "queue #{q.name}"
+        out.puts "  concurrency: #{q.concurrency || '-'}"
+        out.puts "  timeout:     #{q.timeout_ms ? Util::DurationParser.render(q.timeout_ms) : '-'}"
+      end
+
+      def list_secrets(session, out)
+        ss = session.active_config.secrets
+        if ss.empty?
+          out.puts "No secrets defined."
+          return
+        end
+        out.puts "%-30s %-10s %s" % ["NAME", "SOURCE", "REF"]
+        ss.each do |s|
+          out.puts "%-30s %-10s %s" % [s.name, s.source_type || "-", s.source_value || "-"]
+        end
+      end
+
+      def show_secret(rest, session, out)
+        require_args(rest, 1, "show secret <name>")
+        s = session.active_config.secrets.find { |x| x.name == rest.first }
+        raise CommandError, "no such secret '#{rest.first}'" unless s
+
+        # Spec §23.1/§23.2: never display secret VALUES.
+        out.puts "secret #{s.name}"
+        out.puts "  source: #{s.source_type} #{s.source_value}"
+      end
+
+      def list_blocks(rest, session, out)
+        # syntax: show blocks process <name>
+        if rest.length == 2 && rest[0] == "process"
+          process_name = rest[1]
+          p = session.active_config.processes.find { |x| x.name == process_name }
+          raise CommandError, "no such process '#{process_name}'" unless p
+          if p.blocks.empty?
+            out.puts "No blocks in process '#{process_name}'."
+            return
+          end
+          out.puts "%-25s %-40s %-10s" % ["NAME", "IMAGE", "TIMEOUT"]
+          p.blocks.each do |b|
+            out.puts "%-25s %-40s %-10s" % [
+              b.name,
+              (b.image || "-").to_s[0, 40],
+              b.timeout_ms ? Util::DurationParser.render(b.timeout_ms) : "-"
+            ]
+          end
+        else
+          raise CommandError, "syntax: show blocks process <name>"
+        end
+      end
+
+      def show_block(rest, session, out)
+        # syntax: show block process <pname> <bname>
+        unless rest.length == 3 && rest[0] == "process"
+          raise CommandError, "syntax: show block process <process> <block>"
+        end
+        pname, bname = rest[1], rest[2]
+        p = session.active_config.processes.find { |x| x.name == pname }
+        raise CommandError, "no such process '#{pname}'" unless p
+        b = p.blocks.find { |x| x.name == bname }
+        raise CommandError, "no such block '#{pname}/#{bname}'" unless b
+
+        out.puts "block #{pname}/#{b.name}"
+        out.puts "  image:   #{b.image || '-'}"
+        out.puts "  command: #{b.command || '-'}"
+        out.puts "  timeout: #{b.timeout_ms ? Util::DurationParser.render(b.timeout_ms) : '-'}"
+        out.puts "  retry:   #{b.retry_policy_name || '-'}"
+        out.puts "  input:   #{b.input || '-'}"
+        out.puts "  output:  #{b.output || '-'}"
+        out.puts "  network: #{b.network}"
+        out.puts "  state:   #{b.shutdown ? 'shutdown' : 'no shutdown'}"
+        unless b.secret_names.empty?
+          out.puts "  secrets: #{b.secret_names.join(', ')}"
+        end
+      end
+
+      def list_routes(rest, session, out)
+        if rest.empty?
+          # all routes: global + per-process
+          show_global_routes(session, out)
+          out.puts ""
+          session.active_config.processes.each do |p|
+            show_process_routes_table(p, out, prefix: "#{p.name}/")
+          end
+        elsif rest.length == 2 && rest[0] == "process"
+          p = session.active_config.processes.find { |x| x.name == rest[1] }
+          raise CommandError, "no such process '#{rest[1]}'" unless p
+          show_process_routes_table(p, out)
+        else
+          raise CommandError, "syntax: show routes [process <name>]"
+        end
+      end
+
+      def show_global_routes(session, out)
+        rs = session.active_config.global_routes
+        out.puts "Global routes (interface -> process):"
+        if rs.empty?
+          out.puts "  (none)"
+        else
+          rs.each do |r|
+            cond = r.matches.empty? ? "" : "  [#{r.matches.length} match]"
+            out.puts "  #{r.interface_name} -> #{r.process_name}#{cond}"
+          end
+        end
+      end
+
+      def show_process_routes_table(process, out, prefix: "")
+        out.puts "Routes in process '#{process.name}':"
+        if process.routes.empty?
+          out.puts "  (none)"
+          return
+        end
+        process.routes.each do |r|
+          cond = r.matches.empty? ? "" : "  [#{r.matches.length} match]"
+          out.puts "  #{prefix}#{r.from_block} -> #{r.to_block}#{cond}"
+        end
+      end
+
+      # ----- helpers -----
+
+      def require_args(rest, count, syntax)
+        return if rest.length == count
+
+        raise CommandError, "syntax: #{syntax}"
+      end
+
+      def not_yet(out, phase)
+        out.puts "(not yet available — coming in #{phase})"
+      end
+
+      # Minimal line-by-line diff using LCS over arrays of lines.
+      # Sufficient for `show diff` between candidate and running.
+      def simple_diff(a, b)
+        return [] if a == b
+
+        # Compute LCS via classic DP.
+        m = a.length
+        n = b.length
+        dp = Array.new(m + 1) { Array.new(n + 1, 0) }
+        (1..m).each do |i|
+          (1..n).each do |j|
+            dp[i][j] = if a[i - 1] == b[j - 1]
+                        dp[i - 1][j - 1] + 1
+                      else
+                        [dp[i - 1][j], dp[i][j - 1]].max
+                      end
+          end
+        end
+
+        result = []
+        i = m
+        j = n
+        while i.positive? && j.positive?
+          if a[i - 1] == b[j - 1]
+            result.unshift("  #{a[i - 1]}")
+            i -= 1
+            j -= 1
+          elsif dp[i - 1][j] >= dp[i][j - 1]
+            result.unshift("- #{a[i - 1]}")
+            i -= 1
+          else
+            result.unshift("+ #{b[j - 1]}")
+            j -= 1
+          end
+        end
+        while i.positive?
+          result.unshift("- #{a[i - 1]}")
+          i -= 1
+        end
+        while j.positive?
+          result.unshift("+ #{b[j - 1]}")
+          j -= 1
+        end
+        result.reject { |line| line.start_with?("  ") } # show only +/- lines for compactness
+      end
+    end
+  end
+end

@@ -1,24 +1,25 @@
 require_relative "../../prouterd"
+require "stringio"
 
 module Prouterd
   module CLI
-    # Entry point for the non-interactive `prouter` binary in Phase 1.
+    # Entry point for the `prouter` binary.
     #
-    # Phase 1 commands:
-    #   prouter check <file>    — parse + validate, print diagnostics, exit 0/1
-    #   prouter render <file>   — parse + emit canonical config to stdout
-    #   prouter version         — print version
-    #   prouter help            — print usage
-    #
-    # Subsequent phases will add the interactive shell, daemon-backed `show`
-    # commands, `apply`, `commit`, `trigger`, etc.
+    # Phase 1+2 commands:
+    #   prouter check  <file>           — parse + validate, exit 0/1
+    #   prouter render <file>           — parse + emit canonical config
+    #   prouter shell  [--config FILE]  — interactive router-style shell
+    #   prouter exec   "<command>"      — run a single command non-interactively
+    #   prouter version                 — print version
+    #   prouter help                    — print usage
     class Main
-      def self.run(argv, stdout: $stdout, stderr: $stderr)
-        new(argv, stdout, stderr).run
+      def self.run(argv, stdin: $stdin, stdout: $stdout, stderr: $stderr)
+        new(argv, stdin, stdout, stderr).run
       end
 
-      def initialize(argv, stdout, stderr)
+      def initialize(argv, stdin, stdout, stderr)
         @argv = argv.dup
+        @stdin = stdin
         @stdout = stdout
         @stderr = stderr
       end
@@ -28,6 +29,8 @@ module Prouterd
         case command
         when "check"             then cmd_check
         when "render"            then cmd_render
+        when "shell"             then cmd_shell
+        when "exec"              then cmd_exec
         when "version", "--version", "-v" then cmd_version
         when "help", "--help", "-h", nil  then cmd_help
         else
@@ -45,13 +48,15 @@ module Prouterd
           Usage: prouter <command> [args]
 
           Commands:
-            check <file>     Parse and validate a .prc config file
-            render <file>    Parse and print canonical config to stdout
-            version          Print version
-            help             Show this help
+            check <file>             Parse and validate a .prc config file
+            render <file>            Parse and print canonical config to stdout
+            shell [--config FILE]    Start interactive router-style shell
+            exec "<command>"         Run a single shell command and print result
+            version                  Print version
+            help                     Show this help
 
-          Subsequent phases will add: shell, apply, commit, rollback,
-          trigger, show running-config, replay, trace.
+          Subsequent phases will add: apply, commit, rollback, trigger,
+          show running-config persistence, replay, trace.
         USAGE
         0
       end
@@ -75,9 +80,7 @@ module Prouterd
         return 1 if document.nil?
 
         result = Config::Validator.validate(document)
-
         report_check(document, result, path)
-
         result.valid? ? 0 : 1
       end
 
@@ -96,6 +99,78 @@ module Prouterd
 
         @stdout.print Config::Renderer.render(document)
         0
+      end
+
+      def cmd_shell
+        config_path = nil
+        while @argv.first
+          case @argv.first
+          when "--config", "-c"
+            @argv.shift
+            config_path = @argv.shift
+            unless config_path
+              @stderr.puts "prouter shell: --config requires a path"
+              return 2
+            end
+          else
+            @stderr.puts "prouter shell: unknown option '#{@argv.first}'"
+            return 2
+          end
+        end
+
+        Prouterd::Shell::Shell.run(
+          input: @stdin,
+          output: @stdout,
+          error: @stderr,
+          initial_config_path: config_path
+        )
+        0
+      rescue Prouterd::Shell::ShellError => e
+        @stderr.puts "prouter shell: #{e.message}"
+        1
+      end
+
+      def cmd_exec
+        command = @argv.shift
+        unless command
+          @stderr.puts "prouter exec: missing command string"
+          return 2
+        end
+
+        # Parse remaining options: --config <path> to load a config first.
+        config_path = nil
+        while @argv.first == "--config" || @argv.first == "-c"
+          @argv.shift
+          config_path = @argv.shift
+          unless config_path
+            @stderr.puts "prouter exec: --config requires a path"
+            return 2
+          end
+        end
+
+        session = Prouterd::Shell::Session.new
+        if config_path
+          source = read_file(config_path)
+          return 2 if source.nil?
+          document = parse_with_diagnostics(source, config_path)
+          return 1 if document.nil?
+          result = Config::Validator.validate(document)
+          unless result.valid?
+            result.errors.each { |e| @stderr.puts "#{config_path}: #{e}" }
+            return 1
+          end
+          session.replace_running(document)
+        end
+
+        shell = Prouterd::Shell::Shell.new(
+          session: session,
+          input: StringIO.new,
+          output: @stdout,
+          error: @stderr,
+          interactive: false,
+          banner: false
+        )
+        shell.execute_one(command)
       end
 
       def read_file(path)

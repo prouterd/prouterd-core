@@ -61,20 +61,27 @@ module Prouterd
         advance
 
         each_body_line("router #{name}") do |line|
-          head = line.head.value
-          case head
-          when "version"
-            expect_token_count(line, 2, "version <integer>")
-            node.version = expect_integer(line.tokens[1], "version")
-          when "hostname"
-            expect_token_count(line, 2, "hostname <name>")
-            node.hostname = expect_word_or_string(line.tokens[1], "hostname")
-          else
-            raise ParseError.new("unknown directive '#{head}' in router", line: line.number)
-          end
+          apply_router_field(node, line)
         end
 
         node
+      end
+
+      # Apply a single field directive line to a Router node. Used by the
+      # parser's section walker AND by the interactive shell's config-router
+      # mode — a single source of truth for valid fields and validation.
+      def apply_router_field(node, line)
+        head = line.head.value
+        case head
+        when "version"
+          expect_token_count(line, 2, "version <integer>")
+          node.version = expect_integer(line.tokens[1], "version")
+        when "hostname"
+          expect_token_count(line, 2, "hostname <name>")
+          node.hostname = expect_word_or_string(line.tokens[1], "hostname")
+        else
+          raise ParseError.new("unknown directive '#{head}' in router", line: line.number)
+        end
       end
 
       def parse_secret(header)
@@ -84,21 +91,25 @@ module Prouterd
         advance
 
         each_body_line("secret #{name}") do |line|
-          head = line.head.value
-          case head
-          when "source"
-            expect_min_tokens(line, 3, "source env <NAME>")
-            kind = line.tokens[1].value
-            raise ParseError.new("unsupported secret source '#{kind}', only 'env' is supported", line: line.number) unless kind == "env"
-            expect_token_count(line, 3, "source env <NAME>")
-            node.source_type = "env"
-            node.source_value = expect_env_name(line.tokens[2], "env variable")
-          else
-            raise ParseError.new("unknown directive '#{head}' in secret", line: line.number)
-          end
+          apply_secret_field(node, line)
         end
 
         node
+      end
+
+      def apply_secret_field(node, line)
+        head = line.head.value
+        case head
+        when "source"
+          expect_min_tokens(line, 3, "source env <NAME>")
+          kind = line.tokens[1].value
+          raise ParseError.new("unsupported secret source '#{kind}', only 'env' is supported", line: line.number) unless kind == "env"
+          expect_token_count(line, 3, "source env <NAME>")
+          node.source_type = "env"
+          node.source_value = expect_env_name(line.tokens[2], "env variable")
+        else
+          raise ParseError.new("unknown directive '#{head}' in secret", line: line.number)
+        end
       end
 
       def parse_policy(header)
@@ -108,22 +119,26 @@ module Prouterd
         advance
 
         each_body_line("policy #{name}") do |line|
-          head = line.head.value
-          case head
-          when "retry"
-            parse_policy_retry(node, line)
-          when "timeout"
-            expect_token_count(line, 2, "timeout <duration>")
-            node.timeout_ms = expect_duration(line.tokens[1], "timeout")
-          else
-            raise ParseError.new("unknown directive '#{head}' in policy", line: line.number)
-          end
+          apply_policy_field(node, line)
         end
 
         node
       end
 
-      def parse_policy_retry(node, line)
+      def apply_policy_field(node, line)
+        head = line.head.value
+        case head
+        when "retry"
+          apply_policy_retry(node, line)
+        when "timeout"
+          expect_token_count(line, 2, "timeout <duration>")
+          node.timeout_ms = expect_duration(line.tokens[1], "timeout")
+        else
+          raise ParseError.new("unknown directive '#{head}' in policy", line: line.number)
+        end
+      end
+
+      def apply_policy_retry(node, line)
         expect_min_tokens(line, 3, "retry <field> <value>")
         field = line.tokens[1].value
         case field
@@ -157,22 +172,26 @@ module Prouterd
         advance
 
         each_body_line("queue #{name}") do |line|
-          head = line.head.value
-          case head
-          when "concurrency"
-            expect_token_count(line, 2, "concurrency <integer>")
-            value = expect_integer(line.tokens[1], "concurrency")
-            raise ParseError.new("concurrency must be >= 1", line: line.number) if value < 1
-            node.concurrency = value
-          when "timeout"
-            expect_token_count(line, 2, "timeout <duration>")
-            node.timeout_ms = expect_duration(line.tokens[1], "timeout")
-          else
-            raise ParseError.new("unknown directive '#{head}' in queue", line: line.number)
-          end
+          apply_queue_field(node, line)
         end
 
         node
+      end
+
+      def apply_queue_field(node, line)
+        head = line.head.value
+        case head
+        when "concurrency"
+          expect_token_count(line, 2, "concurrency <integer>")
+          value = expect_integer(line.tokens[1], "concurrency")
+          raise ParseError.new("concurrency must be >= 1", line: line.number) if value < 1
+          node.concurrency = value
+        when "timeout"
+          expect_token_count(line, 2, "timeout <duration>")
+          node.timeout_ms = expect_duration(line.tokens[1], "timeout")
+        else
+          raise ParseError.new("unknown directive '#{head}' in queue", line: line.number)
+        end
       end
 
       def parse_interface(header)
@@ -259,33 +278,45 @@ module Prouterd
         each_body_line("process #{name}") do |line|
           head = line.head.value
           case head
-          when "description"
-            expect_token_count(line, 2, "description <string>")
-            node.description = expect_word_or_string(line.tokens[1], "description")
-          when "queue"
-            expect_token_count(line, 2, "queue <name>")
-            node.queue_name = expect_identifier(line.tokens[1], "queue name")
-          when "shutdown"
-            expect_token_count(line, 1, "shutdown")
-            node.shutdown = true
-          when "no"
-            expect_token_count(line, 2, "no shutdown")
-            unless line.tokens[1].value == "shutdown"
-              raise ParseError.new("only 'no shutdown' is supported here", line: line.number)
-            end
-            node.shutdown = false
           when "block"
             node.blocks << parse_block(line)
-            next # parse_block already advanced
+            next
           when "route"
             node.routes << parse_process_route(line)
             next
           else
-            raise ParseError.new("unknown directive '#{head}' in process", line: line.number)
+            apply_process_field(node, line)
           end
         end
 
         node
+      end
+
+      # Apply a single field-level command (description/queue/shutdown) to a
+      # Process node. Sub-section commands (block, route) are NOT handled here
+      # — they push a new mode in the shell, or trigger nested parsing in the
+      # file parser.
+      def apply_process_field(node, line)
+        head = line.head.value
+        case head
+        when "description"
+          expect_token_count(line, 2, "description <string>")
+          node.description = expect_word_or_string(line.tokens[1], "description")
+        when "queue"
+          expect_token_count(line, 2, "queue <name>")
+          node.queue_name = expect_identifier(line.tokens[1], "queue name")
+        when "shutdown"
+          expect_token_count(line, 1, "shutdown")
+          node.shutdown = true
+        when "no"
+          expect_token_count(line, 2, "no shutdown")
+          unless line.tokens[1].value == "shutdown"
+            raise ParseError.new("only 'no shutdown' is supported here", line: line.number)
+          end
+          node.shutdown = false
+        else
+          raise ParseError.new("unknown directive '#{head}' in process", line: line.number)
+        end
       end
 
       def parse_block(header)
@@ -418,16 +449,20 @@ module Prouterd
         advance
 
         each_body_line("route interface #{iface_name} process #{proc_name}") do |line|
-          head = line.head.value
-          case head
-          when "match"
-            route.matches << parse_match(line)
-          else
-            raise ParseError.new("unknown directive '#{head}' in global route", line: line.number)
-          end
+          apply_global_route_field(route, line)
         end
 
         route
+      end
+
+      def apply_global_route_field(route, line)
+        head = line.head.value
+        case head
+        when "match"
+          route.matches << parse_match(line)
+        else
+          raise ParseError.new("unknown directive '#{head}' in global route", line: line.number)
+        end
       end
 
       # ----- match expressions -----
@@ -605,6 +640,19 @@ module Prouterd
         end
         value
       end
+
+      # Field-application methods are reused by the interactive shell so that
+      # validation of `version 1`, `image foo:bar`, etc. lives in exactly one
+      # place. Re-exposed publicly here at the end of the class.
+      public :apply_router_field,
+             :apply_secret_field,
+             :apply_policy_field,
+             :apply_queue_field,
+             :apply_process_field,
+             :apply_global_route_field,
+             :parse_interface_field,
+             :parse_block_field,
+             :parse_process_route_field
     end
   end
 end

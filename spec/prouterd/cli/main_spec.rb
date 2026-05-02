@@ -82,4 +82,58 @@ RSpec.describe Prouterd::CLI::Main do
     expect(code).to eq(2)
     expect(err).to include("unknown command 'frobnicate'")
   end
+
+  describe "exec" do
+    def run_exec(*argv, stdin_text: "")
+      out = StringIO.new
+      err = StringIO.new
+      stdin = StringIO.new(stdin_text)
+      code = described_class.run(["exec", *argv], stdin: stdin, stdout: out, stderr: err)
+      [code, out.string, err.string]
+    end
+
+    it "runs a single show command against a loaded config" do
+      code, out, _ = run_exec("show processes", "--config", fixture_path("sales_ops.prc"))
+      expect(code).to eq(0)
+      expect(out).to include("lead_pipeline")
+    end
+
+    it "exits 2 on missing command" do
+      code, _, err = run_exec
+      expect(code).to eq(2)
+      expect(err).to include("missing command string")
+    end
+
+    it "exits 1 when config validation fails" do
+      Tempfile.create(["bad", ".prc"]) do |tmp|
+        tmp.write("router x\nexit\nprocess p\nexit\n")
+        tmp.flush
+        code, _, err = run_exec("show running-config", "--config", tmp.path)
+        expect(code).to eq(1)
+        expect(err).to include("has no blocks")
+      end
+    end
+  end
+
+  describe "shell" do
+    def run_shell(stdin_text, *argv)
+      out = StringIO.new
+      err = StringIO.new
+      stdin = StringIO.new(stdin_text)
+      code = described_class.run(["shell", *argv], stdin: stdin, stdout: out, stderr: err)
+      [code, out.string, err.string]
+    end
+
+    it "runs interactive shell to completion via piped stdin" do
+      code, out, _ = run_shell("show version\nexit\n")
+      expect(code).to eq(0)
+      expect(out).to include("prouter #{Prouterd::VERSION}")
+    end
+
+    it "loads --config and shows it from privileged mode" do
+      code, out, _ = run_shell("enable\nshow running-config\nexit\n", "--config", fixture_path("minimal.prc"))
+      expect(code).to eq(0)
+      expect(out).to include("router demo")
+    end
+  end
 end

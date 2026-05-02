@@ -277,7 +277,7 @@ exit
 
 ### Block execution types (spec §2-§5)
 
-Every block declares its runner via a `type` sub-section:
+Every block declares its runner via a `type` sub-section. Built-in:
 
 - `type docker` — runs in a container via `DockerRunner`.
   Fields: `image` (required), `command`, `pull`, `network`, `user`,
@@ -289,6 +289,15 @@ Same `/prouter/{input.json,output.json,artifacts/}` contract for both.
 The orchestrator dispatches per-block, so pipelines can mix types
 freely. Pre-Phase-12 inline form (`image foo` directly in the block)
 still parses — `execution_type=docker` is auto-inferred.
+
+**Adding your own runner type** is a single plugin file + a single
+`Runner` class — parser/validator/renderer/show/CLI all discover the
+type via `Runner::Registry`, so the core has zero hardcoded type names.
+See the "Adding a new runner type" section in
+[CLAUDE.md](CLAUDE.md#adding-a-new-runner-type) for the worked recipe.
+The reference test [`spec/prouterd/runner/plugin_spec.rb`](spec/prouterd/runner/plugin_spec.rb)
+defines a fake `printer` plugin in-test and exercises parse → validate
+→ render → orchestrate end-to-end on it.
 
 ### Match operators
 
@@ -321,9 +330,11 @@ lib/prouterd/
   shell/          mode stack (>, #, config, config-process, config-block)
   storage/        SQLite + migrations + repositories
   control_plane/  ConfigStore (commit/rollback/write_memory)
-  runner/         DockerRunner + StubRunner
-  runtime/        Orchestrator, Context, MatchEvaluator,
-                  RetryCalculator, Redactor, Recovery, Tracer, Scheduler
+  runner/         Plugin/Registry, DockerRunner, ShellRunner, StubRunner,
+                  plugins/{docker,shell}.rb
+  runtime/        Orchestrator, Context, MatchEvaluator, ContractValidator,
+                  RetryCalculator, Redactor, Recovery, Tracer, Scheduler,
+                  WorkerPool, InFlightRegistry
   api/            Rack app + WebhookHandler + Puma launcher
   cli/main.rb     prouter binary
 exe/prouter       executable
@@ -341,10 +352,12 @@ Storage schema (SQLite, WAL):
 bundle exec rspec
 ```
 
-281 specs cover lexer/parser/validator/renderer, shell flows, storage
-repositories, ConfigStore lifecycle, orchestrator with stub runner,
-match evaluator, retry/replay/cancel/diff/scheduler, webhook handler,
-and a full apply→trigger→replay→rollback integration test.
+471 specs cover lexer/parser/validator/renderer, shell flows + router-style
+tab completion, storage repositories, ConfigStore lifecycle, orchestrator
+with stub runner, match evaluator, contract validation, retry/replay/
+cancel/diff/scheduler, webhook handler, IPC events bus + WebSocket
+endpoints, plugin registration end-to-end on a fake runner type, and a
+full apply→trigger→replay→rollback integration test.
 
 The Docker-dependent paths are tested with a `StubRunner`. To exercise
 real Docker, the `examples/` scripts run pipelines against `alpine:latest`
@@ -377,19 +390,19 @@ Implemented (all of [the spec][] §28 acceptance criteria):
 - ✅ Per-interface webhook rate limiting (`PROUTERD_WEBHOOK_RATE`)
 - ✅ Block execution types: `type docker` and `type shell` runners
   dispatched per-block; mixed pipelines work transparently
+- ✅ Pluggable runner types via `Runner::Plugin` — third-party gems can
+  register new `type <foo>` keywords without forking the core
+- ✅ Output contract validation (`contract <name>` with type/range/
+  format/pattern/enum constraints, `on violation fail|retry|warn`)
 
 Deliberately out of v0.1 scope (per spec §31, "workable without these for now"):
 
-- ☐ JSON-Schema runtime contract enforcement (DSL `contract <name>`
-  parses; the validation hook in `execute_single_attempt` is the
-  remaining piece)
-- ☐ KubernetesRunner (`Runner` interface ready)
+- ☐ KubernetesRunner / LambdaRunner / ... (the plugin interface is
+  ready — write a plugin file and a Runner class, no core edits)
 - ☐ S3 / object-store artifacts (`ArtifactStore` interface ready)
 - ☐ RBAC / mTLS / OIDC (basic admin bearer is in)
 - ☐ Postgres adapter (`Storage::DB` abstraction ready)
-- ☐ Idempotency keys, output schema validation
-- ☐ DockerRunner pull/user/memory/cpu wiring (parsed/persisted but not
-  yet applied to container HostConfig — mechanical follow-up)
+- ☐ Idempotency keys
 - ☐ Web UI
 
 [the spec]: spec.md

@@ -14,13 +14,14 @@ module Prouterd
     #   { "data": ..., "meta": { ... } }   on success
     #   { "error": "...", "details": [..] } on failure
     class V1
-      def initialize(store:, runner:, secret_resolver:, in_flight:, metrics:, logger: nil)
+      def initialize(store:, runner:, secret_resolver:, in_flight:, metrics:, logger: nil, jobs: nil)
         @store = store
         @runner = runner
         @secret_resolver = secret_resolver
         @in_flight = in_flight
         @metrics = metrics
         @logger = logger
+        @jobs = jobs
       end
 
       # ----- /v1/config -----
@@ -117,7 +118,7 @@ module Prouterd
           interface_name: nil,
           commit_id: @store.running_commit&.id
         )
-        Thread.new { execute_safely(orchestrator, run, document) }
+        dispatch_run(orchestrator, run, document)
         @metrics&.increment(:webhooks_received_total, interface: "(api-trigger)", code: 202)
 
         json(202, data: { run_id: run.uid, status: "queued" })
@@ -197,7 +198,7 @@ module Prouterd
             commit_id: original.process_config_commit_id,
             replay_of_run_id: original.id
           )
-          Thread.new { execute_safely(orchestrator, new_run, document, from_block: from_block, seed_context: seed) }
+          dispatch_run(orchestrator, new_run, document, from_block: from_block, seed_context: seed)
         else
           new_run = orchestrator.enqueue(
             document, original.process_name,
@@ -206,7 +207,7 @@ module Prouterd
             commit_id: original.process_config_commit_id,
             replay_of_run_id: original.id
           )
-          Thread.new { execute_safely(orchestrator, new_run, document) }
+          dispatch_run(orchestrator, new_run, document)
         end
 
         json(202, data: { run_id: new_run.uid, status: "queued", replay_of: uid, from: from_block })
@@ -266,11 +267,33 @@ module Prouterd
           db: @store.db,
           runner: @runner,
           secret_resolver: @secret_resolver,
-          in_flight: @in_flight
+          in_flight: @in_flight,
+          metrics: @metrics
         )
       end
 
-      def execute_safely(orchestrator, run, document, **kwargs)
+      # Async-dispatch a previously-enqueued Run. Prefers the durable
+      # JobQueue (so a daemon crash mid-run can be recovered); falls back
+      # to Thread.new for ad-hoc test setups without a queue wired.
+      def dispatch_run(orchestrator, run, document, from_block: nil, seed_context: nil)
+        if @jobs
+          if from_block
+            @jobs.enqueue(
+              run_id: run.id, kind: "execute_from_block",
+              payload: { "from_block" => from_block, "seed_context" => seed_context || {} }
+            )
+          else
+            @jobs.enqueue(run_id: run.id, kind: "execute")
+          end
+        else
+          Thread.new { execute_safely(orchestrator, run, document, from_block: from_block, seed_context: seed_context) }
+        end
+      end
+
+      def execute_safely(orchestrator, run, document, from_block: nil, seed_context: nil)
+        kwargs = {}
+        kwargs[:from_block] = from_block if from_block
+        kwargs[:seed_context] = seed_context if seed_context
         orchestrator.execute_run(run, document, **kwargs)
       rescue StandardError => e
         @logger&.error("v1 async run #{run.uid} crashed: #{e.class}: #{e.message}")

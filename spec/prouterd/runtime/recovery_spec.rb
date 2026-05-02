@@ -24,7 +24,7 @@ RSpec.describe Prouterd::Runtime::Recovery do
     expect(refreshed.status).to eq("failed")
     expect(refreshed.error_summary).to include("orchestrator restart")
     expect(refreshed.finished_at).not_to be_nil
-    expect(out.string).to include("recovery: marked")
+    expect(out.string).to match(/recovery:.*marked 1 run/)
   end
 
   it "marks abandoned queued runs as failed" do

@@ -112,6 +112,30 @@ module Prouterd
             CREATE INDEX idx_artifacts_run ON artifacts(run_id);
             CREATE INDEX idx_artifacts_step ON artifacts(step_id);
           SQL
+        ),
+        Migration.new(
+          version: "0003",
+          description: "jobs queue for daemon worker pool",
+          up: <<~SQL
+            CREATE TABLE jobs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id INTEGER NOT NULL,
+              kind TEXT NOT NULL DEFAULT 'execute',
+              status TEXT NOT NULL DEFAULT 'queued',
+              attempts INTEGER NOT NULL DEFAULT 0,
+              locked_by TEXT,
+              locked_at TEXT,
+              available_at TEXT NOT NULL,
+              payload_json TEXT,
+              error_message TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (run_id) REFERENCES runs(id)
+            );
+            CREATE INDEX idx_jobs_status_available ON jobs(status, available_at);
+            CREATE INDEX idx_jobs_run ON jobs(run_id);
+            CREATE INDEX idx_jobs_locked_at ON jobs(locked_at);
+          SQL
         )
       ].freeze
 

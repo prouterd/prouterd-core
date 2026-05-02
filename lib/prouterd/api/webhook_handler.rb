@@ -16,13 +16,15 @@ module Prouterd
     #      proper worker pool with crash recovery is Phase 8 territory.
     class WebhookHandler
       def initialize(store:, runner:, secret_resolver: nil, logger: nil,
-                     in_flight: nil, metrics: nil)
+                     in_flight: nil, metrics: nil, jobs: nil, rate_limiter: nil)
         @store = store
         @runner = runner
         @secret_resolver = secret_resolver || Runtime::EnvSecretResolver.new
         @logger = logger
         @in_flight = in_flight
         @metrics = metrics
+        @jobs = jobs
+        @rate_limiter = rate_limiter
       end
 
       # Returns [status, headers, body_string] for the Rack response.
@@ -41,6 +43,13 @@ module Prouterd
         if actual_method != expected_method
           return json_error(405, "method '#{actual_method}' not allowed; interface accepts '#{expected_method}'",
                             headers: { "allow" => expected_method })
+        end
+
+        # Per-interface rate limit (sliding window). Returns 429 with the
+        # configured limit in the body so a client can back off intelligently.
+        if @rate_limiter && !@rate_limiter.allow?(interface_name)
+          @metrics&.increment(:webhooks_received_total, interface: interface_name, code: 429)
+          return json_error(429, "rate limit exceeded for interface '#{interface_name}'")
         end
 
         if interface.auth
@@ -75,7 +84,14 @@ module Prouterd
           commit_id: @store.running_commit&.id
         )
 
-        dispatch_async(orchestrator, run, document)
+        # Async dispatch: prefer the durable job queue (Phase 11) so a daemon
+        # crash mid-run can be recovered. Fall back to Thread.new only when
+        # no JobQueue is wired (e.g. ad-hoc test setup).
+        if @jobs
+          @jobs.enqueue(run_id: run.id, kind: "execute")
+        else
+          dispatch_async(orchestrator, run, document)
+        end
 
         @metrics&.increment(:webhooks_received_total, interface: interface_name, code: 202)
 

@@ -40,7 +40,8 @@ module Prouterd
       WEBHOOK_PATH = %r{\A/i/(?<name>[A-Za-z_][A-Za-z0-9_-]*)\z}.freeze
 
       def initialize(store:, runner:, secret_resolver: nil, logger: nil,
-                     in_flight: nil, metrics: nil, admin_token: nil)
+                     in_flight: nil, metrics: nil, admin_token: nil,
+                     jobs: nil, rate_limiter: nil)
         @store = store
         @runner = runner
         @secret_resolver = secret_resolver || Runtime::EnvSecretResolver.new
@@ -48,6 +49,8 @@ module Prouterd
         @in_flight = in_flight
         @metrics = metrics
         @admin_token = admin_token
+        @jobs = jobs
+        @rate_limiter = rate_limiter
         @accepting = true
 
         @webhook_handler = WebhookHandler.new(
@@ -56,7 +59,9 @@ module Prouterd
           secret_resolver: @secret_resolver,
           logger: @logger,
           in_flight: @in_flight,
-          metrics: @metrics
+          metrics: @metrics,
+          jobs: @jobs,
+          rate_limiter: @rate_limiter
         )
         @v1 = V1.new(
           store: @store,
@@ -64,7 +69,8 @@ module Prouterd
           secret_resolver: @secret_resolver,
           in_flight: @in_flight,
           metrics: @metrics,
-          logger: @logger
+          logger: @logger,
+          jobs: @jobs
         )
       end
 

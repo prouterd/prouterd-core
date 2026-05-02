@@ -121,11 +121,29 @@ module Prouterd
       end
 
       def read_input(prompt)
-        if @interactive && @output.respond_to?(:print)
-          @output.print(prompt)
-          @output.flush if @output.respond_to?(:flush)
+        if @interactive && reline_available?
+          # Reline provides line editing, history, and Ctrl-C handling
+          # without bringing in any extra gem dependency. Returns nil on EOF.
+          line = Reline.readline(prompt, true)
+          line.nil? ? nil : "#{line}\n"
+        else
+          if @interactive && @output.respond_to?(:print)
+            @output.print(prompt)
+            @output.flush if @output.respond_to?(:flush)
+          end
+          @input.gets
         end
-        @input.gets
+      end
+
+      def reline_available?
+        return @reline_available unless @reline_available.nil?
+
+        @reline_available = begin
+          require "reline"
+          true
+        rescue LoadError
+          false
+        end
       end
 
       def handle_result(result)

@@ -204,6 +204,7 @@ module Prouterd
         db_path = nil
         runner_kind = default_runner_kind
         no_db = false
+        workers = Prouterd::Runtime::WorkerPool::DEFAULT_WORKERS
 
         until @argv.empty?
           case @argv.first
@@ -223,6 +224,10 @@ module Prouterd
           when "--runner"
             @argv.shift
             runner_kind = @argv.shift or return missing_arg("serve", "--runner")
+          when "--workers"
+            @argv.shift
+            n = @argv.shift or return missing_arg("serve", "--workers")
+            workers = Integer(n) rescue (return invalid_arg("serve", "--workers must be an integer"))
           else
             @stderr.puts "prouter serve: unknown option '#{@argv.first}'"
             return 2
@@ -253,18 +258,31 @@ module Prouterd
         # new traffic. Otherwise replay/show would still see them as live.
         Prouterd::Runtime::Recovery.sweep(store.db, output: @stdout)
 
+        # Persistent job queue: the daemon's worker pool drains it. Webhook /
+        # /v1 trigger / scheduler enqueue jobs here instead of spawning ad-hoc
+        # threads so daemon crashes can be recovered.
+        jobs = Prouterd::Storage::Repositories::Jobs.new(store.db)
+
+        worker_pool = Prouterd::Runtime::WorkerPool.new(
+          store: store, runner: runner, in_flight: in_flight, metrics: metrics,
+          workers: workers, output: @stdout
+        )
+        worker_pool.run
+
         # Cron scheduler runs alongside the HTTP listener. Started before
         # serve so any cron whose next_time is "now" can fire immediately.
         scheduler = Prouterd::Runtime::Scheduler.new(
           store: store, runner: runner, output: @stdout,
-          in_flight: in_flight, metrics: metrics
+          in_flight: in_flight, metrics: metrics, jobs: jobs
         )
         scheduler.run
+
+        rate_limiter = Prouterd::API::RateLimiter.from_env
 
         app = Prouterd::API::App.new(
           store: store, runner: runner,
           in_flight: in_flight, metrics: metrics,
-          admin_token: admin_token
+          admin_token: admin_token, jobs: jobs, rate_limiter: rate_limiter
         )
         begin
           Prouterd::API::Server.run(
@@ -273,6 +291,7 @@ module Prouterd
           )
         ensure
           scheduler.stop
+          worker_pool.stop
         end
         0
       ensure

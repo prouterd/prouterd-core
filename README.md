@@ -132,10 +132,11 @@ prouter trace   event <file> [--interface NAME]   static analysis (no execution)
 prouter replay  run <uid> [from <block>]
 prouter cancel  run <uid>                soft cancel — between-level halt
 prouter diff    <file>                   diff file vs running config
-prouter cleanup --older-than 30d [--dry-run]
+prouter cleanup --older-than 30d [--dry-run] [--batch-size N]
                                          delete terminal runs older than threshold
 
-prouter serve  [--bind ADDR] [--port N]  HTTP daemon: webhooks + cron + /v1 API
+prouter serve  [--bind ADDR] [--port N] [--workers N]
+                                         HTTP daemon: webhooks + cron + /v1 API
 
 prouter version | help
 ```
@@ -190,6 +191,46 @@ secrets and limits don't end up in `.prc` files or `ps` output:
 | `PROUTERD_ARTIFACTS_ROOT`         | `var/artifacts` | Where `ArtifactStore` writes block outputs    |
 | `PROUTERD_DB`                     | `var/prouterd.db` | SQLite path                                  |
 | `PROUTERD_RUNNER`                 | `docker`      | Default for `--runner`                          |
+
+### Production deployment
+
+A hardened invocation: HTTPS, secrets read from disk (Docker Compose /
+Kubernetes / systemd-LoadCredential all expose the same shape), capped
+log capture, and a generous container-stop window so blocks can flush
+output.json before SIGKILL.
+
+```bash
+export PROUTERD_ADMIN_TOKEN="$(cat /run/secrets/prouterd_admin)"
+export PROUTERD_SSL_CERT=/etc/prouterd/tls/cert.pem
+export PROUTERD_SSL_KEY=/etc/prouterd/tls/key.pem
+export PROUTERD_LOG_LEVEL=info
+export PROUTERD_LOG_CAPTURE_BYTES=4194304       # 4 MB per stream
+export PROUTERD_CONTAINER_STOP_TIMEOUT=30       # 30s graceful SIGTERM
+export PROUTERD_ARTIFACTS_ROOT=/var/lib/prouterd/artifacts
+
+bundle exec ruby exe/prouter serve \
+  --bind 0.0.0.0 --port 8443 \
+  --db /var/lib/prouterd/prouterd.db \
+  --workers 8
+```
+
+For secrets that the daemon must inject into blocks at run time (webhook
+tokens, third-party API keys), declare them in the DSL and point at
+either an env var or a file the daemon can read:
+
+```prc
+secret API_TOKEN
+ source file /run/secrets/api_token   ! Docker secret / k8s secret volume
+exit
+```
+
+A long-running cleanup: split into 500-row transactions so the table
+isn't write-locked for minutes on a million-run sweep.
+
+```bash
+prouter cleanup --older-than 90d --batch-size 500 \
+  --db /var/lib/prouterd/prouterd.db
+```
 
 ## DSL cheatsheet (`.prc` files)
 

@@ -8,9 +8,19 @@ RSpec.describe Prouterd::API::App do
   let(:db) { Prouterd::Storage::DB.open(":memory:") }
   let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
   let(:runner) { Prouterd::Runner::StubRunner.new }
-  let(:app) { described_class.new(store: store, runner: runner) }
+  let(:jobs) { Prouterd::Storage::Repositories::Jobs.new(db) }
+  let(:in_flight) { Prouterd::Runtime::InFlightRegistry.new }
+  let(:worker_pool) do
+    Prouterd::Runtime::WorkerPool.new(
+      store: store, runner: runner, in_flight: in_flight, workers: 1
+    )
+  end
+  let(:app) { described_class.new(store: store, runner: runner, jobs: jobs, in_flight: in_flight) }
 
-  after { db.close }
+  after do
+    worker_pool.stop if defined?(@worker_pool_started) && @worker_pool_started
+    db.close
+  end
 
   def parse(prc)
     Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(prc))
@@ -150,8 +160,8 @@ RSpec.describe Prouterd::API::App do
     end
   end
 
-  describe "Phase 7 async dispatch" do
-    it "executes the run in the background and the run completes asynchronously" do
+  describe "async dispatch via JobQueue + WorkerPool" do
+    it "returns 202 immediately and the worker pool drives the run to success" do
       commit(config_with_webhook)
       ENV["WEBHOOK_TOKEN"] = "tok"
 
@@ -163,6 +173,9 @@ RSpec.describe Prouterd::API::App do
         Prouterd::Runner::StubRunner.success.call(req)
       end
 
+      worker_pool.run
+      @worker_pool_started = true
+
       header "authorization", "Bearer tok"
       header "content-type", "application/json"
       post "/i/leads_in", JSON.dump(type: "lead.created", body: { name: "x" })
@@ -170,8 +183,8 @@ RSpec.describe Prouterd::API::App do
       body = JSON.parse(last_response.body)
 
       repo = Prouterd::Storage::Repositories::Runs.new(db)
-      # At this moment the runner is still blocked inside the worker thread,
-      # so the run is `running` (not yet success).
+      # At this moment the worker has claimed the job and the runner is
+      # still blocked, so the run is queued/running (not yet success).
       Timeout.timeout(2) do
         loop do
           status = repo.get_run_by_uid(body["run_id"])&.status

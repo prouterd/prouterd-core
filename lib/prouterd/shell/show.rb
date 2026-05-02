@@ -4,11 +4,6 @@ module Prouterd
   module Shell
     # Read-only `show` subsystem. Used by Privileged and Config modes (and
     # any sub-mode that wants to expose `show` from inside a session).
-    #
-    # Phase 2 covers config-domain shows: running-config, candidate-config,
-    # processes, interfaces, queues, policies, secrets, blocks, routes, status,
-    # version. Phase 3+ adds startup-config, commits, runs, logs, artifacts,
-    # dead-letter — these emit a "not yet available" message until then.
     module Show
       module_function
 
@@ -637,10 +632,6 @@ module Prouterd
         return if rest.length == count
 
         raise CommandError, "syntax: #{syntax}"
-      end
-
-      def not_yet(out, phase)
-        out.puts "(not yet available — coming in #{phase})"
       end
 
       # Minimal line-by-line diff using LCS over arrays of lines.

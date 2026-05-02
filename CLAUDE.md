@@ -179,7 +179,7 @@ If you change how timezones are stored, update
 ## Testing
 
 ```bash
-bundle exec rspec                  # full suite (~280 specs)
+bundle exec rspec                  # full suite (~460 specs)
 bundle exec rspec spec/prouterd/runtime/   # one subsystem
 bundle exec rspec spec/prouterd/runtime/orchestrator_spec.rb:42  # one example
 ```
@@ -201,11 +201,6 @@ containers and assert on persisted state.
 These came up in design and were declined for v0.1. Don't add them on
 spec; wait for a real driver:
 
-- **JSON-Schema runtime contract enforcement.** `block ... contract X`
-  parses, validates ref, and persists; runtime hook in
-  `execute_single_attempt` is the missing piece. Top-level
-  `schema <name>` and `contract <name>` sections + `on violation`
-  semantics (retry/fail/warn) are similarly DSL-only TODOs.
 - **Postgres adapter.** `Storage::DB` is a thin wrapper, but only the
   SQLite implementation exists. SQL itself is portable; transaction
   semantics, `last_insert_row_id`, and `RETURNING` would need adapting.
@@ -213,9 +208,6 @@ spec; wait for a real driver:
   pluggable (Phase 12); add a new entry in `AST::Block::EXECUTION_TYPES`,
   parse/validate/render its `type` sub-section, and add the runner class.
   Nobody has asked yet.
-- **DockerRunner pull/user/memory/cpu wiring.** Phase 12 added the DSL
-  fields and threaded them through `RunRequest`, but `DockerRunner`
-  doesn't yet apply them to `HostConfig`. Mechanical follow-up.
 - **RBAC, mTLS, OIDC.** Spec §23.4 future-version. Webhook bearer auth
   + admin bearer for `/v1/*` are the only auth mechanisms today.
 - **Idempotency keys** (spec §12.6 future). At-least-once execution

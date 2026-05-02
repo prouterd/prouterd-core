@@ -35,6 +35,7 @@ module Prouterd
         work_dir = Dir.mktmpdir(WORK_DIR_PREFIX)
         prepare_work_dir(work_dir, request.input_json)
 
+        ensure_image(request)
         container = create_container(request, work_dir)
         started_at = Time.now.utc
         container.start
@@ -119,6 +120,12 @@ module Prouterd
           "NetworkMode" => network_mode(request.network),
           "AutoRemove" => false
         }
+        if (mem_bytes = parse_memory(request.memory))
+          host_config["Memory"] = mem_bytes
+        end
+        if (nano_cpus = parse_cpu(request.cpu))
+          host_config["NanoCpus"] = nano_cpus
+        end
 
         params = {
           "Image" => request.image,
@@ -134,8 +141,62 @@ module Prouterd
           }
         }
         params["Cmd"] = cmd if cmd
+        params["User"] = request.user if request.user && !request.user.empty?
 
         Docker::Container.create(params)
+      end
+
+      # Honor the block's pull policy before the container is created, so
+      # `pull always` re-fetches and `pull never` errors loud instead of
+      # racing with a missing image. `if-missing` (the default) only pulls
+      # when the image isn't present locally.
+      def ensure_image(request)
+        policy = request.pull || "if-missing"
+        return if policy == "never"
+
+        return if policy == "if-missing" && image_present?(request.image)
+
+        Docker::Image.create("fromImage" => request.image)
+      end
+
+      def image_present?(reference)
+        Docker::Image.get(reference)
+        true
+      rescue Docker::Error::NotFoundError
+        false
+      end
+
+      # Accepts "512m" / "1g" / "2GB" / raw bytes ("104857600"). Returns
+      # an Integer byte count, or nil if the input is blank/unparseable —
+      # callers fall back to "no limit".
+      def parse_memory(value)
+        return nil if value.nil? || value.to_s.strip.empty?
+
+        s = value.to_s.strip.downcase
+        if (m = s.match(/\A(\d+(?:\.\d+)?)\s*([kmgt]?)b?\z/))
+          num = m[1].to_f
+          mult = case m[2]
+                 when "k" then 1024
+                 when "m" then 1024**2
+                 when "g" then 1024**3
+                 when "t" then 1024**4
+                 else 1
+                 end
+          (num * mult).to_i
+        end
+      end
+
+      # Accepts "0.5" / "2" / "2.5". Returns Docker's NanoCpus integer
+      # (CPUs * 1e9), or nil for blank/unparseable.
+      def parse_cpu(value)
+        return nil if value.nil? || value.to_s.strip.empty?
+
+        f = Float(value.to_s.strip)
+        return nil unless f.positive?
+
+        (f * 1_000_000_000).to_i
+      rescue ArgumentError, TypeError
+        nil
       end
 
       def parse_command(command)

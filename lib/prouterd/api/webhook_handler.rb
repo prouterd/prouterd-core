@@ -11,19 +11,19 @@ module Prouterd
     #   3. Parse the request body as JSON. Empty body => empty event.
     #   4. Find the matching global route. Evaluate any match conditions
     #      against the event.
-    #   5. Enqueue a Run row, return `{run_id, status: queued}` immediately.
-    #   6. Dispatch async execution onto an internal Thread (Phase 7) — a
-    #      proper worker pool with crash recovery is Phase 8 territory.
+    #   5. Enqueue a Run row + a job onto the durable JobQueue, return
+    #      `{run_id, status: queued}` immediately. The WorkerPool drains
+    #      the queue; daemon crash mid-run is recoverable.
     class WebhookHandler
-      def initialize(store:, runner:, secret_resolver: nil, logger: nil,
-                     in_flight: nil, metrics: nil, jobs: nil, rate_limiter: nil)
+      def initialize(store:, runner:, jobs:, secret_resolver: nil, logger: nil,
+                     in_flight: nil, metrics: nil, rate_limiter: nil)
         @store = store
         @runner = runner
+        @jobs = jobs
         @secret_resolver = secret_resolver || Runtime::EnvSecretResolver.new
         @logger = logger
         @in_flight = in_flight
         @metrics = metrics
-        @jobs = jobs
         @rate_limiter = rate_limiter
       end
 
@@ -84,15 +84,7 @@ module Prouterd
           commit_id: @store.running_commit&.id
         )
 
-        # Async dispatch: prefer the durable job queue (Phase 11) so a daemon
-        # crash mid-run can be recovered. Fall back to Thread.new only when
-        # no JobQueue is wired (e.g. ad-hoc test setup).
-        if @jobs
-          @jobs.enqueue(run_id: run.id, kind: "execute")
-        else
-          dispatch_async(orchestrator, run, document)
-        end
-
+        @jobs.enqueue(run_id: run.id, kind: "execute")
         @metrics&.increment(:webhooks_received_total, interface: interface_name, code: 202)
 
         body = JSON.dump(
@@ -118,29 +110,6 @@ module Prouterd
         JSON.parse(raw)
       rescue JSON::ParserError => e
         json_error(400, "request body is not valid JSON: #{e.message}")
-      end
-
-      def dispatch_async(orchestrator, run, document)
-        Thread.new do
-          begin
-            orchestrator.execute_run(run, document)
-          rescue StandardError => e
-            @logger&.error("run #{run.uid} crashed: #{e.class} #{e.message}")
-            # Best-effort mark the run failed; if the DB call also fails,
-            # we drop the error since the request thread is long gone.
-            begin
-              repo = Storage::Repositories::Runs.new(@store.db)
-              repo.update_run(
-                run.id,
-                status: "failed",
-                finished_at: Time.now.utc.iso8601(3),
-                error_summary: "orchestrator crash: #{e.class}: #{e.message}"
-              )
-            rescue StandardError
-              # swallow
-            end
-          end
-        end
       end
 
       def json_error(status, message, headers: {})

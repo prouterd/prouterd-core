@@ -41,9 +41,9 @@ module Prouterd
       WEBHOOK_PATH = %r{\A/i/(?<name>[A-Za-z_][A-Za-z0-9_-]*)\z}.freeze
       CLI_WS_PATH  = %r{\A/v1/cli/(?<session_id>[A-Za-z0-9._-]+)\z}.freeze
 
-      def initialize(store:, runner:, secret_resolver: nil, logger: nil,
+      def initialize(store:, runner:, jobs:, secret_resolver: nil, logger: nil,
                      in_flight: nil, metrics: nil, admin_token: nil,
-                     jobs: nil, rate_limiter: nil,
+                     rate_limiter: nil,
                      events: Prouterd::Events.default)
         @store = store
         @runner = runner

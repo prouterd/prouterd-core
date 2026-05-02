@@ -23,18 +23,18 @@ module Prouterd
     class Scheduler
       TICK_SECONDS = 1.0
 
-      def self.run(store:, runner:, output: nil, in_flight: nil, metrics: nil, jobs: nil)
-        new(store: store, runner: runner, output: output, in_flight: in_flight,
-            metrics: metrics, jobs: jobs).run
+      def self.run(store:, runner:, jobs:, output: nil, in_flight: nil, metrics: nil)
+        new(store: store, runner: runner, jobs: jobs, output: output,
+            in_flight: in_flight, metrics: metrics).run
       end
 
-      def initialize(store:, runner:, output: nil, in_flight: nil, metrics: nil, jobs: nil)
+      def initialize(store:, runner:, jobs:, output: nil, in_flight: nil, metrics: nil)
         @store = store
         @runner = runner
+        @jobs = jobs
         @output = output
         @in_flight = in_flight
         @metrics = metrics
-        @jobs = jobs
         @stopping = false
         @last_fired = {} # interface_name -> Time
         @tick_seconds = TICK_SECONDS
@@ -137,15 +137,7 @@ module Prouterd
         @metrics&.increment(:cron_fires_total, interface: iface.name)
         @output&.puts("scheduler: fired '#{iface.name}' -> run #{run.uid} at #{fired_at.utc.iso8601(0)}")
 
-        if @jobs
-          @jobs.enqueue(run_id: run.id, kind: "execute")
-        else
-          Thread.new do
-            orchestrator.execute_run(run, document)
-          rescue StandardError => e
-            @output&.puts("scheduler: run #{run.uid} crashed: #{e.class}: #{e.message}")
-          end
-        end
+        @jobs.enqueue(run_id: run.id, kind: "execute")
       end
     end
   end

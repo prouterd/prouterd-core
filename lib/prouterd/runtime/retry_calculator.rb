@@ -9,7 +9,7 @@ module Prouterd
     # Backoff types (spec §13.3):
     #   fixed       — constant initial_delay each time
     #   exponential — initial * 2^(attempt-1), capped at max_delay
-    #   linear      — reserved (spec §13.3 future); falls back to fixed
+    #   linear      — initial * (attempt-1), capped at max_delay
     module RetryCalculator
       module_function
 

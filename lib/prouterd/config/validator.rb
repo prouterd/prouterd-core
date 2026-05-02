@@ -50,10 +50,12 @@ module Prouterd
         check_unique_queues
         check_unique_interfaces
         check_unique_processes
+        check_unique_contracts
         check_secret_sources
         check_policies
         check_queues
         check_interfaces
+        check_contracts
         check_processes
         check_global_routes
         @result
@@ -197,6 +199,9 @@ module Prouterd
             unless secret_defined?(secret_name)
               @result.error("block '#{process.name}/#{block.name}' references unknown secret '#{secret_name}'", line: block.line)
             end
+          end
+          if block.contract_name && !contract_defined?(block.contract_name)
+            @result.error("block '#{process.name}/#{block.name}' references unknown contract '#{block.contract_name}'", line: block.line)
           end
         end
       end
@@ -400,6 +405,58 @@ module Prouterd
 
       def queue_defined?(name)
         @doc.queues.any? { |q| q.name == name }
+      end
+
+      def contract_defined?(name)
+        @doc.contracts.any? { |c| c.name == name }
+      end
+
+      # ----- contract validation -----
+
+      def check_unique_contracts
+        check_unique(@doc.contracts, "contract")
+      end
+
+      def check_contracts
+        @doc.contracts.each do |contract|
+          # Each Requirement should have at least a presence rule (required:
+          # true) OR a constraint. A pure `optional <path>` with no extras
+          # is meaningless and probably a typo.
+          contract.requirements.each do |req|
+            unless req.required || req.has_constraints?
+              @result.warning(
+                "contract '#{contract.name}': 'optional #{req.path}' has no constraints (no-op)",
+                line: req.line
+              )
+            end
+            check_requirement_consistency(contract, req)
+          end
+        end
+      end
+
+      def check_requirement_consistency(contract, req)
+        # min/max only meaningful for numeric or string-via-length, but
+        # we don't enforce that strictly — runtime ContractValidator
+        # silently skips inapplicable rules. Catch here only the cases
+        # where the user clearly wrote something contradictory.
+        if req.min && req.max && req.min > req.max
+          @result.error(
+            "contract '#{contract.name}': '#{req.path}' min #{req.min} > max #{req.max}",
+            line: req.line
+          )
+        end
+        if req.min_length && req.max_length && req.min_length > req.max_length
+          @result.error(
+            "contract '#{contract.name}': '#{req.path}' min-length > max-length",
+            line: req.line
+          )
+        end
+        if req.format == "regex" && req.pattern.nil?
+          @result.error(
+            "contract '#{contract.name}': format 'regex' requires 'pattern <regex>'",
+            line: req.line
+          )
+        end
       end
     end
   end

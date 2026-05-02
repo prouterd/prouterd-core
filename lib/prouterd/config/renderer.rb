@@ -26,6 +26,7 @@ module Prouterd
         @doc.secrets.each   { |s| blank; render_secret(s) }
         @doc.policies.each  { |p| blank; render_policy(p) }
         @doc.queues.each    { |q| blank; render_queue(q) }
+        @doc.contracts.each { |c| blank; render_contract(c) }
         @doc.interfaces.each { |i| blank; render_interface(i) }
         @doc.processes.each { |p| blank; render_process(p) }
         @doc.global_routes.each { |r| blank; render_global_route(r) }
@@ -175,6 +176,28 @@ module Prouterd
       def render_global_route(route)
         emit(0, "route interface #{route.interface_name} process #{route.process_name}")
         route.matches.each { |m| emit(1, render_match(m)) }
+        emit(0, "exit")
+      end
+
+      def render_contract(contract)
+        emit(0, "contract #{contract.name}")
+        contract.requirements.each do |req|
+          # Emit one line per Requirement, packing all attributes inline.
+          # Spec §14: contracts are read top-to-bottom, grep-friendly.
+          keyword = req.required ? "require" : "optional"
+          parts = ["#{keyword} #{req.path}"]
+          parts << "type #{req.type}" if req.type
+          parts << "min #{req.min}" if req.min
+          parts << "max #{req.max}" if req.max
+          parts << "length #{req.length}" if req.length
+          parts << "min-length #{req.min_length}" if req.min_length
+          parts << "max-length #{req.max_length}" if req.max_length
+          parts << "format #{req.format}" if req.format
+          parts << "pattern #{quote_string(req.pattern)}" if req.pattern
+          parts << "in #{req.enum.map { |v| render_value(v) }.join(',')}" if req.enum
+          emit(1, parts.join(" "))
+        end
+        emit(1, "on violation #{contract.on_violation}") if contract.on_violation && contract.on_violation != "fail"
         emit(0, "exit")
       end
 

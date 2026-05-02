@@ -4,7 +4,7 @@ module Prouterd
       # Root of the parsed config. Top-level sections live here in declaration order.
       class Document
         attr_accessor :router
-        attr_reader :secrets, :policies, :queues, :interfaces, :processes, :global_routes
+        attr_reader :secrets, :policies, :queues, :interfaces, :processes, :global_routes, :contracts
 
         def initialize
           @router = nil
@@ -14,6 +14,7 @@ module Prouterd
           @interfaces = []
           @processes = []
           @global_routes = []
+          @contracts = []
         end
       end
 
@@ -222,6 +223,73 @@ module Prouterd
           @operator = operator
           @values = values
           @line = line
+        end
+      end
+
+      # A contract validates a block's output JSON against a set of
+      # constraints declared in `contract <name> ... exit` at the top level.
+      # Multiple lines for the same path accumulate constraints into a
+      # single Requirement: `require x type integer` + `require x min 0` +
+      # `require x max 100` collapses to one Requirement with all three.
+      class Contract
+        ON_VIOLATION_VALUES = %w[fail retry warn].freeze
+
+        attr_accessor :name, :on_violation, :line
+        attr_reader :requirements
+
+        def initialize(name:, line:)
+          @name = name
+          @line = line
+          @on_violation = "fail"
+          @requirements = []
+        end
+
+        # Look up an existing requirement for `path`, or create a new one.
+        # Optional/required is monotonic: a single `require` line on any
+        # of the accumulating lines marks the path as required.
+        def upsert_requirement(path:, required:, line:)
+          existing = @requirements.find { |r| r.path == path }
+          if existing
+            existing.required = true if required
+            existing
+          else
+            r = Requirement.new(path: path, required: required, line: line)
+            @requirements << r
+            r
+          end
+        end
+      end
+
+      class Requirement
+        # Type constraint values accepted in `type <T>`. nil means "any".
+        TYPES = %w[integer number string boolean array object].freeze
+        # Built-in formats; `regex <pattern>` covers the escape hatch.
+        FORMATS = %w[email uri uuid iso8601].freeze
+
+        attr_accessor :path, :required, :type, :min, :max,
+                      :length, :min_length, :max_length,
+                      :format, :pattern, :enum, :line
+
+        def initialize(path:, required:, line:)
+          @path = path
+          @required = required
+          @line = line
+          @type = nil
+          @min = nil
+          @max = nil
+          @length = nil
+          @min_length = nil
+          @max_length = nil
+          @format = nil
+          @pattern = nil
+          @enum = nil
+        end
+
+        # True iff at least one constraint beyond presence is declared.
+        def has_constraints?
+          !type.nil? || !min.nil? || !max.nil? || !length.nil? ||
+            !min_length.nil? || !max_length.nil? || !format.nil? ||
+            !pattern.nil? || !enum.nil?
         end
       end
     end

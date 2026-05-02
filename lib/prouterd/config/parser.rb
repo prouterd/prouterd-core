@@ -40,6 +40,7 @@ module Prouterd
           when "interface" then doc.interfaces << parse_interface(line)
           when "process"   then doc.processes << parse_process(line)
           when "route"     then doc.global_routes << parse_global_route(line)
+          when "contract"  then doc.contracts << parse_contract(line)
           when "exit"
             raise ParseError.new("unexpected 'exit' at top level", line: line.number)
           else
@@ -573,6 +574,143 @@ module Prouterd
         else
           raise ParseError.new("unknown directive '#{head}' in global route", line: line.number)
         end
+      end
+
+      # ----- contracts (Phase 13) -----
+
+      # `contract <name>` — top-level section that declares constraints over
+      # a block's output JSON. Multiple `require <path>` lines for the same
+      # path accumulate into one Requirement; `optional <path>` makes the
+      # path's presence non-mandatory but still applies any constraints.
+      def parse_contract(header)
+        expect_token_count(header, 2, "contract <name>")
+        name = expect_identifier(header.tokens[1], "contract name")
+        node = AST::Contract.new(name: name, line: header.number)
+        advance
+
+        each_body_line("contract #{name}") do |line|
+          apply_contract_field(node, line)
+        end
+
+        node
+      end
+
+      def apply_contract_field(node, line)
+        head = line.head.value
+        case head
+        when "require"  then parse_constraint_line(node, line, required: true)
+        when "optional" then parse_constraint_line(node, line, required: false)
+        when "on"
+          # `on violation <retry|fail|warn>`
+          unless line.tokens.length == 3 && line.tokens[1].value == "violation"
+            raise ParseError.new("syntax: on violation <retry|fail|warn>", line: line.number)
+          end
+          value = expect_word(line.tokens[2], "on violation")
+          unless AST::Contract::ON_VIOLATION_VALUES.include?(value)
+            raise ParseError.new(
+              "invalid on-violation '#{value}' (allowed: #{AST::Contract::ON_VIOLATION_VALUES.join(', ')})",
+              line: line.number
+            )
+          end
+          node.on_violation = value
+        else
+          raise ParseError.new("unknown directive '#{head}' in contract", line: line.number)
+        end
+      end
+
+      # `require <path> [type T] [min N] [max N] [length N] [min-length N]
+      #   [max-length N] [format F] [pattern "..."] [in v1,v2,...]`
+      #
+      # Same grammar for `optional`. Constraints are attribute key + value
+      # pairs after the path, parsed greedily until end of line.
+      def parse_constraint_line(node, line, required:)
+        expect_min_tokens(line, 2, "require/optional <path> [constraints...]")
+        path = expect_context_path(line.tokens[1], "constraint path")
+
+        req = node.upsert_requirement(path: path, required: required, line: line.number)
+        apply_constraint_attributes(req, line, line.tokens[2..])
+      end
+
+      def apply_constraint_attributes(req, line, tokens)
+        i = 0
+        while i < tokens.length
+          key = expect_word(tokens[i], "constraint attribute")
+          case key
+          when "type"
+            value = require_token!(line, tokens, i + 1, "type <integer|number|string|boolean|array|object>")
+            unless AST::Requirement::TYPES.include?(value)
+              raise ParseError.new(
+                "invalid type '#{value}' (allowed: #{AST::Requirement::TYPES.join(', ')})",
+                line: line.number
+              )
+            end
+            req.type = value
+            i += 2
+          when "min"
+            req.min = parse_constraint_number(line, tokens, i + 1, "min")
+            i += 2
+          when "max"
+            req.max = parse_constraint_number(line, tokens, i + 1, "max")
+            i += 2
+          when "length"
+            req.length = parse_constraint_int(line, tokens, i + 1, "length")
+            i += 2
+          when "min-length"
+            req.min_length = parse_constraint_int(line, tokens, i + 1, "min-length")
+            i += 2
+          when "max-length"
+            req.max_length = parse_constraint_int(line, tokens, i + 1, "max-length")
+            i += 2
+          when "format"
+            value = require_token!(line, tokens, i + 1, "format <#{AST::Requirement::FORMATS.join('|')}>")
+            unless AST::Requirement::FORMATS.include?(value)
+              raise ParseError.new(
+                "invalid format '#{value}' (allowed: #{AST::Requirement::FORMATS.join(', ')})",
+                line: line.number
+              )
+            end
+            req.format = value
+            i += 2
+          when "pattern"
+            req.pattern = require_token!(line, tokens, i + 1, "pattern <regex>")
+            i += 2
+          when "in"
+            raw = tokens[(i + 1)..].map(&:value).join(" ")
+            values = split_csv_values(raw, line)
+            raise ParseError.new("'in' requires at least one value", line: line.number) if values.empty?
+
+            req.enum = values
+            i = tokens.length # consumes rest
+          else
+            raise ParseError.new("unknown constraint attribute '#{key}'", line: line.number)
+          end
+        end
+      end
+
+      def require_token!(line, tokens, index, syntax)
+        unless tokens[index]
+          raise ParseError.new("expected value: #{syntax}", line: line.number)
+        end
+        tokens[index].value
+      end
+
+      def parse_constraint_number(line, tokens, index, label)
+        v = require_token!(line, tokens, index, "#{label} <number>")
+        if v.match?(/\A-?\d+\z/)
+          v.to_i
+        elsif v.match?(/\A-?\d+\.\d+\z/)
+          v.to_f
+        else
+          raise ParseError.new("expected number for #{label}, got '#{v}'", line: line.number)
+        end
+      end
+
+      def parse_constraint_int(line, tokens, index, label)
+        v = require_token!(line, tokens, index, "#{label} <integer>")
+        unless v.match?(/\A\d+\z/)
+          raise ParseError.new("expected non-negative integer for #{label}, got '#{v}'", line: line.number)
+        end
+        v.to_i
       end
 
       # ----- match expressions -----

@@ -383,6 +383,14 @@ module Prouterd
 
         result = runner_for(block).run(request)
 
+        # Phase 13: enforce output contract if the block declares one.
+        # A violation reshapes the result so the orchestrator's existing
+        # retry / on-failure logic applies — we don't need a separate
+        # parallel control flow.
+        if result.success? && block.contract_name
+          result = enforce_output_contract(block, document, result, run, step, db_mutex, redactor)
+        end
+
         finished_step = nil
         db_mutex.synchronize do
           persist_logs(run, step, result, redactor)
@@ -405,6 +413,57 @@ module Prouterd
         end
 
         result
+      end
+
+      # If the block has `contract <name>` declared, validate output against
+      # the contract's requirements. Returns the (possibly mutated) result.
+      #
+      #   on violation fail   — rewrite to a contract_violation failure
+      #   on violation retry  — same, but with retryable error_type so the
+      #                          retry loop attempts again per the policy
+      #   on violation warn   — keep as success, log warnings to system stream
+      def enforce_output_contract(block, document, result, run, step, db_mutex, redactor)
+        contract = document.contracts.find { |c| c.name == block.contract_name }
+        return result unless contract # validator already errored; defensive
+
+        violations = ContractValidator.validate(contract, result.output_json)
+        return result if violations.empty?
+
+        message = violations.map(&:to_s).join("; ")
+        db_mutex.synchronize do
+          @runs.append_log(
+            run_id: run.id, step_id: step.id, stream: "system",
+            content: redactor.redact("[contract:#{contract.name}] #{message}")
+          )
+        end
+
+        case contract.on_violation
+        when "warn"
+          # Keep success status; just log. Output still flows to context.
+          result
+        when "retry"
+          Runner::ExecutionResult.new(
+            exit_code: result.exit_code,
+            stdout: result.stdout, stderr: result.stderr,
+            output_json: nil, # don't propagate violating output
+            artifacts: result.artifacts,
+            error_type: "contract_violation",
+            error_message: redactor.redact("contract '#{contract.name}': #{message}"),
+            duration_ms: result.duration_ms,
+            started_at: result.started_at, finished_at: result.finished_at
+          )
+        else # "fail"
+          Runner::ExecutionResult.new(
+            exit_code: result.exit_code,
+            stdout: result.stdout, stderr: result.stderr,
+            output_json: nil,
+            artifacts: result.artifacts,
+            error_type: "contract_violation",
+            error_message: redactor.redact("contract '#{contract.name}': #{message}"),
+            duration_ms: result.duration_ms,
+            started_at: result.started_at, finished_at: result.finished_at
+          )
+        end
       end
 
       def build_input_payload(run, block, input_value, context)

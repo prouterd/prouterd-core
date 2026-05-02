@@ -11,6 +11,7 @@ Docker available — no custom images.
 | `03_retries.prc`                | retry policy with exponential backoff     |
 | `04_webhook.prc`                | webhook interface + bearer auth           |
 | `05_cron.prc`                   | cron interface + scheduler                |
+| `06_shell_block.prc`            | mixed `type shell` + `type docker` blocks |
 
 Each file's top comment shows the exact commands to run it. Common setup:
 

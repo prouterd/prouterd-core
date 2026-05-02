@@ -102,9 +102,40 @@
   override via `PROUTERD_WEBHOOK_RATE=MAX/WINDOW`)
 - CHANGELOG (this file)
 
+### Phase 12: Block execution types (Docker + Shell), pluggable runners
+- DSL: each block declares `type docker { image / pull / network / user /
+  memory / cpu }` or `type shell { exec / cwd / shell / env }` as a
+  sub-section. Common fields (input/output/timeout/retry/secret/contract/
+  enable|disable) stay on the block.
+- New `Runner::ShellRunner` — Open3-based local exec, same
+  `/prouter/{input,output,artifacts}` contract as DockerRunner, same
+  `ExecutionResult` shape. Logs/artifacts/redactor/retries are
+  runner-agnostic.
+- Orchestrator `runner:` argument now accepts `Hash<String, Runner>`
+  and dispatches per-block by `block.execution_type`. Single-runner
+  legacy form still works.
+- CLI: `--runner docker` builds both runners (DockerRunner +
+  ShellRunner) so mixed pipelines work out of the box. `--runner shell`
+  routes both keys to ShellRunner for docker-less hosts.
+- Block gains `contract <name>` field (parsed + persisted; runtime
+  JSON-Schema enforcement deferred to a later phase), plus `enable`/
+  `disable` shorthand and `retry <name>` short form alongside legacy
+  `shutdown`/`no shutdown` and `retry policy <name>`.
+- Backwards compat: pre-Phase-12 inline form (`image foo` directly
+  inside block) parses with `execution_type=docker` auto-inferred.
+  Renderer emits canonical Phase 12 form, so an apply→reload migrates
+  configs automatically.
+- `show block process P B` and Tracer policies output now show
+  type-specific fields (image/command/network/pull/user/memory/cpu vs
+  exec/cwd/shell/env). `show process P` block listing tags each block
+  with its type.
+- New `examples/06_shell_block.prc` demonstrates a shell→docker
+  pipeline. End-to-end smoke verified: `prepare` (shell, 1ms) →
+  `finalize` (docker, 171ms), both under one run.
+
 ## Status
 
-- 11 phases shipped, one git commit per phase
-- 321+ RSpec specs, 0 failures
+- 12 phases shipped, one git commit per phase
+- 364+ RSpec specs, 0 failures
 - All spec §28 acceptance criteria + production hardening
-- End-to-end smoke-tested against real Docker + Puma + cron
+- End-to-end smoke-tested against real Docker + Puma + cron + shell exec

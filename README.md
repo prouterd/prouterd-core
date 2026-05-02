@@ -189,30 +189,51 @@ process lead_pipeline
  no shutdown
 
  block extract
-  image registry.local/blocks/extract:v1
-  timeout 30s
+  type docker
+   image registry.local/blocks/extract:v1
+  exit
   input event.body
   output lead.raw
+  timeout 30s
+  enable
+ exit
+
+ block normalize
+  type shell
+   exec "ruby blocks/normalize/app.rb"
+   cwd ./blocks/normalize
+  exit
+  input lead.raw
+  output lead.normalized
+  timeout 20s
+  enable
  exit
 
  block score
-  image registry.local/blocks/score:v2
-  timeout 20s
-  retry policy retry_standard
-  input lead.raw
+  type docker
+   image registry.local/blocks/score:v2
+  exit
+  input lead.normalized
   output lead.scored
+  timeout 20s
+  retry retry_standard
+  enable
  exit
 
  block notify_sales
-  image registry.local/blocks/notify-sales:v1
-  timeout 15s
-  secret WEBHOOK_TOKEN
+  type docker
+   image registry.local/blocks/notify-sales:v1
+  exit
   input lead.scored
   output sales.notified
+  timeout 15s
+  secret WEBHOOK_TOKEN
+  enable
  exit
 
  ! short-form route (no conditions)
- route extract score
+ route extract normalize
+ route normalize score
 
  ! long-form route with match conditions
  route score notify_sales
@@ -224,6 +245,21 @@ route interface leads_in process lead_pipeline
  match event.type eq "lead.created"
 exit
 ```
+
+### Block execution types (spec §2-§5)
+
+Every block declares its runner via a `type` sub-section:
+
+- `type docker` — runs in a container via `DockerRunner`.
+  Fields: `image` (required), `command`, `pull`, `network`, `user`,
+  `memory`, `cpu`.
+- `type shell` — runs as a host process via `ShellRunner`.
+  Fields: `exec` (required), `cwd`, `shell`, `env KEY VALUE`.
+
+Same `/prouter/{input.json,output.json,artifacts/}` contract for both.
+The orchestrator dispatches per-block, so pipelines can mix types
+freely. Pre-Phase-12 inline form (`image foo` directly in the block)
+still parses — `execution_type=docker` is auto-inferred.
 
 ### Match operators
 
@@ -306,15 +342,25 @@ Implemented (all of [the spec][] §28 acceptance criteria):
 - ✅ /metrics Prometheus endpoint (counters + gauges)
 - ✅ Graceful shutdown: 503 + in-flight drain
 - ✅ `cleanup --older-than` retention sweep
+- ✅ Persistent SQLite-backed job queue + worker pool (`--workers N`),
+  daemon crash mid-run is recovered on next boot
+- ✅ Reline (history + line editing) in interactive shell
+- ✅ Per-interface webhook rate limiting (`PROUTERD_WEBHOOK_RATE`)
+- ✅ Block execution types: `type docker` and `type shell` runners
+  dispatched per-block; mixed pipelines work transparently
 
 Deliberately out of v0.1 scope (per spec §31, "workable without these for now"):
 
-- ☐ DB-backed worker pool with cross-restart in-flight recovery
+- ☐ JSON-Schema runtime contract enforcement (DSL `contract <name>`
+  parses; the validation hook in `execute_single_attempt` is the
+  remaining piece)
 - ☐ KubernetesRunner (`Runner` interface ready)
 - ☐ S3 / object-store artifacts (`ArtifactStore` interface ready)
 - ☐ RBAC / mTLS / OIDC (basic admin bearer is in)
 - ☐ Postgres adapter (`Storage::DB` abstraction ready)
 - ☐ Idempotency keys, output schema validation
+- ☐ DockerRunner pull/user/memory/cpu wiring (parsed/persisted but not
+  yet applied to container HostConfig — mechanical follow-up)
 - ☐ Web UI
 
 [the spec]: spec.md

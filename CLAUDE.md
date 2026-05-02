@@ -46,6 +46,17 @@ field is on `Process` / `Block` / `ProcessRoute` / `GlobalRoute` you
 might also want a typed handler in the corresponding mode for
 auto-completion or special UX, but the default fall-through works.
 
+For block fields, decide whether the field is **type-specific** (only
+applies to `type docker` or `type shell`) or **common**:
+
+- Type-specific (image, command, network, pull, user, memory, cpu, exec,
+  cwd, shell, env): handled in `apply_docker_type_field` /
+  `apply_shell_type_field` and rendered in `render_docker_type` /
+  `render_shell_type`.
+- Common (input, output, timeout, retry, contract, secret, enable/disable):
+  handled in `parse_block_field` and rendered between the type sub-section
+  and the closing `exit` of the block.
+
 ## Adding a new shell command
 
 1. Add the dispatch entry in the relevant mode's `commands` hash
@@ -83,6 +94,22 @@ runs only the pending ones on `DB.open`.
   `Shell::CommandError` for user-visible CLI errors, `Storage::StorageError`
   for persistence, `Runtime::TriggerError` for orchestration. Never
   raise `RuntimeError` directly.
+- **Runner dispatch.** Block execution type is declared via the
+  `type` sub-section (`type docker` / `type shell`). The Orchestrator
+  takes `runner:` as `Hash<String, Runner>` and picks the right one
+  per-block via `block.execution_type`. A new runner type (e.g.
+  Kubernetes, Lambda) plugs in by:
+    1. Adding the kind to `AST::Block::EXECUTION_TYPES`
+    2. A `parse_<kind>_type_field` branch in the parser
+    3. Validator rules in `check_block_type`
+    4. Renderer's `render_<kind>_type` for canonical output
+    5. A new Runner class with `#run(RunRequest) -> ExecutionResult`
+    6. Wire into `CLI::Main#build_runner` so the daemon includes it
+       in the runners hash.
+  The `/prouter/{input.json,output.json,artifacts}` contract is the
+  invariant — the runner decides where those paths actually live (host
+  fs for shell, container mount for docker, CRD for k8s, etc.) but the
+  block author writes the same code regardless.
 
 ## Gotchas (real bugs caught the hard way)
 
@@ -174,25 +201,30 @@ containers and assert on persisted state.
 These came up in design and were declined for v0.1. Don't add them on
 spec; wait for a real driver:
 
-- **Worker pool with DB polling.** Current async path is `Thread.new`
-  from the webhook/scheduler. Daemon crash loses in-flight runs (the
-  recovery sweep on next boot marks them failed). A `WHERE status='queued'
-  AND locked_at IS NULL` polling pool would survive crashes.
-- **Hard cancel.** `cancel run` is soft: orchestrator polls run.status
-  between levels and stops scheduling. In-flight containers finish
-  naturally. Hard cancel needs a `run_uid → container_id` registry.
+- **JSON-Schema runtime contract enforcement.** `block ... contract X`
+  parses, validates ref, and persists; runtime hook in
+  `execute_single_attempt` is the missing piece. Top-level
+  `schema <name>` and `contract <name>` sections + `on violation`
+  semantics (retry/fail/warn) are similarly DSL-only TODOs.
 - **Postgres adapter.** `Storage::DB` is a thin wrapper, but only the
   SQLite implementation exists. SQL itself is portable; transaction
-  semantics and `last_insert_row_id` would need adapting.
-- **KubernetesRunner / S3 ArtifactStore.** Interfaces are clean; nobody
-  has asked for them yet.
+  semantics, `last_insert_row_id`, and `RETURNING` would need adapting.
+- **KubernetesRunner / S3 ArtifactStore.** Runner interface is
+  pluggable (Phase 12); add a new entry in `AST::Block::EXECUTION_TYPES`,
+  parse/validate/render its `type` sub-section, and add the runner class.
+  Nobody has asked yet.
+- **DockerRunner pull/user/memory/cpu wiring.** Phase 12 added the DSL
+  fields and threaded them through `RunRequest`, but `DockerRunner`
+  doesn't yet apply them to `HostConfig`. Mechanical follow-up.
 - **RBAC, mTLS, OIDC.** Spec §23.4 future-version. Webhook bearer auth
-  is the only auth mechanism today.
-- **Output schema validation.** Block contract mentions JSON, no schema
-  enforcement. Add a `Block#output_schema` field and a validator pass
-  in `execute_single_attempt` if needed.
+  + admin bearer for `/v1/*` are the only auth mechanisms today.
+- **Idempotency keys** (spec §12.6 future). At-least-once execution
+  semantics are the documented contract; block authors are responsible
+  for idempotency.
 - **Cron catch-up after daemon outage.** `@last_fired` is in-memory.
   Misses during downtime are silently dropped — by spec §31, "not MVP".
+- **Web UI, distributed multi-daemon workers, advanced expression
+  language.** Spec §3 ("non-goals") and §31 explicitly out of scope.
 
 ## What spec.md says vs what's built
 
@@ -200,6 +232,16 @@ Spec §28 lists the acceptance criteria. All five categories pass.
 Spec §29 lists 8 phases — all 8 are committed in git history (one
 commit per phase). Spec §31 lists the "narrowest MVP" — every item
 on that list is implemented.
+
+The codebase has gone beyond the original spec in three ways:
+
+- **Phases 9-11**: cancel + diff + cron, then full /v1 HTTP API +
+  /metrics + graceful shutdown + cleanup, then SQLite-backed job queue
+  with crash-survivable in-flight runs.
+- **Phase 12 (separate Block Execution Types spec)**: removes Docker
+  centrism. Each block declares `type docker` or `type shell` in a
+  sub-section; `ShellRunner` runs blocks as host processes via Open3.
+  Same `/prouter/*` contract for both. Mixed pipelines work.
 
 The spec also lists "non-goals" (non-goals) — visual editor, full Temporal
 replacement, low-code canvas, distributed workers. Those are still

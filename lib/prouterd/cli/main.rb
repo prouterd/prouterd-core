@@ -38,6 +38,7 @@ module Prouterd
         when "serve"             then cmd_serve
         when "cancel"            then cmd_cancel
         when "diff"              then cmd_diff
+        when "cleanup"           then cmd_cleanup
         when "version", "--version", "-v" then cmd_version
         when "help", "--help", "-h", nil  then cmd_help
         else
@@ -64,7 +65,8 @@ module Prouterd
             cancel  run <uid>                  Soft-cancel an in-flight run
             trace   event <file>               Static routing analysis (no execution)
             diff    <file>                     Show changes if file were applied vs running config
-            serve   [--bind ADDR] [--port N]   Start HTTP daemon (webhooks + cron)
+            cleanup --older-than 30d           Delete terminal runs older than threshold
+            serve   [--bind ADDR] [--port N]   Start HTTP daemon (webhooks + cron + /v1 API)
             shell                              Start interactive router-style shell
             exec    "<cmd>"                    Run a single shell command and print result
             version                            Print version
@@ -234,8 +236,17 @@ module Prouterd
           return 2
         end
 
-        runner = build_runner(runner_kind)
+        # Build a fresh runner that knows about the daemon's in-flight registry
+        # — so DockerRunner can report active container IDs for hard cancel.
+        in_flight = Prouterd::Runtime::InFlightRegistry.new
+        metrics = Prouterd::API::Metrics.new(in_flight: in_flight)
+        runner = build_runner(runner_kind, in_flight: in_flight)
         return 1 if runner == :error
+
+        admin_token = ENV["PROUTERD_ADMIN_TOKEN"]
+        if admin_token.nil? || admin_token.empty?
+          @stdout.puts "prouter serve: WARNING — PROUTERD_ADMIN_TOKEN not set; /v1/* endpoints are open"
+        end
 
         # Crash recovery: any run/step left in `running`/`queued` from a
         # previous daemon process must be marked failed before we accept
@@ -244,12 +255,22 @@ module Prouterd
 
         # Cron scheduler runs alongside the HTTP listener. Started before
         # serve so any cron whose next_time is "now" can fire immediately.
-        scheduler = Prouterd::Runtime::Scheduler.new(store: store, runner: runner, output: @stdout)
+        scheduler = Prouterd::Runtime::Scheduler.new(
+          store: store, runner: runner, output: @stdout,
+          in_flight: in_flight, metrics: metrics
+        )
         scheduler.run
 
-        app = Prouterd::API::App.new(store: store, runner: runner)
+        app = Prouterd::API::App.new(
+          store: store, runner: runner,
+          in_flight: in_flight, metrics: metrics,
+          admin_token: admin_token
+        )
         begin
-          Prouterd::API::Server.run(app: app, bind: bind, port: port, output: @stdout)
+          Prouterd::API::Server.run(
+            app: app, bind: bind, port: port, output: @stdout,
+            in_flight: in_flight
+          )
         ensure
           scheduler.stop
         end
@@ -266,6 +287,85 @@ module Prouterd
       def invalid_arg(cmd, msg)
         @stderr.puts "prouter #{cmd}: #{msg}"
         2
+      end
+
+      # `prouter cleanup --older-than 30d [--dry-run] [--db PATH]`
+      # Removes terminal runs older than the threshold along with their
+      # cascading steps/logs/artifacts and on-disk artifact files. Active
+      # runs are never touched. Config commits are kept (audit trail).
+      def cmd_cleanup
+        store = nil
+        older_than_str = nil
+        dry_run = false
+        db_path = nil
+        no_db = false
+
+        until @argv.empty?
+          case @argv.first
+          when "--older-than"
+            @argv.shift
+            older_than_str = @argv.shift or return missing_arg("cleanup", "--older-than")
+          when "--dry-run"
+            @argv.shift
+            dry_run = true
+          when "--db"
+            @argv.shift
+            db_path = @argv.shift or return missing_arg("cleanup", "--db")
+          when "--no-db"
+            @argv.shift
+            no_db = true
+          else
+            @stderr.puts "prouter cleanup: unknown option '#{@argv.first}'"
+            return 2
+          end
+        end
+
+        unless older_than_str
+          @stderr.puts "prouter cleanup: --older-than is required (e.g. 30d, 12h, 7d)"
+          return 2
+        end
+
+        seconds = parse_retention_window(older_than_str)
+        return 2 unless seconds
+
+        store = open_store(db_path, no_db)
+        return 1 if store == :error
+        unless store
+          @stderr.puts "prouter cleanup: requires --db"
+          return 2
+        end
+
+        result = Prouterd::ControlPlane::Cleanup.sweep(
+          store.db,
+          older_than: seconds,
+          dry_run: dry_run
+        )
+
+        verb = dry_run ? "would delete" : "deleted"
+        @stdout.puts "Cleanup #{verb}:"
+        @stdout.puts "  runs:           #{result.runs}"
+        @stdout.puts "  run_steps:      #{result.steps}"
+        @stdout.puts "  run_logs:       #{result.logs}"
+        @stdout.puts "  artifact rows:  #{result.artifacts}"
+        @stdout.puts "  artifact files: #{result.artifact_files}"
+        0
+      ensure
+        store&.db&.close if store && store != :error
+      end
+
+      def parse_retention_window(input)
+        m = /\A(\d+)([smhd])\z/.match(input.to_s)
+        unless m
+          @stderr.puts "prouter cleanup: invalid --older-than '#{input}' (expected e.g. 30d, 12h, 1800s)"
+          return nil
+        end
+        n = m[1].to_i
+        case m[2]
+        when "s" then n
+        when "m" then n * 60
+        when "h" then n * 3600
+        when "d" then n * 86_400
+        end
       end
 
       # `prouter cancel run <uid>` — soft-cancel a run from the CLI.
@@ -635,9 +735,9 @@ module Prouterd
         :error
       end
 
-      def build_runner(kind)
+      def build_runner(kind, in_flight: nil)
         case kind
-        when "docker", nil then Prouterd::Runner::DockerRunner.new
+        when "docker", nil then Prouterd::Runner::DockerRunner.new(in_flight: in_flight)
         when "stub"        then Prouterd::Runner::StubRunner.new
         else
           @stderr.puts "prouter: unknown runner kind '#{kind}' (docker|stub)"

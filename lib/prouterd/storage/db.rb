@@ -42,7 +42,7 @@ module Prouterd
       # ----- delegation to underlying SQLite3::Database -----
 
       def execute(sql, params = [])
-        @sqlite.execute(sql, params)
+        @sqlite.execute(sql, normalize_params(params))
       end
 
       def execute_batch(sql)
@@ -52,6 +52,20 @@ module Prouterd
       def query_row(sql, params = [])
         rows = execute(sql, params)
         rows.first
+      end
+
+      # ASCII-8BIT strings (from Rack path segments, file reads in binary mode,
+      # network buffers) are bound as BLOB by sqlite3, and BLOB != TEXT in
+      # parameterized comparisons. Force UTF-8 on every string param so callers
+      # never have to think about it.
+      def normalize_params(params)
+        params.map do |p|
+          if p.is_a?(String) && p.encoding != Encoding::UTF_8
+            p.dup.force_encoding(Encoding::UTF_8)
+          else
+            p
+          end
+        end
       end
 
       def last_insert_row_id

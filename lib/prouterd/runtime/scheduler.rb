@@ -23,14 +23,16 @@ module Prouterd
     class Scheduler
       TICK_SECONDS = 1.0
 
-      def self.run(store:, runner:, output: nil)
-        new(store: store, runner: runner, output: output).run
+      def self.run(store:, runner:, output: nil, in_flight: nil, metrics: nil)
+        new(store: store, runner: runner, output: output, in_flight: in_flight, metrics: metrics).run
       end
 
-      def initialize(store:, runner:, output: nil)
+      def initialize(store:, runner:, output: nil, in_flight: nil, metrics: nil)
         @store = store
         @runner = runner
         @output = output
+        @in_flight = in_flight
+        @metrics = metrics
         @stopping = false
         @last_fired = {} # interface_name -> Time
         @tick_seconds = TICK_SECONDS
@@ -121,13 +123,16 @@ module Prouterd
         ctx = Context.new("event" => event)
         return unless MatchEvaluator.passes?(route.matches, ctx)
 
-        orchestrator = Orchestrator.new(db: @store.db, runner: @runner)
+        orchestrator = Orchestrator.new(
+          db: @store.db, runner: @runner, in_flight: @in_flight, metrics: @metrics
+        )
         run = orchestrator.enqueue(
           document, process.name,
           input_event: event,
           interface_name: iface.name,
           commit_id: @store.running_commit&.id
         )
+        @metrics&.increment(:cron_fires_total, interface: iface.name)
         @output&.puts("scheduler: fired '#{iface.name}' -> run #{run.uid} at #{fired_at.utc.iso8601(0)}")
 
         Thread.new do

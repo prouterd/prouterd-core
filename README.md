@@ -103,11 +103,37 @@ prouter trace   event <file> [--interface NAME]   static analysis (no execution)
 prouter replay  run <uid> [from <block>]
 prouter cancel  run <uid>                soft cancel — between-level halt
 prouter diff    <file>                   diff file vs running config
+prouter cleanup --older-than 30d [--dry-run]
+                                         delete terminal runs older than threshold
 
-prouter serve  [--bind ADDR] [--port N]  HTTP daemon + cron scheduler
+prouter serve  [--bind ADDR] [--port N]  HTTP daemon: webhooks + cron + /v1 API
 
 prouter version | help
 ```
+
+### HTTP daemon endpoints
+
+`prouter serve` exposes:
+
+| Endpoint                              | Auth        | Purpose                          |
+|---------------------------------------|-------------|----------------------------------|
+| `GET  /v1/status`                     | open        | health, commit pointers          |
+| `GET  /metrics`                       | open        | Prometheus text format           |
+| `POST /i/<interface>`                 | per-iface   | webhook ingestion                |
+| `GET  /v1/config/{running,startup,commits[/:id]}` | admin | inspect config history |
+| `POST /v1/config/{check,apply,rollback}` | admin    | mutate config                    |
+| `GET  /v1/processes[/:name]`          | admin       | list / detail                    |
+| `POST /v1/processes/:name/trigger`    | admin       | enqueue a run                    |
+| `GET  /v1/runs[?process=&status=]`    | admin       | list                             |
+| `GET  /v1/runs/:uid[/logs[?stream=&block=],/artifacts]` | admin | inspect              |
+| `POST /v1/runs/:uid/{replay,cancel}`  | admin       | re-run / soft + hard cancel      |
+| `POST /v1/trace`                      | admin       | static routing analysis          |
+
+Admin auth: bearer token from `PROUTERD_ADMIN_TOKEN` env var. If unset, /v1/*
+routes are open — fine for local dev; the daemon prints a warning.
+
+Graceful shutdown: SIGINT/SIGTERM stops accepting state-changing requests
+(503), drains in-flight runs (30s default), then stops Puma.
 
 Common flags:
 
@@ -270,19 +296,23 @@ Implemented (all of [the spec][] §28 acceptance criteria):
 - ✅ Match conditions, parallel branching, sequential queue
 - ✅ Retry policies (fixed/exp/linear backoff), on-failure stop/continue
 - ✅ Replay run + replay from block (context-seeded)
-- ✅ Soft cancel + diff <file> running-config
-- ✅ Webhooks (HTTP daemon, bearer auth, async dispatch)
+- ✅ Soft + hard cancel (kills in-flight container via in-flight registry)
+- ✅ `diff <file> running-config`
+- ✅ Webhooks (HTTP daemon, bearer auth, async dispatch, method enforcement)
 - ✅ Cron scheduler (fugit, timezone-aware)
 - ✅ Crash recovery sweep at daemon start
 - ✅ Secret redaction in logs/errors
+- ✅ /v1 HTTP API for runs/configs/processes/traces (admin bearer auth)
+- ✅ /metrics Prometheus endpoint (counters + gauges)
+- ✅ Graceful shutdown: 503 + in-flight drain
+- ✅ `cleanup --older-than` retention sweep
 
 Deliberately out of v0.1 scope (per spec §31, "workable without these for now"):
 
 - ☐ DB-backed worker pool with cross-restart in-flight recovery
-- ☐ Hard cancel (kill in-flight containers)
 - ☐ KubernetesRunner (`Runner` interface ready)
 - ☐ S3 / object-store artifacts (`ArtifactStore` interface ready)
-- ☐ RBAC, mTLS, OIDC, audit-per-user
+- ☐ RBAC / mTLS / OIDC (basic admin bearer is in)
 - ☐ Postgres adapter (`Storage::DB` abstraction ready)
 - ☐ Idempotency keys, output schema validation
 - ☐ Web UI

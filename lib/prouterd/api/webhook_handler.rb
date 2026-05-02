@@ -15,11 +15,14 @@ module Prouterd
     #   6. Dispatch async execution onto an internal Thread (Phase 7) — a
     #      proper worker pool with crash recovery is Phase 8 territory.
     class WebhookHandler
-      def initialize(store:, runner:, secret_resolver: nil, logger: nil)
+      def initialize(store:, runner:, secret_resolver: nil, logger: nil,
+                     in_flight: nil, metrics: nil)
         @store = store
         @runner = runner
         @secret_resolver = secret_resolver || Runtime::EnvSecretResolver.new
         @logger = logger
+        @in_flight = in_flight
+        @metrics = metrics
       end
 
       # Returns [status, headers, body_string] for the Rack response.
@@ -30,6 +33,15 @@ module Prouterd
         return json_error(404, "unknown interface '#{interface_name}'") unless interface
         return json_error(404, "interface '#{interface_name}' is not a webhook") unless interface.webhook?
         return json_error(503, "interface '#{interface_name}' is shutdown") if interface.shutdown
+
+        # Method enforcement (spec §8.6 webhook interfaces declare `method`).
+        # Default to POST when not declared so existing fixtures keep working.
+        expected_method = (interface.method || "POST").to_s.upcase
+        actual_method = request.request_method.to_s.upcase
+        if actual_method != expected_method
+          return json_error(405, "method '#{actual_method}' not allowed; interface accepts '#{expected_method}'",
+                            headers: { "allow" => expected_method })
+        end
 
         if interface.auth
           token = resolve_secret(document, interface.auth.secret_name)
@@ -52,7 +64,9 @@ module Prouterd
         return json_error(500, "global route targets unknown process '#{route.process_name}'") unless process
         return json_error(503, "process '#{process.name}' is shutdown") if process.shutdown
 
-        orchestrator = Runtime::Orchestrator.new(db: @store.db, runner: @runner)
+        orchestrator = Runtime::Orchestrator.new(
+          db: @store.db, runner: @runner, in_flight: @in_flight
+        )
         run = orchestrator.enqueue(
           document,
           process.name,
@@ -62,6 +76,8 @@ module Prouterd
         )
 
         dispatch_async(orchestrator, run, document)
+
+        @metrics&.increment(:webhooks_received_total, interface: interface_name, code: 202)
 
         body = JSON.dump(
           run_id: run.uid,
@@ -111,8 +127,8 @@ module Prouterd
         end
       end
 
-      def json_error(status, message)
-        [status, { "content-type" => "application/json" }, [JSON.dump(error: message)]]
+      def json_error(status, message, headers: {})
+        [status, { "content-type" => "application/json" }.merge(headers), [JSON.dump(error: message)]]
       end
     end
   end

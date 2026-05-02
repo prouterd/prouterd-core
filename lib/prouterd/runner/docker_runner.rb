@@ -27,6 +27,10 @@ module Prouterd
       OUTPUT_FILENAME = "output.json".freeze
       ARTIFACTS_DIRNAME = "artifacts".freeze
 
+      def initialize(in_flight: nil)
+        @in_flight = in_flight
+      end
+
       def run(request)
         work_dir = Dir.mktmpdir(WORK_DIR_PREFIX)
         prepare_work_dir(work_dir, request.input_json)
@@ -34,6 +38,7 @@ module Prouterd
         container = create_container(request, work_dir)
         started_at = Time.now.utc
         container.start
+        @in_flight&.attach_container(request.run_uid, container.id)
 
         error_type = nil
         error_message = nil
@@ -90,6 +95,7 @@ module Prouterd
           finished_at: Time.now.utc.iso8601(3)
         )
       ensure
+        @in_flight&.detach_container(request.run_uid, container.id) if container
         cleanup(container, work_dir)
       end
 

@@ -33,7 +33,7 @@ module Prouterd
       attr_reader :runs
 
       def initialize(db:, runner:, artifact_store: nil, secret_resolver: nil, logger: nil,
-                     max_parallelism: 8)
+                     max_parallelism: 8, in_flight: nil, metrics: nil)
         @db = db
         @runner = runner
         @runs = Storage::Repositories::Runs.new(db)
@@ -41,6 +41,8 @@ module Prouterd
         @secret_resolver = secret_resolver || EnvSecretResolver.new
         @logger = logger
         @max_parallelism = max_parallelism
+        @in_flight = in_flight
+        @metrics = metrics
       end
 
       # Trigger a process. Returns the Run record after execution completes.
@@ -103,6 +105,13 @@ module Prouterd
       private
 
       def execute(run, process, document, seed_context: nil, start_blocks: nil)
+        @in_flight&.register_run(run.uid)
+        execute_inner(run, process, document, seed_context: seed_context, start_blocks: start_blocks)
+      ensure
+        @in_flight&.unregister_run(run.uid)
+      end
+
+      def execute_inner(run, process, document, seed_context: nil, start_blocks: nil)
         @runs.update_run(run.id, status: "running", started_at: Time.now.utc.iso8601(3))
 
         context = if seed_context
@@ -432,6 +441,7 @@ module Prouterd
       end
 
       def finalize_run(run, status:, error: nil)
+        @metrics&.increment(:runs_total, process: run.process_name, status: status)
         @runs.update_run(
           run.id,
           status: status,

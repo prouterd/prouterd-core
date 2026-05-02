@@ -1,5 +1,7 @@
 require_relative "api/auth"
+require_relative "api/metrics"
 require_relative "api/webhook_handler"
+require_relative "api/v1"
 require_relative "api/app"
 
 module Prouterd

@@ -12,6 +12,7 @@ require_relative "prouterd/control_plane"
 require_relative "prouterd/runner"
 require_relative "prouterd/runtime"
 require_relative "prouterd/shell"
+require_relative "prouterd/api"
 
 module Prouterd
 end

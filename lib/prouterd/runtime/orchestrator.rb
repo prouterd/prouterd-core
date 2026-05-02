@@ -52,16 +52,38 @@ module Prouterd
       # lineage can be queried (`show run` references it as "replay of <uid>").
       def trigger(document, process_name, input_event:, interface_name: nil,
                   commit_id: nil, replay_of_run_id: nil)
+        run = enqueue(
+          document, process_name,
+          input_event: input_event,
+          interface_name: interface_name,
+          commit_id: commit_id,
+          replay_of_run_id: replay_of_run_id
+        )
+        execute_run(run, document)
+      end
+
+      # Create the Run row WITHOUT executing it. Used by the webhook handler
+      # so it can return a run_id to the client immediately and let a worker
+      # thread drive execution. Returns the persisted Run.
+      def enqueue(document, process_name, input_event:, interface_name: nil,
+                  commit_id: nil, replay_of_run_id: nil)
         process = document.processes.find { |p| p.name == process_name }
         raise TriggerError, "no such process '#{process_name}'" unless process
 
-        run = @runs.create_run(
+        @runs.create_run(
           process_name: process_name,
           process_config_commit_id: commit_id,
           interface_name: interface_name,
           input_event: input_event,
           replay_of_run_id: replay_of_run_id
         )
+      end
+
+      # Execute a previously-enqueued Run against a Document. Returns the
+      # final Run row after termination. Safe to call from a worker thread.
+      def execute_run(run, document)
+        process = document.processes.find { |p| p.name == run.process_name }
+        raise TriggerError, "no such process '#{run.process_name}'" unless process
 
         execute(run, process, document)
       end

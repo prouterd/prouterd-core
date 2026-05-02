@@ -35,6 +35,7 @@ module Prouterd
         when "trigger"           then cmd_trigger
         when "trace"             then cmd_trace
         when "replay"            then cmd_replay
+        when "serve"             then cmd_serve
         when "version", "--version", "-v" then cmd_version
         when "help", "--help", "-h", nil  then cmd_help
         else
@@ -59,6 +60,7 @@ module Prouterd
                                                Synchronously run a process for the given event
             replay  run <uid>                  Re-execute a previous run with the same event + commit
             trace   event <file>               Static routing analysis (no execution)
+            serve   [--bind ADDR] [--port N]   Start HTTP daemon for webhooks
             shell                              Start interactive router-style shell
             exec    "<cmd>"                    Run a single shell command and print result
             version                            Print version
@@ -187,6 +189,67 @@ module Prouterd
 
       # Standalone non-interactive `apply <file> [--db PATH]` — validates the
       # file, persists it as a new commit, and updates running pointer.
+      # `prouter serve` — start the HTTP daemon (Puma) so external systems
+      # can POST events to webhook interfaces. Blocks until SIGINT/SIGTERM.
+      def cmd_serve
+        store = nil
+        bind = Prouterd::API::Server::DEFAULT_BIND
+        port = Prouterd::API::Server::DEFAULT_PORT
+        db_path = nil
+        runner_kind = default_runner_kind
+        no_db = false
+
+        until @argv.empty?
+          case @argv.first
+          when "--bind", "-b"
+            @argv.shift
+            bind = @argv.shift or return missing_arg("serve", "--bind")
+          when "--port", "-p"
+            @argv.shift
+            port_str = @argv.shift or return missing_arg("serve", "--port")
+            port = Integer(port_str) rescue (return invalid_arg("serve", "--port must be an integer"))
+          when "--db"
+            @argv.shift
+            db_path = @argv.shift or return missing_arg("serve", "--db")
+          when "--no-db"
+            @argv.shift
+            no_db = true
+          when "--runner"
+            @argv.shift
+            runner_kind = @argv.shift or return missing_arg("serve", "--runner")
+          else
+            @stderr.puts "prouter serve: unknown option '#{@argv.first}'"
+            return 2
+          end
+        end
+
+        store = open_store(db_path, no_db)
+        return 1 if store == :error
+        unless store
+          @stderr.puts "prouter serve: requires --db (the daemon needs persistent state)"
+          return 2
+        end
+
+        runner = build_runner(runner_kind)
+        return 1 if runner == :error
+
+        app = Prouterd::API::App.new(store: store, runner: runner)
+        Prouterd::API::Server.run(app: app, bind: bind, port: port, output: @stdout)
+        0
+      ensure
+        store&.db&.close if store && store != :error
+      end
+
+      def missing_arg(cmd, opt)
+        @stderr.puts "prouter #{cmd}: #{opt} requires a value"
+        2
+      end
+
+      def invalid_arg(cmd, msg)
+        @stderr.puts "prouter #{cmd}: #{msg}"
+        2
+      end
+
       # `prouter replay run <uid>` — re-runs a previous run.
       def cmd_replay
         store = nil

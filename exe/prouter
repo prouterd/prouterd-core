@@ -1,0 +1,5 @@
+#!/usr/bin/env ruby
+require_relative "../lib/prouterd/cli/main"
+
+exit_code = Prouterd::CLI::Main.run(ARGV)
+exit(exit_code.is_a?(Integer) ? exit_code : 0)

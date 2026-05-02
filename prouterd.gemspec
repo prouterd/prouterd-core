@@ -19,6 +19,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency "docker-api", "~> 2.4"
   spec.add_dependency "puma", "~> 6.4"
   spec.add_dependency "rack", "~> 3.1"
+  spec.add_dependency "fugit", "~> 1.11"
 
   spec.add_development_dependency "rspec", "~> 3.13"
   spec.add_development_dependency "rake", "~> 13.2"

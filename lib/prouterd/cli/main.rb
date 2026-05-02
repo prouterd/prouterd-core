@@ -36,6 +36,8 @@ module Prouterd
         when "trace"             then cmd_trace
         when "replay"            then cmd_replay
         when "serve"             then cmd_serve
+        when "cancel"            then cmd_cancel
+        when "diff"              then cmd_diff
         when "version", "--version", "-v" then cmd_version
         when "help", "--help", "-h", nil  then cmd_help
         else
@@ -59,8 +61,10 @@ module Prouterd
             trigger process <name> input <file>
                                                Synchronously run a process for the given event
             replay  run <uid>                  Re-execute a previous run with the same event + commit
+            cancel  run <uid>                  Soft-cancel an in-flight run
             trace   event <file>               Static routing analysis (no execution)
-            serve   [--bind ADDR] [--port N]   Start HTTP daemon for webhooks
+            diff    <file>                     Show changes if file were applied vs running config
+            serve   [--bind ADDR] [--port N]   Start HTTP daemon (webhooks + cron)
             shell                              Start interactive router-style shell
             exec    "<cmd>"                    Run a single shell command and print result
             version                            Print version
@@ -238,8 +242,17 @@ module Prouterd
         # new traffic. Otherwise replay/show would still see them as live.
         Prouterd::Runtime::Recovery.sweep(store.db, output: @stdout)
 
+        # Cron scheduler runs alongside the HTTP listener. Started before
+        # serve so any cron whose next_time is "now" can fire immediately.
+        scheduler = Prouterd::Runtime::Scheduler.new(store: store, runner: runner, output: @stdout)
+        scheduler.run
+
         app = Prouterd::API::App.new(store: store, runner: runner)
-        Prouterd::API::Server.run(app: app, bind: bind, port: port, output: @stdout)
+        begin
+          Prouterd::API::Server.run(app: app, bind: bind, port: port, output: @stdout)
+        ensure
+          scheduler.stop
+        end
         0
       ensure
         store&.db&.close if store && store != :error
@@ -253,6 +266,96 @@ module Prouterd
       def invalid_arg(cmd, msg)
         @stderr.puts "prouter #{cmd}: #{msg}"
         2
+      end
+
+      # `prouter cancel run <uid>` — soft-cancel a run from the CLI.
+      def cmd_cancel
+        store = nil
+        unless @argv.length >= 2 && @argv[0] == "run"
+          @stderr.puts "prouter cancel: usage: cancel run <uid> [--db PATH]"
+          return 2
+        end
+        uid = @argv[1]
+        @argv = @argv[2..]
+
+        opts = parse_runtime_options("cancel")
+        return 2 if opts == :error
+        store = open_store(opts[:db_path], opts[:no_db])
+        return 1 if store == :error
+        unless store
+          @stderr.puts "prouter cancel: requires --db"
+          return 2
+        end
+
+        repo = Prouterd::Storage::Repositories::Runs.new(store.db)
+        run = repo.get_run_by_uid(uid)
+        unless run
+          @stderr.puts "prouter cancel: no such run '#{uid}'"
+          return 1
+        end
+        if %w[success failed canceled].include?(run.status)
+          @stderr.puts "prouter cancel: run '#{uid}' is already #{run.status}"
+          return 1
+        end
+
+        finished_at = Time.now.utc.iso8601(3)
+        repo.update_run(run.id, status: "canceled", finished_at: finished_at, error_summary: "canceled by operator")
+        repo.list_steps(run.id).each do |s|
+          next if %w[success failed canceled timeout skipped].include?(s.status)
+
+          repo.update_step(s.id, status: "canceled", finished_at: finished_at,
+                                 error_type: "canceled", error_message: "canceled by operator")
+        end
+        @stdout.puts "Cancelled run #{uid}."
+        0
+      ensure
+        store&.db&.close if store && store != :error
+      end
+
+      # `prouter diff <file> [--db PATH]` — show what would change if the file
+      # were applied. Compares against the running pointer in --db (or the
+      # provided --config).
+      def cmd_diff
+        store = nil
+        path = @argv.shift
+        unless path
+          @stderr.puts "prouter diff: usage: diff <file> [--db PATH | --config FILE]"
+          return 2
+        end
+
+        opts = parse_runtime_options("diff")
+        return 2 if opts == :error
+
+        document_target = parse_with_diagnostics(File.read(path), path)
+        return 1 if document_target.nil?
+
+        running_doc =
+          if opts[:config_path]
+            parsed = parse_with_diagnostics(File.read(opts[:config_path]), opts[:config_path])
+            return 1 if parsed.nil?
+            parsed
+          else
+            store = open_store(opts[:db_path], opts[:no_db])
+            return 1 if store == :error
+            return 1 if store.nil?
+            store.load_running
+          end
+
+        a = Prouterd::Config::Renderer.render(running_doc).split("\n", -1)
+        b = Prouterd::Config::Renderer.render(document_target).split("\n", -1)
+
+        diff_lines = Prouterd::Shell::Show.simple_diff(a, b)
+        if diff_lines.empty?
+          @stdout.puts "No changes."
+          return 0
+        end
+        diff_lines.each { |l| @stdout.puts(l) }
+        0
+      rescue Errno::ENOENT => e
+        @stderr.puts "prouter diff: #{e.message}"
+        2
+      ensure
+        store&.db&.close if store && store != :error
       end
 
       # `prouter replay run <uid>` — re-runs a previous run.

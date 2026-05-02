@@ -9,5 +9,11 @@ require_relative "runtime/tracer"
 
 module Prouterd
   module Runtime
+    autoload :Scheduler, File.expand_path("runtime/scheduler", __dir__)
+  end
+end
+
+module Prouterd
+  module Runtime
   end
 end

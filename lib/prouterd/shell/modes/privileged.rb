@@ -27,6 +27,8 @@ module Prouterd
             "trigger"   => :cmd_trigger,
             "trace"     => :cmd_trace,
             "replay"    => :cmd_replay,
+            "cancel"    => :cmd_cancel,
+            "diff"      => :cmd_diff,
             "disable"   => :cmd_disable,
             "exit"      => :cmd_exit,
             "help"      => :cmd_help,
@@ -194,6 +196,59 @@ module Prouterd
           :handled
         rescue Prouterd::Shell::ShellError, Prouterd::Runtime::TriggerError => e
           raise CommandError, e.message
+        end
+
+        # `diff <file> running-config` — show what would change if `file` were
+        # applied. Operates entirely in-memory (no candidate side-effects).
+        def cmd_diff(tokens, session, out, _err)
+          unless tokens.length == 3 && tokens[2].value == "running-config"
+            raise CommandError, "syntax: diff <file> running-config"
+          end
+          Show.diff_file_against_running([tokens[1].value], session, out)
+          :handled
+        end
+
+        # `cancel run <uid>` — soft cancel: marks the run + any non-terminal
+        # steps as canceled. The orchestrator polls run.status between levels
+        # and aborts. In-flight containers complete naturally (or hit timeout).
+        def cmd_cancel(tokens, session, out, _err)
+          unless tokens.length == 3 && tokens[1].value == "run"
+            raise CommandError, "syntax: cancel run <uid>"
+          end
+          uid = tokens[2].value
+
+          unless session.store
+            raise CommandError, "no DB attached; cancel requires --db"
+          end
+
+          repo = Prouterd::Storage::Repositories::Runs.new(session.store.db)
+          run = repo.get_run_by_uid(uid)
+          raise CommandError, "no such run '#{uid}'" unless run
+          if %w[success failed canceled].include?(run.status)
+            raise CommandError, "run '#{uid}' is already #{run.status}"
+          end
+
+          finished_at = Time.now.utc.iso8601(3)
+          repo.update_run(
+            run.id,
+            status: "canceled",
+            finished_at: finished_at,
+            error_summary: "canceled by operator"
+          )
+          repo.list_steps(run.id).each do |s|
+            next if %w[success failed canceled timeout skipped].include?(s.status)
+
+            repo.update_step(
+              s.id,
+              status: "canceled",
+              finished_at: finished_at,
+              error_type: "canceled",
+              error_message: "canceled by operator"
+            )
+          end
+
+          out.puts "Cancelled run #{uid}. In-flight blocks will finish naturally."
+          :handled
         end
 
         # `trace event <file> [interface <name>]` — static analysis. Walks the

@@ -128,6 +128,13 @@ module Prouterd
         failure_reason = nil
 
         until ready.empty?
+          # Soft-cancel: another shell may have stamped run.status=canceled.
+          fresh = @runs.get_run(run.id)
+          if fresh && fresh.status == "canceled"
+            failure_reason = nil
+            return finalize_canceled(run)
+          end
+
           # Filter out shutdown / already-executed before kicking off threads.
           level = []
           ready.each do |bn|
@@ -431,6 +438,13 @@ module Prouterd
           finished_at: Time.now.utc.iso8601(3),
           error_summary: error
         )
+      end
+
+      def finalize_canceled(run)
+        # The cancel command already stamped run.status; we keep that and
+        # just return the row. Don't overwrite finished_at — the cancel
+        # command set it the moment the operator hit cancel.
+        @runs.get_run(run.id)
       end
 
       def log_system(run, message)

@@ -338,6 +338,24 @@ module Prouterd
 
         a = Config::Renderer.render(session.running_config).split("\n", -1)
         b = Config::Renderer.render(session.candidate_config).split("\n", -1)
+        emit_diff(a, b, out)
+      end
+
+      def diff_file_against_running(rest, session, out)
+        require_args(rest, 1, "diff <file>")
+        path = rest.first
+        source = File.read(path)
+        document = Config::Parser.parse(Config::Lexer.tokenize(source))
+        b = Config::Renderer.render(document).split("\n", -1)
+        a = Config::Renderer.render(session.running_config).split("\n", -1)
+        emit_diff(a, b, out)
+      rescue Errno::ENOENT
+        raise CommandError, "no such file: #{rest.first}"
+      rescue Config::ConfigError => e
+        raise CommandError, "diff: #{e.message}"
+      end
+
+      def emit_diff(a, b, out)
         diff = simple_diff(a, b)
         if diff.empty?
           out.puts "No changes."

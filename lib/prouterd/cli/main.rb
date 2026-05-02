@@ -33,6 +33,7 @@ module Prouterd
         when "exec"              then cmd_exec
         when "apply"             then cmd_apply
         when "trigger"           then cmd_trigger
+        when "trace"             then cmd_trace
         when "version", "--version", "-v" then cmd_version
         when "help", "--help", "-h", nil  then cmd_help
         else
@@ -55,6 +56,7 @@ module Prouterd
             apply   <file>                     Validate + commit a .prc file as a new commit
             trigger process <name> input <file>
                                                Synchronously run a process for the given event
+            trace   event <file>               Static routing analysis (no execution)
             shell                              Start interactive router-style shell
             exec    "<cmd>"                    Run a single shell command and print result
             version                            Print version
@@ -183,6 +185,59 @@ module Prouterd
 
       # Standalone non-interactive `apply <file> [--db PATH]` — validates the
       # file, persists it as a new commit, and updates running pointer.
+      # `prouter trace event <file> [--interface NAME]` — static routing
+      # analysis without executing any blocks. Reads config from --config or
+      # from the running pointer in --db.
+      def cmd_trace
+        store = nil
+        unless @argv.length >= 2 && @argv[0] == "event"
+          @stderr.puts "prouter trace: usage: trace event <file> [--interface NAME] [--config FILE | --db PATH]"
+          return 2
+        end
+        event_path = @argv[1]
+        @argv = @argv[2..]
+
+        interface_name = nil
+        while %w[--interface -i].include?(@argv.first)
+          @argv.shift
+          interface_name = @argv.shift
+          unless interface_name
+            @stderr.puts "prouter trace: --interface requires a name"
+            return 2
+          end
+        end
+
+        opts = parse_runtime_options("trace")
+        return 2 if opts == :error
+
+        document =
+          if opts[:config_path]
+            source = read_file(opts[:config_path])
+            return 2 if source.nil?
+            parsed = parse_with_diagnostics(source, opts[:config_path])
+            return 1 if parsed.nil?
+            parsed
+          else
+            store = open_store(opts[:db_path], opts[:no_db])
+            return 1 if store == :error
+            return 1 if store.nil?
+            store.load_running
+          end
+
+        event = JSON.parse(File.read(event_path))
+        result = Prouterd::Runtime::Tracer.trace(document, event, interface_name: interface_name)
+        @stdout.print Prouterd::Runtime::TracerRenderer.render(result)
+        result.error ? 1 : 0
+      rescue Errno::ENOENT => e
+        @stderr.puts "prouter trace: #{e.message}"
+        2
+      rescue JSON::ParserError => e
+        @stderr.puts "prouter trace: event file is not valid JSON: #{e.message}"
+        2
+      ensure
+        store&.db&.close if store && store != :error
+      end
+
       # Standalone non-interactive `trigger process <name> input <file>`. Always
       # synchronous; prints a step-by-step summary and exits with the run status.
       def cmd_trigger

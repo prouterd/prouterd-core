@@ -57,13 +57,9 @@ module Prouterd
 
         stdout, stderr = capture_logs(container)
 
-        if error_type.nil?
-          error_type, error_message = classify_outcome(work_dir, exit_code)
-        end
-
         output_json = nil
         if error_type.nil?
-          output_json = read_output(work_dir)
+          error_type, error_message, output_json = classify_outcome(work_dir, exit_code)
         end
 
         artifacts = collect_artifacts(work_dir)
@@ -205,19 +201,22 @@ module Prouterd
       def classify_outcome(work_dir, exit_code)
         output_path = File.join(work_dir, OUTPUT_FILENAME)
         if exit_code != 0
-          ["non_zero_exit", "block exited with code #{exit_code}"]
-        elsif !File.exist?(output_path)
-          ["missing_output", "block did not write /prouter/#{OUTPUT_FILENAME}"]
-        else
-          [nil, nil]
+          return ["non_zero_exit", "block exited with code #{exit_code}", nil]
         end
-      end
+        unless File.exist?(output_path)
+          return ["missing_output", "block did not write /prouter/#{OUTPUT_FILENAME}", nil]
+        end
 
-      def read_output(work_dir)
-        path = File.join(work_dir, OUTPUT_FILENAME)
-        JSON.parse(File.read(path))
-      rescue JSON::ParserError
-        nil
+        raw = File.read(output_path)
+        if raw.empty?
+          return ["invalid_output", "/prouter/#{OUTPUT_FILENAME} is empty", nil]
+        end
+        begin
+          json = JSON.parse(raw)
+          [nil, nil, json]
+        rescue JSON::ParserError => e
+          ["invalid_output", "output.json is not valid JSON: #{e.message}", nil]
+        end
       end
 
       def collect_artifacts(work_dir)

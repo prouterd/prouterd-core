@@ -25,6 +25,7 @@ module Prouterd
             "write"     => :cmd_write,
             "rollback"  => :cmd_rollback,
             "trigger"   => :cmd_trigger,
+            "trace"     => :cmd_trace,
             "disable"   => :cmd_disable,
             "exit"      => :cmd_exit,
             "help"      => :cmd_help,
@@ -166,6 +167,31 @@ module Prouterd
         def parse_input_file(path)
           source = File.read(path)
           JSON.parse(source)
+        end
+
+        # `trace event <file> [interface <name>]` — static analysis. Walks the
+        # routing decisions for the given event without running any blocks,
+        # so users can predict pipeline behavior before triggering.
+        def cmd_trace(tokens, session, out, _err)
+          unless tokens.length >= 3 && tokens[1].value == "event"
+            raise CommandError, "syntax: trace event <file> [interface <name>]"
+          end
+          event_path = tokens[2].value
+          iface = nil
+          if tokens.length == 5 && tokens[3].value == "interface"
+            iface = tokens[4].value
+          elsif tokens.length != 3
+            raise CommandError, "syntax: trace event <file> [interface <name>]"
+          end
+
+          event = JSON.parse(File.read(event_path))
+          result = Prouterd::Runtime::Tracer.trace(session.running_config, event, interface_name: iface)
+          out.print Prouterd::Runtime::TracerRenderer.render(result)
+          :handled
+        rescue Errno::ENOENT
+          raise CommandError, "no such event file: #{tokens[2].value}"
+        rescue JSON::ParserError => e
+          raise CommandError, "event file is not valid JSON: #{e.message}"
         end
 
         def render_run_summary(run, session, out)

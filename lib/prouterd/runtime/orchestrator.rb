@@ -1,6 +1,7 @@
 require "json"
 require "time"
 require "set"
+require "thread"
 
 module Prouterd
   module Runtime
@@ -8,28 +9,38 @@ module Prouterd
 
     # Drives a process from trigger to completion.
     #
-    # Phase 4 scope:
-    #   * Manual trigger (an event Hash) creates a Run record.
+    # Execution model (Phase 4 + Phase 5):
     #   * Walk the block DAG starting at entry blocks (no incoming routes).
-    #   * For each block: build input from context, hand it to a Runner,
-    #     persist Step + logs + artifacts, fold output back into context.
-    #   * On block failure: mark Run failed and stop (no retries — Phase 6).
-    #   * Sequential single-thread execution (parallel branching — Phase 5).
-    #   * No match conditions on routes (Phase 5); every outgoing route is
-    #     followed unconditionally.
+    #   * Run all blocks at the same DAG level concurrently via threads.
+    #   * After each block succeeds, evaluate every outgoing route's match
+    #     condition; queue downstream blocks where conditions pass.
+    #   * Multiple incoming routes were rejected at config parse time, so a
+    #     block becomes ready as soon as its single predecessor's route fires.
+    #   * On block failure: wait for the current level to drain, mark the run
+    #     failed, do not enqueue further levels.
+    #
+    # Concurrency:
+    #   * @db_mutex serializes DB writes (SQLite WAL allows concurrent reads
+    #     but only one writer; running 5 blocks in parallel through Docker is
+    #     I/O-bound and benefits from threading regardless).
+    #   * @context_mutex guards the shared Context (read for input, write
+    #     after output). Blocks at the same level write to disjoint output
+    #     paths by design, so contention is brief.
     #
     # The orchestrator depends only on small abstractions (Runner, ArtifactStore,
     # Repositories::Runs) so unit tests stub the Runner cleanly.
     class Orchestrator
       attr_reader :runs
 
-      def initialize(db:, runner:, artifact_store: nil, secret_resolver: nil, logger: nil)
+      def initialize(db:, runner:, artifact_store: nil, secret_resolver: nil, logger: nil,
+                     max_parallelism: 8)
         @db = db
         @runner = runner
         @runs = Storage::Repositories::Runs.new(db)
         @artifact_store = artifact_store || ArtifactStore.new
         @secret_resolver = secret_resolver || EnvSecretResolver.new
         @logger = logger
+        @max_parallelism = max_parallelism
       end
 
       # Trigger a process. Returns the Run record after execution completes.
@@ -58,46 +69,71 @@ module Prouterd
 
         context = Context.new("event" => deep_stringify(run.input_event_json ? JSON.parse(run.input_event_json) : {}))
 
-        # Sequential single-thread executor. The queue is a list of block
-        # names ready to run; it grows as outgoing routes are followed.
-        queue = entry_blocks(process)
-        if queue.empty?
+        # Per-run mutexes: DB writes serialized, context reads/writes guarded.
+        db_mutex = Mutex.new
+        ctx_mutex = Mutex.new
+
+        ready = entry_blocks(process)
+        if ready.empty?
           finalize_run(run, status: "failed", error: "process '#{process.name}' has no entry blocks")
           return @runs.get_run(run.id)
         end
+
         executed = Set.new
         failure_reason = nil
 
-        until queue.empty?
-          block_name = queue.shift
-          next if executed.include?(block_name)
+        until ready.empty?
+          # Filter out shutdown / already-executed before kicking off threads.
+          level = []
+          ready.each do |bn|
+            next if executed.include?(bn)
 
-          block = process.block(block_name)
-          unless block
-            failure_reason = "block '#{block_name}' is not defined"
-            break
+            block = process.block(bn)
+            unless block
+              failure_reason = "block '#{bn}' is not defined"
+              break
+            end
+            if block.shutdown
+              executed << bn
+              log_system_safe(run, "block '#{bn}' is shutdown; skipped", db_mutex)
+              next
+            end
+            level << block
           end
-          if block.shutdown
-            update_run_context(run, context)
-            executed << block_name
-            log_system(run, "block '#{block_name}' is shutdown; skipped")
-            queue.concat(downstream_blocks(process, block_name))
+          break if failure_reason
+          if level.empty?
+            ready = []
             next
           end
 
-          step_outcome = execute_block(run, process, block, context, document)
-          executed << block_name
-          update_run_context(run, context)
+          results = run_level_in_parallel(run, process, document, level, context, db_mutex, ctx_mutex)
+          level.each { |b| executed << b.name }
 
-          unless step_outcome.success?
-            failure_reason = "block '#{block_name}' #{step_outcome.error_type || 'failed'}: #{step_outcome.error_message || 'exit ' + step_outcome.exit_code.to_s}"
+          # Persist accumulated context once after the level drains.
+          db_mutex.synchronize { update_run_context(run, context) }
+
+          first_failure = results.find { |_, r| !r.success? }
+          if first_failure
+            block_name, result = first_failure
+            failure_reason = "block '#{block_name}' #{result.error_type || 'failed'}: " \
+                             "#{result.error_message || "exit #{result.exit_code}"}"
             break
           end
 
-          # Phase 4: enqueue every outgoing route unconditionally.
-          downstream_blocks(process, block_name).each do |next_block|
-            queue << next_block unless executed.include?(next_block) || queue.include?(next_block)
+          # Build the next level: every successfully completed block contributes
+          # the downstream blocks whose match conditions pass.
+          next_ready = []
+          level.each do |block|
+            passing_routes = process.routes.select do |r|
+              r.from_block == block.name && route_passes?(r, context, ctx_mutex)
+            end
+            passing_routes.each do |r|
+              next if executed.include?(r.to_block) || next_ready.include?(r.to_block)
+
+              next_ready << r.to_block
+            end
           end
+          ready = next_ready
         end
 
         if failure_reason
@@ -106,6 +142,33 @@ module Prouterd
           finalize_run(run, status: "success")
         end
         @runs.get_run(run.id)
+      end
+
+      # Execute a level (a set of blocks ready to run concurrently) and
+      # return [[block_name, ExecutionResult], ...] in arbitrary order.
+      def run_level_in_parallel(run, process, document, level, context, db_mutex, ctx_mutex)
+        return [] if level.empty?
+
+        if level.length == 1 || @max_parallelism <= 1
+          return level.map do |block|
+            [block.name, execute_block_threadsafe(run, process, block, context, document, db_mutex, ctx_mutex)]
+          end
+        end
+
+        threads = level.map do |block|
+          Thread.new do
+            [block.name, execute_block_threadsafe(run, process, block, context, document, db_mutex, ctx_mutex)]
+          end
+        end
+        threads.map(&:value)
+      end
+
+      def route_passes?(route, context, ctx_mutex)
+        ctx_mutex.synchronize { MatchEvaluator.passes?(route.matches, context) }
+      end
+
+      def log_system_safe(run, message, db_mutex)
+        db_mutex.synchronize { @runs.append_log(run_id: run.id, stream: "system", content: message) }
       end
 
       def entry_blocks(process)
@@ -117,22 +180,30 @@ module Prouterd
         process.routes.select { |r| r.from_block == from_block }.map(&:to_block)
       end
 
-      def execute_block(run, process, block, context, document)
-        step = @runs.create_step(
-          run_id: run.id,
-          block_name: block.name,
-          attempt: 1,
-          image: block.image
-        )
-        input_value = block.input ? context.get(block.input) : nil
-        input_payload = build_input_payload(run, block, input_value, context)
+      # Thread-safe variant. DB writes go through db_mutex; context read for
+      # input + write for output go through ctx_mutex.
+      def execute_block_threadsafe(run, process, block, context, document, db_mutex, ctx_mutex)
+        input_payload = nil
+        ctx_mutex.synchronize do
+          input_value = block.input ? context.get(block.input) : nil
+          input_payload = build_input_payload(run, block, input_value, context)
+        end
 
-        @runs.update_step(
-          step.id,
-          status: "running",
-          started_at: Time.now.utc.iso8601(3),
-          input_json: JSON.dump(input_payload)
-        )
+        step = nil
+        db_mutex.synchronize do
+          step = @runs.create_step(
+            run_id: run.id,
+            block_name: block.name,
+            attempt: 1,
+            image: block.image
+          )
+          @runs.update_step(
+            step.id,
+            status: "running",
+            started_at: Time.now.utc.iso8601(3),
+            input_json: JSON.dump(input_payload)
+          )
+        end
 
         env = build_env(run, process, block, document)
         request = Runner::RunRequest.new(
@@ -148,22 +219,27 @@ module Prouterd
           network: block.network || "on"
         )
 
+        # Runner call happens OUTSIDE both mutexes — that's the whole point.
         result = @runner.run(request)
 
-        persist_logs(run, step, result)
-        persist_artifacts(run, step, block, result)
-        update_context_with_output(block, context, result)
+        db_mutex.synchronize do
+          persist_logs(run, step, result)
+          persist_artifacts(run, step, block, result)
+          @runs.update_step(
+            step.id,
+            status: result.to_step_status,
+            finished_at: Time.now.utc.iso8601(3),
+            duration_ms: result.duration_ms,
+            exit_code: result.exit_code,
+            error_type: result.error_type,
+            error_message: result.error_message,
+            output_json: result.output_json ? JSON.dump(result.output_json) : nil
+          )
+        end
 
-        @runs.update_step(
-          step.id,
-          status: result.to_step_status,
-          finished_at: Time.now.utc.iso8601(3),
-          duration_ms: result.duration_ms,
-          exit_code: result.exit_code,
-          error_type: result.error_type,
-          error_message: result.error_message,
-          output_json: result.output_json ? JSON.dump(result.output_json) : nil
-        )
+        ctx_mutex.synchronize do
+          update_context_with_output(block, context, result)
+        end
 
         result
       end

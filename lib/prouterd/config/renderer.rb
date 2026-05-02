@@ -111,7 +111,10 @@ module Prouterd
       def render_block(block, level)
         emit(level, "block #{block.name}")
         emit(level + 1, "image #{block.image}") if block.image
-        emit(level + 1, "command #{block.command}") if block.command
+        # Always quote the command — embedded shell metacharacters (spaces,
+        # quotes, redirects) would otherwise be lost on re-parse since the
+        # lexer would re-tokenize each whitespace-separated word.
+        emit(level + 1, "command #{quote_string(block.command)}") if block.command
         emit(level + 1, "timeout #{Util::DurationParser.render(block.timeout_ms)}") if block.timeout_ms
         emit(level + 1, "retry policy #{block.retry_policy_name}") if block.retry_policy_name
         block.secret_names.each { |name| emit(level + 1, "secret #{name}") }
@@ -179,6 +182,10 @@ module Prouterd
         return %("#{escape_string(text)}") if text.empty? || text.match?(/[\s"!#]/) || text.match?(/\A[+-]?\d/)
 
         text
+      end
+
+      def quote_string(text)
+        %("#{escape_string(text)}")
       end
 
       def escape_string(text)

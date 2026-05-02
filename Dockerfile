@@ -63,7 +63,10 @@ USER prouterd
 EXPOSE 8080
 VOLUME ["/data"]
 
-# Default: HTTP daemon. Override CMD for one-shot invocations:
-#   docker run --rm -v ... prouterd:latest exec "show running-config"
-ENTRYPOINT ["bundle", "exec", "ruby", "exe/prouter"]
-CMD ["serve", "--bind", "0.0.0.0", "--port", "8080", "--db", "/data/prouterd.db"]
+# Default: long-running daemon (exe/prouterd). For one-shot operator
+# commands (check, render, apply, shell, exec, trigger, replay, cancel,
+# diff, cleanup, trace), override the entrypoint:
+#   docker run --rm -v ... --entrypoint=bundle prouterd:latest \
+#     exec ruby exe/prouter exec "show running-config"
+ENTRYPOINT ["bundle", "exec", "ruby", "exe/prouterd"]
+CMD ["--bind", "0.0.0.0", "--port", "8080", "--db", "/data/prouterd.db"]

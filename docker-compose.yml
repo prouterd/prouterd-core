@@ -5,6 +5,11 @@
 #   docker compose logs -f   # tail logs
 #   docker compose exec prouterd bundle exec ruby exe/prouter exec "show runs" --db /data/prouterd.db
 #
+# The daemon binary is exe/prouterd; the operator CLI is exe/prouter.
+# The container's default ENTRYPOINT runs the daemon — for one-shot
+# CLI commands inside an already-running container, use `compose exec`
+# as shown above.
+#
 # The Docker-socket mount is REQUIRED for `type docker` blocks. If you
 # only use `type shell` blocks, comment that line out.
 services:

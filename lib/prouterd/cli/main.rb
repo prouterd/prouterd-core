@@ -1,18 +1,19 @@
 require_relative "../../prouterd"
+require_relative "../bootstrap"
 require "stringio"
 
 module Prouterd
   module CLI
-    # Entry point for the `prouter` binary.
+    # Entry point for the `prouter` binary — operator CLI client.
     #
-    # Phase 1+2 commands:
-    #   prouter check  <file>           — parse + validate, exit 0/1
-    #   prouter render <file>           — parse + emit canonical config
-    #   prouter shell  [--config FILE]  — interactive router-style shell
-    #   prouter exec   "<command>"      — run a single command non-interactively
-    #   prouter version                 — print version
-    #   prouter help                    — print usage
+    # One-shot commands: check / render / apply / shell / exec / trigger /
+    # trace / replay / cancel / diff / cleanup / version / help.
+    #
+    # The long-running daemon (HTTP + cron + worker pool) is a separate
+    # binary, `prouterd` (see lib/prouterd/daemon.rb).
     class Main
+      include Bootstrap
+
       def self.run(argv, stdin: $stdin, stdout: $stdout, stderr: $stderr)
         new(argv, stdin, stdout, stderr).run
       end
@@ -35,7 +36,6 @@ module Prouterd
         when "trigger"           then cmd_trigger
         when "trace"             then cmd_trace
         when "replay"            then cmd_replay
-        when "serve"             then cmd_serve
         when "cancel"            then cmd_cancel
         when "diff"              then cmd_diff
         when "cleanup"           then cmd_cleanup
@@ -66,7 +66,6 @@ module Prouterd
             trace   event <file>               Static routing analysis (no execution)
             diff    <file>                     Show changes if file were applied vs running config
             cleanup --older-than 30d           Delete terminal runs older than threshold
-            serve   [--bind ADDR] [--port N]   Start HTTP daemon (webhooks + cron + /v1 API)
             shell                              Start interactive router-style shell
             exec    "<cmd>"                    Run a single shell command and print result
             version                            Print version
@@ -78,7 +77,8 @@ module Prouterd
             --config FILE    Load this .prc file as the running config
             --runner KIND    docker (default) | stub (env: PROUTERD_RUNNER)
 
-          Subsequent phases will add: replay, trace, webhooks.
+          The long-running daemon is a separate binary: `prouterd`.
+          Run `prouterd --help` for daemon options.
         USAGE
         0
       end
@@ -197,117 +197,6 @@ module Prouterd
       # file, persists it as a new commit, and updates running pointer.
       # `prouter serve` — start the HTTP daemon (Puma) so external systems
       # can POST events to webhook interfaces. Blocks until SIGINT/SIGTERM.
-      def cmd_serve
-        store = nil
-        bind = Prouterd::API::Server::DEFAULT_BIND
-        port = Prouterd::API::Server::DEFAULT_PORT
-        db_path = nil
-        runner_kind = default_runner_kind
-        no_db = false
-        workers = Prouterd::Runtime::WorkerPool::DEFAULT_WORKERS
-
-        until @argv.empty?
-          case @argv.first
-          when "--bind", "-b"
-            @argv.shift
-            bind = @argv.shift or return missing_arg("serve", "--bind")
-          when "--port", "-p"
-            @argv.shift
-            port_str = @argv.shift or return missing_arg("serve", "--port")
-            port = Integer(port_str) rescue (return invalid_arg("serve", "--port must be an integer"))
-          when "--db"
-            @argv.shift
-            db_path = @argv.shift or return missing_arg("serve", "--db")
-          when "--no-db"
-            @argv.shift
-            no_db = true
-          when "--runner"
-            @argv.shift
-            runner_kind = @argv.shift or return missing_arg("serve", "--runner")
-          when "--workers"
-            @argv.shift
-            n = @argv.shift or return missing_arg("serve", "--workers")
-            workers = Integer(n) rescue (return invalid_arg("serve", "--workers must be an integer"))
-          else
-            @stderr.puts "prouter serve: unknown option '#{@argv.first}'"
-            return 2
-          end
-        end
-
-        store = open_store(db_path, no_db)
-        return 1 if store == :error
-        unless store
-          @stderr.puts "prouter serve: requires --db (the daemon needs persistent state)"
-          return 2
-        end
-
-        # Single Logger instance shared across all components. Level
-        # comes from PROUTERD_LOG_LEVEL (default info); output is the
-        # daemon's stdout so journald/Docker logs/k8s-style sidecars
-        # capture everything in one stream.
-        logger = Prouterd::Logger.build(@stdout)
-        logger.info("daemon: starting", bind: bind, port: port, db: db_path,
-                                        workers: workers, runner: runner_kind)
-
-        # Build a fresh runner that knows about the daemon's in-flight registry
-        # — so DockerRunner can report active container IDs for hard cancel.
-        in_flight = Prouterd::Runtime::InFlightRegistry.new
-        metrics = Prouterd::API::Metrics.new(in_flight: in_flight)
-        runner = build_runner(runner_kind, in_flight: in_flight)
-        return 1 if runner == :error
-
-        admin_token = ENV["PROUTERD_ADMIN_TOKEN"]
-        if admin_token.nil? || admin_token.empty?
-          logger.warn("daemon: PROUTERD_ADMIN_TOKEN not set; /v1/* endpoints are open")
-        end
-
-        # Crash recovery: any run/step left in `running`/`queued` from a
-        # previous daemon process must be marked failed before we accept
-        # new traffic. Otherwise replay/show would still see them as live.
-        Prouterd::Runtime::Recovery.sweep(store.db, logger: logger)
-
-        # Persistent job queue: the daemon's worker pool drains it. Webhook /
-        # /v1 trigger / scheduler enqueue jobs here instead of spawning ad-hoc
-        # threads so daemon crashes can be recovered.
-        jobs = Prouterd::Storage::Repositories::Jobs.new(store.db)
-
-        worker_pool = Prouterd::Runtime::WorkerPool.new(
-          store: store, runner: runner, in_flight: in_flight, metrics: metrics,
-          workers: workers, logger: logger
-        )
-        worker_pool.run
-
-        # Cron scheduler runs alongside the HTTP listener. Started before
-        # serve so any cron whose next_time is "now" can fire immediately.
-        scheduler = Prouterd::Runtime::Scheduler.new(
-          store: store, runner: runner, logger: logger,
-          in_flight: in_flight, metrics: metrics, jobs: jobs
-        )
-        scheduler.run
-
-        rate_limiter = Prouterd::API::RateLimiter.from_env
-
-        app = Prouterd::API::App.new(
-          store: store, runner: runner, logger: logger,
-          in_flight: in_flight, metrics: metrics,
-          admin_token: admin_token, jobs: jobs, rate_limiter: rate_limiter
-        )
-        begin
-          Prouterd::API::Server.run(
-            app: app, bind: bind, port: port, logger: logger,
-            in_flight: in_flight,
-            ssl_cert: ENV["PROUTERD_SSL_CERT"], ssl_key: ENV["PROUTERD_SSL_KEY"]
-          )
-        ensure
-          scheduler.stop
-          worker_pool.stop
-          logger.info("daemon: stopped")
-        end
-        0
-      ensure
-        store&.db&.close if store && store != :error
-      end
-
       def missing_arg(cmd, opt)
         @stderr.puts "prouter #{cmd}: #{opt} requires a value"
         2
@@ -754,55 +643,9 @@ module Prouterd
         opts
       end
 
-      def default_runner_kind
-        ENV["PROUTERD_RUNNER"] || "docker"
-      end
-
-      # Opens a ConfigStore at the resolved path, or returns nil if --no-db
-      # was given. Returns :error on failure.
-      def open_store(explicit_path, no_db)
-        return nil if no_db
-
-        path = explicit_path || ENV["PROUTERD_DB"] || Prouterd::Storage::DB::DEFAULT_PATH
-        db = Prouterd::Storage::DB.open(path)
-        Prouterd::ControlPlane::ConfigStore.new(db)
-      rescue SQLite3::Exception, Prouterd::Storage::StorageError => e
-        @stderr.puts "prouter: cannot open DB at #{path}: #{e.message}"
-        :error
-      end
-
-      # Build the per-execution-type runner map. The default mode (`real`)
-      # asks each registered Plugin to instantiate its runner — adding a new
-      # runner type is purely a plugin file, no edits here. `stub` swaps in
-      # the test-fixture runner for every type. `shell` is a docker-less
-      # convenience: route the docker plugin's slot to ShellRunner so blocks
-      # without docker still execute (they'll fail without an `image`).
-      def build_runner(kind, in_flight: nil)
-        opts = { in_flight: in_flight }
-        case kind
-        when nil, "real", "docker"
-          Prouterd::Runner::Registry.all.each_with_object({}) do |plugin, h|
-            h[plugin.type_name] = plugin.build_runner(opts)
-          end
-        when "shell"
-          shell = Prouterd::Runner::ShellRunner.new
-          Prouterd::Runner::Registry.types.each_with_object({}) do |type, h|
-            h[type] = shell
-          end
-        when "stub"
-          stub = Prouterd::Runner::StubRunner.new
-          Prouterd::Runner::Registry.types.each_with_object({}) do |type, h|
-            h[type] = stub
-          end
-        else
-          allowed = (%w[real shell stub] + Prouterd::Runner::Registry.types).uniq.join("|")
-          @stderr.puts "prouter: unknown runner kind '#{kind}' (#{allowed})"
-          :error
-        end
-      rescue LoadError, StandardError => e
-        @stderr.puts "prouter: cannot initialize runner '#{kind}': #{e.message}"
-        :error
-      end
+      # `default_runner_kind`, `open_store`, `build_runner` provided by
+      # Prouterd::Bootstrap mixin so `prouter` and `prouterd` parse and
+      # validate runtime options identically.
 
       def read_file(path)
         File.read(path)

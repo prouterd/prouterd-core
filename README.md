@@ -135,15 +135,20 @@ prouter diff    <file>                   diff file vs running config
 prouter cleanup --older-than 30d [--dry-run] [--batch-size N]
                                          delete terminal runs older than threshold
 
-prouter serve  [--bind ADDR] [--port N] [--workers N]
-                                         HTTP daemon: webhooks + cron + /v1 API
-
 prouter version | help
+```
+
+The long-running daemon is a separate binary, `prouterd`:
+
+```
+prouterd [--bind ADDR] [--port N] [--workers N] [--db PATH] [--runner KIND]
+                                         HTTP daemon: webhooks + cron + /v1 API
+prouterd --version | --help
 ```
 
 ### HTTP daemon endpoints
 
-`prouter serve` exposes:
+`prouterd` exposes:
 
 | Endpoint                              | Auth        | Purpose                          |
 |---------------------------------------|-------------|----------------------------------|
@@ -211,7 +216,7 @@ export PROUTERD_LOG_CAPTURE_BYTES=4194304       # 4 MB per stream
 export PROUTERD_CONTAINER_STOP_TIMEOUT=30       # 30s graceful SIGTERM
 export PROUTERD_ARTIFACTS_ROOT=/var/lib/prouterd/artifacts
 
-bundle exec ruby exe/prouter serve \
+bundle exec ruby exe/prouterd \
   --bind 0.0.0.0 --port 8443 \
   --db /var/lib/prouterd/prouterd.db \
   --workers 8
@@ -404,7 +409,10 @@ lib/prouterd/
                   WorkerPool, InFlightRegistry
   api/            Rack app + WebhookHandler + Puma launcher
   cli/main.rb     prouter binary
-exe/prouter       executable
+  daemon.rb       prouterd daemon entry point (exe/prouterd)
+  bootstrap.rb    shared CLI/daemon helpers (open_store, build_runner)
+exe/prouter       operator CLI binary (one-shot subcommands)
+exe/prouterd      long-running daemon binary (HTTP + cron + workers)
 ```
 
 Storage schema (SQLite, WAL):

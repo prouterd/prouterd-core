@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
 
   spec.files = Dir.glob("{lib,exe}/**/*") + %w[prouterd.gemspec README.md].select { |f| File.exist?(f) }
   spec.bindir      = "exe"
-  spec.executables = ["prouter"]
+  spec.executables = ["prouter", "prouterd"]
   spec.require_paths = ["lib"]
 
   spec.add_dependency "sqlite3", "~> 2.1"

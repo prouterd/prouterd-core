@@ -61,7 +61,7 @@ rm -f $DB
 
 export WEBHOOK_TOKEN=demo-token
 bundle exec ruby exe/prouter apply examples/04_webhook.prc --db $DB
-bundle exec ruby exe/prouter serve --db $DB --port 8089 &
+bundle exec ruby exe/prouterd --db $DB --port 8089 &
 SERVER_PID=$!
 sleep 0.5
 
@@ -83,7 +83,7 @@ DB=/tmp/prouterd-cron.db
 rm -f $DB
 
 bundle exec ruby exe/prouter apply examples/05_cron.prc --db $DB
-bundle exec ruby exe/prouter serve --db $DB --port 8090 &
+bundle exec ruby exe/prouterd --db $DB --port 8090 &
 SERVER_PID=$!
 
 # Wait for a minute boundary, then check

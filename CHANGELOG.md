@@ -326,12 +326,58 @@ prefix expansion, ambiguity, `end`/`do`, `?` context help, `logout`/
 multi-word `description` parser/render roundtrip. Suite now at 525
 examples / 0 failures.
 
+### Phase 19: Two-binary split (prouter CLI + prouterd daemon)
+
+The `serve` subcommand of `prouter` is gone. The long-running daemon
+now lives in its own binary, `exe/prouterd`, mirroring the etcd /
+dockerd / containerd convention where the daemon owns the brand name
+and the operator client is a separate, sharper binary.
+
+Binary surface:
+- `exe/prouter` — operator CLI client. Subcommands: check, render,
+  apply, shell, exec, trigger, replay, cancel, diff, cleanup, trace,
+  version, help. No daemon mode.
+- `exe/prouterd` — long-running daemon. Flags: `--bind`, `--port`,
+  `--db`, `--workers`, `--runner`, `--no-db`, `--version`, `--help`.
+  Replaces what used to be `prouter serve <those-flags>`.
+
+Implementation:
+- Extracted `cmd_serve`'s logic to a new `Prouterd::Daemon::Main` class
+  in [lib/prouterd/daemon.rb](lib/prouterd/daemon.rb). Same dependency
+  graph (Logger, Recovery, WorkerPool, Scheduler, RateLimiter, App,
+  Server) — daemon code is now structurally separate from the CLI.
+- New `Prouterd::Bootstrap` mixin in [lib/prouterd/bootstrap.rb](lib/prouterd/bootstrap.rb)
+  shares `default_runner_kind`, `open_store`, `build_runner` between
+  CLI and daemon — single source of truth for `--db` / `--runner`
+  resolution.
+- `Prouterd::CLI::Main` includes Bootstrap and lost its private copies.
+- `prouter help` text drops the `serve` line and points at `prouterd
+  --help` instead.
+- `prouterd.gemspec` ships both `prouter` and `prouterd` as
+  `spec.executables`.
+- Dockerfile entrypoint changed from `exe/prouter serve` to
+  `exe/prouterd`. CMD trimmed accordingly.
+- `examples/README.md` webhook + cron demos use `exe/prouterd` to
+  launch the daemon (was `exe/prouter serve`).
+
+7 new specs in `spec/prouterd/daemon/main_spec.rb` cover argv parsing
+(`--port` / `--workers` integer validation, unknown flag rejection,
+`--bind` missing-value rejection, `--version` / `--help`
+short-circuits) and the `--no-db` rejection that the daemon needs
+persistent state. Suite at 532 examples / 0 failures.
+
+Migration: any external script doing `prouter serve --bind X --port Y`
+must change to `prouterd --bind X --port Y` (same flags, different
+binary). Inside Docker the entrypoint switch is invisible to operators
+who use the default `docker run prouterd:latest`.
+
 ## Status
 
-- 18 phases shipped, one git commit per phase
-- 525 RSpec specs, 0 failures
+- 19 phases shipped, one git commit per phase
+- 532 RSpec specs, 0 failures
+- Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - All spec §28 acceptance criteria + production hardening + IPC +
-  contracts + router-CLI compatibility
+  contracts + router-CLI compatibility + binary split
 - End-to-end smoke-tested against real Docker + Puma + cron + shell exec
 - Distributable as a Docker image (`docker build . && docker run`)
 - Pluggable runners: third-party gems can register a new `type` without

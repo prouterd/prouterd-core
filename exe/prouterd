@@ -1,0 +1,5 @@
+#!/usr/bin/env ruby
+require_relative "../lib/prouterd/daemon"
+
+exit_code = Prouterd::Daemon::Main.run(ARGV)
+exit(exit_code.is_a?(Integer) ? exit_code : 0)

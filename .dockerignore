@@ -1,0 +1,34 @@
+# Build context exclusions — keep the image small and the build fast.
+.git
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose*.yml
+
+# Dev-only / state
+.bundle
+vendor
+tmp
+log
+*.gem
+*.log
+var
+
+# Tests + dev fixtures (the daemon image doesn't need them)
+spec
+.rspec
+.rspec_status
+
+# IDE / OS
+.idea
+.vscode
+.DS_Store
+*.swp
+*.swo
+
+# Docs are tiny but unnecessary in the image
+README.md
+CLAUDE.md
+CHANGELOG.md
+LICENSE
+examples

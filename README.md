@@ -22,7 +22,36 @@ routing, retries, replay, webhooks, and cron — all behind one CLI.
 
 ## Quick start
 
-Requires Ruby ≥ 3.2, Docker daemon, and `libsqlite3-dev`.
+### Option A — Docker (no Ruby on the host)
+
+```bash
+docker build -t prouterd:latest .
+docker run --rm -p 8080:8080 \
+  -v prouterd-data:/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -e PROUTERD_ADMIN_TOKEN=demo \
+  prouterd:latest
+```
+
+That gets you the HTTP daemon + cron scheduler + worker pool on
+`127.0.0.1:8080`. From another shell:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/status
+
+# One-shot CLI inside the running container:
+docker exec <container> bundle exec ruby exe/prouter exec "show running-config"
+```
+
+The `/var/run/docker.sock` mount is required for `type docker` blocks
+(which spawn child containers on the host's Docker daemon). Pure
+shell-block pipelines don't need it. There's also a `docker-compose.yml`
+in the repo for a persistent setup.
+
+### Option B — local Ruby
+
+Requires Ruby ≥ 3.2, Docker daemon (for `type docker` blocks), and
+`libsqlite3-dev`.
 
 ```bash
 git clone <this-repo>

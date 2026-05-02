@@ -133,9 +133,49 @@
   pipeline. End-to-end smoke verified: `prepare` (shell, 1ms) →
   `finalize` (docker, 171ms), both under one run.
 
+### Phase 13: IPC foundation — Events bus + WS endpoints
+- `Prouterd::Events` in-process pub/sub bus with topic subscriptions.
+- WS endpoints: `/v1/events` (subscribe to run/step/log/commit events)
+  and `/v1/cli/:session_id` (remote CLI session over websocket).
+- Orchestrator publishes `run_created`, `run_updated`, `step_created`,
+  `step_updated`, `log_appended` to the bus.
+- Companion gem `prouterd-web` consumes these for live UI updates.
+
+### Phase 14: Contracts — router-style output validation in DSL
+- Top-level `contract <name>` section with `require/optional <path>`
+  and constraint attributes: `type`, `min/max`, `length/min-length/
+  max-length`, `format` (email/uri/uuid/iso8601), `pattern`, `in`.
+- Multi-line accumulation: each line is one constraint, lines for the
+  same path collapse into one Requirement.
+- `on violation fail|retry|warn` policies wired into the orchestrator
+  after runner success: a violation reshapes the result, fail or retry
+  reuses the block's existing retry policy, warn keeps success.
+- Universal across runners — same hook fires for `type docker` and
+  `type shell` (and any future runner type).
+- 30 specs across parser, validator, renderer, ContractValidator,
+  orchestrator integration. Smoke verified: real container outputs
+  bad JSON, run fails with detailed violation list.
+
+### Phase 15: Distribution — Dockerfile + docker-compose
+- Two-stage `Dockerfile` (ruby:3.2-slim builder + slim runtime).
+  Final image is 169MB. Non-root user, persistent `/data` volume,
+  bundle path baked in.
+- `docker-compose.yml` with healthcheck, volume, optional Docker socket
+  mount for `type docker` blocks.
+- `.dockerignore` strips dev fixtures + tests + docs from the build
+  context.
+- README "Quick start" gains a Docker option above the Ruby option, so
+  a new user can `docker build && docker run` without touching the host's
+  Ruby environment.
+- Smoke verified: image builds, daemon answers `/v1/status` within
+  ~2.5s of container start, admin auth chain (401/403/200) passes,
+  one-shot CLI invocations work via `docker run ... <command>`,
+  persistent volume preserves DB across container lifecycles.
+
 ## Status
 
-- 12 phases shipped, one git commit per phase
-- 364+ RSpec specs, 0 failures
-- All spec §28 acceptance criteria + production hardening
+- 15 phases shipped, one git commit per phase
+- 461+ RSpec specs, 0 failures
+- All spec §28 acceptance criteria + production hardening + IPC + contracts
 - End-to-end smoke-tested against real Docker + Puma + cron + shell exec
+- Distributable as a Docker image (`docker build . && docker run`)

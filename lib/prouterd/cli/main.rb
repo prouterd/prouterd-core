@@ -32,6 +32,7 @@ module Prouterd
         when "shell"             then cmd_shell
         when "exec"              then cmd_exec
         when "apply"             then cmd_apply
+        when "trigger"           then cmd_trigger
         when "version", "--version", "-v" then cmd_version
         when "help", "--help", "-h", nil  then cmd_help
         else
@@ -49,18 +50,23 @@ module Prouterd
           Usage: prouter <command> [args]
 
           Commands:
-            check  <file>                       Parse and validate a .prc config file
-            render <file>                       Parse and print canonical config to stdout
-            apply  <file> [--db PATH]           Validate + commit a .prc file as a new commit
-            shell  [--db PATH] [--config FILE]  Start interactive router-style shell
-            exec   "<cmd>" [--db PATH] [--config FILE]
-                                                Run a single shell command and print result
-            version                             Print version
-            help                                Show this help
+            check   <file>                     Parse and validate a .prc config file
+            render  <file>                     Parse and print canonical config to stdout
+            apply   <file>                     Validate + commit a .prc file as a new commit
+            trigger process <name> input <file>
+                                               Synchronously run a process for the given event
+            shell                              Start interactive router-style shell
+            exec    "<cmd>"                    Run a single shell command and print result
+            version                            Print version
+            help                               Show this help
 
-          Default DB path: var/prouterd.db (override via --db or PROUTERD_DB).
+          Common options for shell/exec/apply/trigger:
+            --db PATH        SQLite path (default: var/prouterd.db, env: PROUTERD_DB)
+            --no-db          Skip persistence (in-memory)
+            --config FILE    Load this .prc file as the running config
+            --runner KIND    docker (default) | stub (env: PROUTERD_RUNNER)
 
-          Subsequent phases will add: trigger, replay, trace, webhooks.
+          Subsequent phases will add: replay, trace, webhooks.
         USAGE
         0
       end
@@ -107,18 +113,22 @@ module Prouterd
 
       def cmd_shell
         store = nil
-        config_path, db_path, no_db = parse_runtime_options("shell")
-        return 2 if config_path == :error
+        opts = parse_runtime_options("shell")
+        return 2 if opts == :error
 
-        store = open_store(db_path, no_db)
+        store = open_store(opts[:db_path], opts[:no_db])
         return 1 if store == :error
 
+        runner = build_runner(opts[:runner_kind])
+        return 1 if runner == :error
+
+        session = Prouterd::Shell::Session.new(store: store, runner: runner)
         Prouterd::Shell::Shell.run(
+          session: session,
           input: @stdin,
           output: @stdout,
           error: @stderr,
-          initial_config_path: config_path,
-          store: store
+          initial_config_path: opts[:config_path]
         )
       rescue Prouterd::Shell::ShellError => e
         @stderr.puts "prouter shell: #{e.message}"
@@ -135,21 +145,24 @@ module Prouterd
           return 2
         end
 
-        config_path, db_path, no_db = parse_runtime_options("exec")
-        return 2 if config_path == :error
+        opts = parse_runtime_options("exec")
+        return 2 if opts == :error
 
-        store = open_store(db_path, no_db)
+        store = open_store(opts[:db_path], opts[:no_db])
         return 1 if store == :error
 
-        session = Prouterd::Shell::Session.new(store: store)
-        if config_path
-          source = read_file(config_path)
+        runner = build_runner(opts[:runner_kind])
+        return 1 if runner == :error
+
+        session = Prouterd::Shell::Session.new(store: store, runner: runner)
+        if opts[:config_path]
+          source = read_file(opts[:config_path])
           return 2 if source.nil?
-          document = parse_with_diagnostics(source, config_path)
+          document = parse_with_diagnostics(source, opts[:config_path])
           return 1 if document.nil?
           result = Config::Validator.validate(document)
           unless result.valid?
-            result.errors.each { |e| @stderr.puts "#{config_path}: #{e}" }
+            result.errors.each { |e| @stderr.puts "#{opts[:config_path]}: #{e}" }
             return 1
           end
           session.replace_running(document)
@@ -170,6 +183,86 @@ module Prouterd
 
       # Standalone non-interactive `apply <file> [--db PATH]` — validates the
       # file, persists it as a new commit, and updates running pointer.
+      # Standalone non-interactive `trigger process <name> input <file>`. Always
+      # synchronous; prints a step-by-step summary and exits with the run status.
+      def cmd_trigger
+        store = nil
+        unless @argv.length >= 4 && @argv[0] == "process" && @argv[2] == "input"
+          @stderr.puts "prouter trigger: usage: trigger process <name> input <file> [--db PATH] [--runner docker|stub]"
+          return 2
+        end
+        process_name = @argv[1]
+        input_path = @argv[3]
+        @argv = @argv[4..]
+
+        opts = parse_runtime_options("trigger")
+        return 2 if opts == :error
+
+        store = open_store(opts[:db_path], opts[:no_db])
+        return 1 if store == :error
+
+        runner = build_runner(opts[:runner_kind])
+        return 1 if runner == :error
+
+        document =
+          if opts[:config_path]
+            source = read_file(opts[:config_path])
+            return 2 if source.nil?
+            parsed = parse_with_diagnostics(source, opts[:config_path])
+            return 1 if parsed.nil?
+            parsed
+          elsif store
+            store.load_running
+          else
+            @stderr.puts "prouter trigger: no config available (use --config or have a running commit in --db)"
+            return 2
+          end
+
+        validation = Config::Validator.validate(document)
+        unless validation.valid?
+          validation.errors.each { |e| @stderr.puts "config invalid: #{e}" }
+          return 1
+        end
+
+        unless store
+          @stderr.puts "prouter trigger: requires --db (runs must be persisted)"
+          return 2
+        end
+
+        orchestrator = Prouterd::Runtime::Orchestrator.new(
+          db: store.db,
+          runner: runner
+        )
+
+        run = orchestrator.trigger(
+          document,
+          process_name,
+          input_event: JSON.parse(File.read(input_path)),
+          commit_id: store.running_commit&.id
+        )
+
+        repo = Prouterd::Storage::Repositories::Runs.new(store.db)
+        @stdout.puts "Run #{run.uid}: #{run.status}"
+        repo.list_steps(run.id).each do |s|
+          duration = s.duration_ms ? "#{s.duration_ms}ms" : "-"
+          @stdout.puts "  %-25s %-9s %s" % [s.block_name, s.status, duration]
+        end
+        @stdout.puts "  error: #{run.error_summary}" if run.error_summary
+
+        run.status == "success" ? 0 : 1
+      rescue Errno::ENOENT => e
+        @stderr.puts "prouter trigger: #{e.message}"
+        2
+      rescue JSON::ParserError => e
+        @stderr.puts "prouter trigger: input file is not valid JSON: #{e.message}"
+        2
+      rescue Prouterd::Runtime::TriggerError => e
+        @stderr.puts "prouter trigger: #{e.message}"
+        1
+      ensure
+        store&.db&.close if store && store != :error
+      end
+
       def cmd_apply
         store = nil
         path = @argv.shift
@@ -178,8 +271,9 @@ module Prouterd
           return 2
         end
 
-        _config_path, db_path, no_db = parse_runtime_options("apply")
-        store = open_store(db_path, no_db)
+        opts = parse_runtime_options("apply")
+        return 2 if opts == :error
+        store = open_store(opts[:db_path], opts[:no_db])
         return 1 if store == :error
 
         source = read_file(path)
@@ -206,38 +300,46 @@ module Prouterd
         store&.db&.close if store && store != :error
       end
 
-      # Parses --config/-c, --db, --no-db options off @argv. Returns
-      # [config_path, db_path, no_db_flag]. Returns :error in slot 0 on bad
-      # option so callers can short-circuit.
+      # Parses --config/-c, --db, --no-db, --runner options off @argv. Returns
+      # a Hash of resolved options or :error on bad option.
       def parse_runtime_options(cmd)
-        config_path = nil
-        db_path = nil
-        no_db = false
+        opts = { config_path: nil, db_path: nil, no_db: false, runner_kind: default_runner_kind }
         until @argv.empty?
           case @argv.first
           when "--config", "-c"
             @argv.shift
-            config_path = @argv.shift
-            unless config_path
+            opts[:config_path] = @argv.shift
+            unless opts[:config_path]
               @stderr.puts "prouter #{cmd}: --config requires a path"
-              return [:error, nil, false]
+              return :error
             end
           when "--db"
             @argv.shift
-            db_path = @argv.shift
-            unless db_path
+            opts[:db_path] = @argv.shift
+            unless opts[:db_path]
               @stderr.puts "prouter #{cmd}: --db requires a path"
-              return [:error, nil, false]
+              return :error
             end
           when "--no-db"
             @argv.shift
-            no_db = true
+            opts[:no_db] = true
+          when "--runner"
+            @argv.shift
+            opts[:runner_kind] = @argv.shift
+            unless opts[:runner_kind]
+              @stderr.puts "prouter #{cmd}: --runner requires a kind (docker|stub)"
+              return :error
+            end
           else
             @stderr.puts "prouter #{cmd}: unknown option '#{@argv.first}'"
-            return [:error, nil, false]
+            return :error
           end
         end
-        [config_path, db_path, no_db]
+        opts
+      end
+
+      def default_runner_kind
+        ENV["PROUTERD_RUNNER"] || "docker"
       end
 
       # Opens a ConfigStore at the resolved path, or returns nil if --no-db
@@ -250,6 +352,19 @@ module Prouterd
         Prouterd::ControlPlane::ConfigStore.new(db)
       rescue SQLite3::Exception, Prouterd::Storage::StorageError => e
         @stderr.puts "prouter: cannot open DB at #{path}: #{e.message}"
+        :error
+      end
+
+      def build_runner(kind)
+        case kind
+        when "docker", nil then Prouterd::Runner::DockerRunner.new
+        when "stub"        then Prouterd::Runner::StubRunner.new
+        else
+          @stderr.puts "prouter: unknown runner kind '#{kind}' (docker|stub)"
+          :error
+        end
+      rescue LoadError, StandardError => e
+        @stderr.puts "prouter: cannot initialize runner '#{kind}': #{e.message}"
         :error
       end
 

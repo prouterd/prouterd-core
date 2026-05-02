@@ -36,8 +36,12 @@ module Prouterd
         when "blocks"            then list_blocks(rest, session, out)
         when "block"             then show_block(rest, session, out)
         when "routes"            then list_routes(rest, session, out)
-        when "runs", "run", "logs", "artifacts", "dead-letter"
-          not_yet(out, "Phase 4")
+        when "runs"      then list_runs(rest, session, out)
+        when "run"       then show_run(rest, session, out)
+        when "logs"      then show_logs(rest, session, out)
+        when "artifacts" then show_artifacts(rest, session, out)
+        when "dead-letter"
+          not_yet(out, "Phase 6")
         else
           raise CommandError, "unknown show target '#{head}'"
         end
@@ -106,6 +110,159 @@ module Prouterd
             (c.message || "").to_s[0, 60],
             marker_str
           ]
+        end
+      end
+
+      # ----- runs / logs / artifacts -----
+
+      def list_runs(rest, session, out)
+        unless session.store
+          out.puts "(no DB attached — runs not available)"
+          return
+        end
+
+        process_name = nil
+        if rest.length == 2 && rest[0] == "process"
+          process_name = rest[1]
+        elsif !rest.empty?
+          raise CommandError, "syntax: show runs [process <name>]"
+        end
+
+        repo = Prouterd::Storage::Repositories::Runs.new(session.store.db)
+        runs = repo.list_runs(limit: 100, process_name: process_name)
+        if runs.empty?
+          out.puts process_name ? "No runs for process '#{process_name}'." : "No runs."
+          return
+        end
+        out.puts "%-15s %-25s %-10s %-19s %s" % ["UID", "PROCESS", "STATUS", "STARTED", "DURATION"]
+        runs.each do |r|
+          dur = r.duration_ms ? "#{r.duration_ms}ms" : "-"
+          out.puts "%-15s %-25s %-10s %-19s %s" % [
+            r.uid, r.process_name[0, 25], r.status,
+            (r.started_at || r.created_at).to_s[0, 19], dur
+          ]
+        end
+      end
+
+      def show_run(rest, session, out)
+        require_args(rest, 1, "show run <uid>")
+        unless session.store
+          out.puts "(no DB attached — run details not available)"
+          return
+        end
+        repo = Prouterd::Storage::Repositories::Runs.new(session.store.db)
+        run = repo.get_run_by_uid(rest.first)
+        raise CommandError, "no such run '#{rest.first}'" unless run
+
+        out.puts "Run: #{run.uid}"
+        out.puts "Process: #{run.process_name}"
+        out.puts "Status: #{run.status}"
+        out.puts "Config commit: #{run.process_config_commit_id || '-'}"
+        out.puts "Interface: #{run.interface_name || '-'}"
+        out.puts "Started: #{run.started_at || '-'}"
+        out.puts "Finished: #{run.finished_at || '-'}"
+        out.puts "Error: #{run.error_summary}" if run.error_summary
+        out.puts
+        out.puts "Steps:"
+        steps = repo.list_steps(run.id)
+        if steps.empty?
+          out.puts "  (none)"
+        else
+          steps.each do |s|
+            duration = s.duration_ms ? "#{s.duration_ms}ms" : "-"
+            out.puts "  %-25s %-9s %-7s %-10s" % [s.block_name, s.status, duration, "attempt #{s.attempt}"]
+            out.puts "    error: [#{s.error_type}] #{s.error_message}" if s.error_type
+          end
+        end
+
+        artifacts = repo.list_artifacts(run.id)
+        unless artifacts.empty?
+          out.puts
+          out.puts "Artifacts:"
+          artifacts.each do |a|
+            out.puts "  #{a.block_name}/#{a.name} (#{a.size_bytes} bytes)"
+          end
+        end
+      end
+
+      def show_logs(rest, session, out)
+        # syntax: show logs run <uid> [block <name>]
+        unless rest.length >= 2 && rest[0] == "run"
+          raise CommandError, "syntax: show logs run <uid> [block <name>]"
+        end
+        unless session.store
+          out.puts "(no DB attached — logs not available)"
+          return
+        end
+        run_uid = rest[1]
+        block_name = nil
+        if rest.length == 4 && rest[2] == "block"
+          block_name = rest[3]
+        elsif rest.length != 2
+          raise CommandError, "syntax: show logs run <uid> [block <name>]"
+        end
+
+        repo = Prouterd::Storage::Repositories::Runs.new(session.store.db)
+        run = repo.get_run_by_uid(run_uid)
+        raise CommandError, "no such run '#{run_uid}'" unless run
+
+        step_id = nil
+        if block_name
+          step = repo.list_steps(run.id).find { |s| s.block_name == block_name }
+          raise CommandError, "no such block '#{block_name}' in run '#{run_uid}'" unless step
+          step_id = step.id
+        end
+
+        logs = repo.list_logs(run.id, step_id: step_id)
+        if logs.empty?
+          out.puts "No logs."
+          return
+        end
+        steps_by_id = repo.list_steps(run.id).each_with_object({}) { |s, h| h[s.id] = s.block_name }
+        logs.each do |entry|
+          tag = entry.step_id ? "#{steps_by_id[entry.step_id]}/#{entry.stream}" : "run/#{entry.stream}"
+          entry.content.each_line do |line|
+            out.puts "[#{tag}] #{line.chomp}"
+          end
+        end
+      end
+
+      def show_artifacts(rest, session, out)
+        # syntax: show artifacts run <uid> [block <name>]
+        unless rest.length >= 2 && rest[0] == "run"
+          raise CommandError, "syntax: show artifacts run <uid> [block <name>]"
+        end
+        unless session.store
+          out.puts "(no DB attached — artifacts not available)"
+          return
+        end
+        run_uid = rest[1]
+        block_name = nil
+        if rest.length == 4 && rest[2] == "block"
+          block_name = rest[3]
+        elsif rest.length != 2
+          raise CommandError, "syntax: show artifacts run <uid> [block <name>]"
+        end
+
+        repo = Prouterd::Storage::Repositories::Runs.new(session.store.db)
+        run = repo.get_run_by_uid(run_uid)
+        raise CommandError, "no such run '#{run_uid}'" unless run
+
+        step_id = nil
+        if block_name
+          step = repo.list_steps(run.id).find { |s| s.block_name == block_name }
+          raise CommandError, "no such block '#{block_name}' in run '#{run_uid}'" unless step
+          step_id = step.id
+        end
+
+        artifacts = repo.list_artifacts(run.id, step_id: step_id)
+        if artifacts.empty?
+          out.puts "No artifacts."
+          return
+        end
+        out.puts "%-25s %-30s %-10s %-12s" % ["BLOCK", "NAME", "SIZE", "CHECKSUM"]
+        artifacts.each do |a|
+          out.puts "%-25s %-30s %-10s %-12s" % [a.block_name, a.name, "#{a.size_bytes}B", a.checksum.to_s[0, 12]]
         end
       end
 

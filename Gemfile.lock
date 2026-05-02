@@ -2,12 +2,20 @@ PATH
   remote: .
   specs:
     prouterd (0.1.0)
+      docker-api (~> 2.4)
       sqlite3 (~> 2.1)
 
 GEM
   remote: https://rubygems.org/
   specs:
     diff-lcs (1.6.2)
+    docker-api (2.4.0)
+      excon (>= 0.64.0)
+      multi_json
+    excon (1.4.2)
+      logger
+    logger (1.7.0)
+    multi_json (1.20.1)
     rake (13.4.2)
     rspec (3.13.2)
       rspec-core (~> 3.13.0)
@@ -34,6 +42,10 @@ DEPENDENCIES
 
 CHECKSUMS
   diff-lcs (1.6.2) sha256=9ae0d2cba7d4df3075fe8cd8602a8604993efc0dfa934cff568969efb1909962
+  docker-api (2.4.0) sha256=824be734f4cc8718189be9c8e795b6414acbbf7e8b082a06f959a27dd8dd63e6
+  excon (1.4.2) sha256=32d8d8eda619717d9b8043b4675e096fb5c2139b080e2ad3b267f88c545aaa35
+  logger (1.7.0) sha256=196edec7cc44b66cfb40f9755ce11b392f21f7967696af15d274dde7edff0203
+  multi_json (1.20.1) sha256=2f3934e805cc45ef91b551a1f89d0e9191abd06a5e04a2ef09a6a036c452ca6d
   prouterd (0.1.0)
   rake (13.4.2) sha256=cb825b2bd5f1f8e91ca37bddb4b9aaf345551b4731da62949be002fa89283701
   rspec (3.13.2) sha256=206284a08ad798e61f86d7ca3e376718d52c0bc944626b2349266f239f820587

@@ -12,18 +12,19 @@ module Prouterd
     # Candidate-config-style commit semantics, not router CLI's apply-live model.
     class Session
       attr_accessor :running_config, :candidate_config, :mode_stack
-      attr_reader :store, :last_commit
+      attr_reader :store, :last_commit, :runner, :artifact_store
 
       DEFAULT_HOSTNAME = "process-router".freeze
 
-      # `store` is an optional ControlPlane::ConfigStore. When provided:
-      #   - The constructor loads running_config from the store's running pointer
-      #     (unless an explicit running_config argument is given).
-      #   - commit_candidate persists a new commit and updates the running pointer.
-      #   - rollback / write_memory delegate to the store.
-      # Without a store, the Session is in-memory-only (Phase 2 mode).
-      def initialize(running_config: nil, store: nil)
+      # `store`           — optional ControlPlane::ConfigStore for persistence.
+      # `runner`          — optional Runner for executing blocks (Phase 4+).
+      #                     If nil, `trigger` raises with a clear message.
+      # `artifact_store`  — optional Runtime::ArtifactStore; defaults are
+      #                     created on demand by the orchestrator.
+      def initialize(running_config: nil, store: nil, runner: nil, artifact_store: nil)
         @store = store
+        @runner = runner
+        @artifact_store = artifact_store
         @running_config =
           if running_config
             running_config
@@ -35,6 +36,17 @@ module Prouterd
         @candidate_config = nil
         @mode_stack = []
         @last_commit = store&.running_commit
+      end
+
+      def orchestrator
+        raise ShellError, "no DB attached; trigger requires --db" unless @store
+        raise ShellError, "no runner configured; pass --runner=docker|stub" unless @runner
+
+        @orchestrator ||= Runtime::Orchestrator.new(
+          db: @store.db,
+          runner: @runner,
+          artifact_store: @artifact_store
+        )
       end
 
       def hostname

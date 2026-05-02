@@ -32,6 +32,86 @@ module Prouterd
               FOREIGN KEY (commit_id) REFERENCES config_commits(id)
             );
           SQL
+        ),
+        Migration.new(
+          version: "0002",
+          description: "runtime: runs, run_steps, run_logs, artifacts",
+          up: <<~SQL
+            CREATE TABLE runs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              uid TEXT NOT NULL UNIQUE,
+              process_name TEXT NOT NULL,
+              process_config_commit_id INTEGER,
+              interface_name TEXT,
+              status TEXT NOT NULL,
+              input_event_json TEXT,
+              context_json TEXT,
+              error_summary TEXT,
+              started_at TEXT,
+              finished_at TEXT,
+              created_at TEXT NOT NULL,
+              parent_run_id INTEGER,
+              replay_of_run_id INTEGER,
+              FOREIGN KEY (process_config_commit_id) REFERENCES config_commits(id),
+              FOREIGN KEY (parent_run_id) REFERENCES runs(id),
+              FOREIGN KEY (replay_of_run_id) REFERENCES runs(id)
+            );
+            CREATE INDEX idx_runs_status ON runs(status);
+            CREATE INDEX idx_runs_process ON runs(process_name);
+            CREATE INDEX idx_runs_uid ON runs(uid);
+            CREATE INDEX idx_runs_created_at ON runs(created_at);
+
+            CREATE TABLE run_steps (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id INTEGER NOT NULL,
+              block_name TEXT NOT NULL,
+              status TEXT NOT NULL,
+              attempt INTEGER NOT NULL DEFAULT 1,
+              image TEXT,
+              input_json TEXT,
+              output_json TEXT,
+              exit_code INTEGER,
+              error_type TEXT,
+              error_message TEXT,
+              started_at TEXT,
+              finished_at TEXT,
+              duration_ms INTEGER,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (run_id) REFERENCES runs(id)
+            );
+            CREATE INDEX idx_run_steps_run ON run_steps(run_id);
+            CREATE INDEX idx_run_steps_status ON run_steps(status);
+
+            CREATE TABLE run_logs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id INTEGER NOT NULL,
+              step_id INTEGER,
+              stream TEXT NOT NULL,
+              content TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (run_id) REFERENCES runs(id),
+              FOREIGN KEY (step_id) REFERENCES run_steps(id)
+            );
+            CREATE INDEX idx_run_logs_run ON run_logs(run_id);
+            CREATE INDEX idx_run_logs_step ON run_logs(step_id);
+
+            CREATE TABLE artifacts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id INTEGER NOT NULL,
+              step_id INTEGER NOT NULL,
+              block_name TEXT NOT NULL,
+              name TEXT NOT NULL,
+              path TEXT NOT NULL,
+              content_type TEXT,
+              size_bytes INTEGER NOT NULL,
+              checksum TEXT,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (run_id) REFERENCES runs(id),
+              FOREIGN KEY (step_id) REFERENCES run_steps(id)
+            );
+            CREATE INDEX idx_artifacts_run ON artifacts(run_id);
+            CREATE INDEX idx_artifacts_step ON artifacts(step_id);
+          SQL
         )
       ].freeze
 

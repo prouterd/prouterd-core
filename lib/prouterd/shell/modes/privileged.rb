@@ -24,6 +24,7 @@ module Prouterd
             "apply"     => :cmd_apply,
             "write"     => :cmd_write,
             "rollback"  => :cmd_rollback,
+            "trigger"   => :cmd_trigger,
             "disable"   => :cmd_disable,
             "exit"      => :cmd_exit,
             "help"      => :cmd_help,
@@ -133,6 +134,48 @@ module Prouterd
           raise CommandError, "commit id must be an integer"
         rescue Prouterd::ControlPlane::ConfigStoreError, Prouterd::Shell::ShellError => e
           raise CommandError, e.message
+        end
+
+        # `trigger process <name> input <file>` — synchronously executes the
+        # process for the given input event, prints a step-by-step summary,
+        # and returns when the run terminates (success or failed).
+        def cmd_trigger(tokens, session, out, _err)
+          unless tokens.length == 5 && tokens[1].value == "process" && tokens[3].value == "input"
+            raise CommandError, "syntax: trigger process <name> input <file>"
+          end
+          process_name = tokens[2].value
+          input_path = tokens[4].value
+
+          event = parse_input_file(input_path)
+          run = session.orchestrator.trigger(
+            session.running_config,
+            process_name,
+            input_event: event,
+            commit_id: session.store&.running_commit&.id
+          )
+          render_run_summary(run, session, out)
+          :handled
+        rescue Errno::ENOENT
+          raise CommandError, "no such input file: #{tokens[4].value}"
+        rescue JSON::ParserError => e
+          raise CommandError, "input file is not valid JSON: #{e.message}"
+        rescue Prouterd::Runtime::TriggerError, Prouterd::Shell::ShellError => e
+          raise CommandError, e.message
+        end
+
+        def parse_input_file(path)
+          source = File.read(path)
+          JSON.parse(source)
+        end
+
+        def render_run_summary(run, session, out)
+          steps = Prouterd::Storage::Repositories::Runs.new(session.store.db).list_steps(run.id)
+          out.puts "Run #{run.uid}: #{run.status}"
+          steps.each do |s|
+            duration = s.duration_ms ? "#{s.duration_ms}ms" : "-"
+            out.puts "  %-25s %-9s %s" % [s.block_name, s.status, duration]
+          end
+          out.puts "  error: #{run.error_summary}" if run.error_summary
         end
 
         def cmd_disable(_tokens, _session, _out, _err)

@@ -9,6 +9,8 @@ require_relative "prouterd/config/validator"
 require_relative "prouterd/config/renderer"
 require_relative "prouterd/storage"
 require_relative "prouterd/control_plane"
+require_relative "prouterd/runner"
+require_relative "prouterd/runtime"
 require_relative "prouterd/shell"
 
 module Prouterd

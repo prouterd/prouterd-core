@@ -62,7 +62,7 @@ module Prouterd
       def read_string(content, pos, len, line_no)
         start_col = pos + 1
         pos += 1
-        value = String.new
+        value = String.new(encoding: Encoding::UTF_8)
 
         while pos < len
           ch = content[pos]
@@ -84,7 +84,7 @@ module Prouterd
 
       def read_word(content, pos, len, line_no)
         start_col = pos + 1
-        value = String.new
+        value = String.new(encoding: Encoding::UTF_8)
 
         while pos < len
           ch = content[pos]

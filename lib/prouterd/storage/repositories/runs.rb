@@ -48,14 +48,18 @@ module Prouterd
 
         def get_run(id)
           row = @db.query_row(
-            "SELECT #{run_columns} FROM runs WHERE id = ?", [id]
+            "SELECT #{run_columns_with_parent} FROM runs r " \
+            "LEFT JOIN runs parent ON r.replay_of_run_id = parent.id " \
+            "WHERE r.id = ?", [id]
           )
           row && row_to_run(row)
         end
 
         def get_run_by_uid(uid)
           row = @db.query_row(
-            "SELECT #{run_columns} FROM runs WHERE uid = ?", [uid]
+            "SELECT #{run_columns_with_parent} FROM runs r " \
+            "LEFT JOIN runs parent ON r.replay_of_run_id = parent.id " \
+            "WHERE r.uid = ?", [uid]
           )
           row && row_to_run(row)
         end
@@ -64,16 +68,18 @@ module Prouterd
           conditions = []
           params = []
           if process_name
-            conditions << "process_name = ?"
+            conditions << "r.process_name = ?"
             params << process_name
           end
           if status
-            conditions << "status = ?"
+            conditions << "r.status = ?"
             params << status
           end
           where = conditions.empty? ? "" : "WHERE #{conditions.join(' AND ')}"
           rows = @db.execute(
-            "SELECT #{run_columns} FROM runs #{where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            "SELECT #{run_columns_with_parent} FROM runs r " \
+            "LEFT JOIN runs parent ON r.replay_of_run_id = parent.id " \
+            "#{where} ORDER BY r.id DESC LIMIT ? OFFSET ?",
             params + [limit, offset]
           )
           rows.map { |r| row_to_run(r) }
@@ -211,6 +217,16 @@ module Prouterd
             "created_at, parent_run_id, replay_of_run_id"
         end
 
+        # Same fields as run_columns, prefixed with `r.` and tail-appended
+        # with parent.uid (NULL when the run has no replay_of_run_id, courtesy
+        # of LEFT JOIN). Callers issue this list against `runs r LEFT JOIN
+        # runs parent ON r.replay_of_run_id = parent.id`.
+        def run_columns_with_parent
+          "r.id, r.uid, r.process_name, r.process_config_commit_id, r.interface_name, r.status, " \
+            "r.input_event_json, r.context_json, r.error_summary, r.started_at, r.finished_at, " \
+            "r.created_at, r.parent_run_id, r.replay_of_run_id, parent.uid AS replay_of_uid"
+        end
+
         def step_columns
           "id, run_id, block_name, status, attempt, image, input_json, output_json, " \
             "exit_code, error_type, error_message, started_at, finished_at, duration_ms, created_at"
@@ -221,7 +237,8 @@ module Prouterd
             id: r[0], uid: r[1], process_name: r[2], process_config_commit_id: r[3],
             interface_name: r[4], status: r[5], input_event_json: r[6], context_json: r[7],
             error_summary: r[8], started_at: r[9], finished_at: r[10], created_at: r[11],
-            parent_run_id: r[12], replay_of_run_id: r[13]
+            parent_run_id: r[12], replay_of_run_id: r[13],
+            replay_of_uid: r[14]  # set by run_columns_with_parent / nil for run_columns
           )
         end
 

@@ -14,7 +14,7 @@ module Prouterd
     #   { "data": ..., "meta": { ... } }   on success
     #   { "error": "...", "details": [..] } on failure
     class V1
-      def initialize(store:, runner:, secret_resolver:, in_flight:, metrics:, logger: nil, jobs: nil)
+      def initialize(store:, runner:, secret_resolver:, in_flight:, metrics:, jobs:, logger: nil)
         @store = store
         @runner = runner
         @secret_resolver = secret_resolver
@@ -156,7 +156,7 @@ module Prouterd
           interface_name: nil,
           commit_id: @store.running_commit&.id
         )
-        dispatch_run(orchestrator, run, document)
+        dispatch_run(run)
         @metrics&.increment(:webhooks_received_total, interface: "(api-trigger)", code: 202)
 
         json(202, data: { run_id: run.uid, status: "queued" })
@@ -253,7 +253,7 @@ module Prouterd
             commit_id: original.process_config_commit_id,
             replay_of_run_id: original.id
           )
-          dispatch_run(orchestrator, new_run, document, from_block: from_block, seed_context: seed)
+          dispatch_run(new_run, from_block: from_block, seed_context: seed)
         else
           new_run = orchestrator.enqueue(
             document, original.process_name,
@@ -262,7 +262,7 @@ module Prouterd
             commit_id: original.process_config_commit_id,
             replay_of_run_id: original.id
           )
-          dispatch_run(orchestrator, new_run, document)
+          dispatch_run(new_run)
         end
 
         json(202, data: { run_id: new_run.uid, status: "queued", replay_of: uid, from: from_block })
@@ -327,37 +327,17 @@ module Prouterd
         )
       end
 
-      # Async-dispatch a previously-enqueued Run. Prefers the durable
-      # JobQueue (so a daemon crash mid-run can be recovered); falls back
-      # to Thread.new for ad-hoc test setups without a queue wired.
-      def dispatch_run(orchestrator, run, document, from_block: nil, seed_context: nil)
-        if @jobs
-          if from_block
-            @jobs.enqueue(
-              run_id: run.id, kind: "execute_from_block",
-              payload: { "from_block" => from_block, "seed_context" => seed_context || {} }
-            )
-          else
-            @jobs.enqueue(run_id: run.id, kind: "execute")
-          end
+      # Enqueue a previously-created Run onto the durable JobQueue. The
+      # WorkerPool drains the queue; daemon crash mid-run is recoverable.
+      def dispatch_run(run, from_block: nil, seed_context: nil)
+        if from_block
+          @jobs.enqueue(
+            run_id: run.id, kind: "execute_from_block",
+            payload: { "from_block" => from_block, "seed_context" => seed_context || {} }
+          )
         else
-          Thread.new { execute_safely(orchestrator, run, document, from_block: from_block, seed_context: seed_context) }
+          @jobs.enqueue(run_id: run.id, kind: "execute")
         end
-      end
-
-      def execute_safely(orchestrator, run, document, from_block: nil, seed_context: nil)
-        kwargs = {}
-        kwargs[:from_block] = from_block if from_block
-        kwargs[:seed_context] = seed_context if seed_context
-        orchestrator.execute_run(run, document, **kwargs)
-      rescue StandardError => e
-        @logger&.error("v1 async run #{run.uid} crashed: #{e.class}: #{e.message}")
-        repo = Storage::Repositories::Runs.new(@store.db)
-        repo.update_run(
-          run.id, status: "failed",
-          finished_at: Time.now.utc.iso8601(3),
-          error_summary: "orchestrator crash: #{e.class}: #{e.message}"
-        )
       end
 
       def run_by_uid(uid)
@@ -470,7 +450,8 @@ module Prouterd
           interface_name: r.interface_name,
           status: r.status,
           commit_id: r.process_config_commit_id,
-          replay_of: r.replay_of_run_id,
+          replay_of: r.replay_of_run_id,    # numeric, kept for back-compat
+          replay_of_uid: r.replay_of_uid,   # human-friendly, recommended
           started_at: r.started_at,
           finished_at: r.finished_at,
           created_at: r.created_at,

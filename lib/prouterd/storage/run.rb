@@ -21,6 +21,7 @@ module Prouterd
       :created_at,
       :parent_run_id,
       :replay_of_run_id,
+      :replay_of_uid,
       keyword_init: true
     ) do
       def success?; status == "success"; end

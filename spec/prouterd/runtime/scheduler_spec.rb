@@ -6,6 +6,7 @@ RSpec.describe Prouterd::Runtime::Scheduler do
   let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
   let(:runner) { Prouterd::Runner::StubRunner.new }
   let(:repo) { Prouterd::Storage::Repositories::Runs.new(db) }
+  let(:jobs) { Prouterd::Storage::Repositories::Jobs.new(db) }
 
   after { db.close }
 
@@ -43,7 +44,7 @@ RSpec.describe Prouterd::Runtime::Scheduler do
   end
 
   it "fires the cron interface when its schedule has come due" do
-    scheduler = described_class.new(store: store, runner: runner, output: StringIO.new)
+    scheduler = described_class.new(store: store, runner: runner, jobs: jobs, output: StringIO.new)
     # Pretend we last fired far enough in the past that one minute-tick is due.
     scheduler.instance_variable_set(:@last_fired_warm, Time.now - 120)
     scheduler.tick(now: Time.now)
@@ -77,7 +78,7 @@ RSpec.describe Prouterd::Runtime::Scheduler do
     PRC
     store.commit(doc)
 
-    scheduler = described_class.new(store: store, runner: runner)
+    scheduler = described_class.new(store: store, runner: runner, jobs: jobs)
     scheduler.instance_variable_set(:@last_fired_warm, Time.now - 120)
     scheduler.tick(now: Time.now)
 
@@ -102,7 +103,7 @@ RSpec.describe Prouterd::Runtime::Scheduler do
     store.commit(doc)
 
     out = StringIO.new
-    scheduler = described_class.new(store: store, runner: runner, output: out)
+    scheduler = described_class.new(store: store, runner: runner, jobs: jobs, output: out)
     scheduler.instance_variable_set(:@last_fired_warm, Time.now - 120)
     scheduler.tick(now: Time.now)
 
@@ -111,7 +112,7 @@ RSpec.describe Prouterd::Runtime::Scheduler do
   end
 
   it "advances @last_fired so the next tick at the same minute does not double-fire" do
-    scheduler = described_class.new(store: store, runner: runner, output: StringIO.new)
+    scheduler = described_class.new(store: store, runner: runner, jobs: jobs, output: StringIO.new)
     scheduler.instance_variable_set(:@last_fired_warm, Time.now - 120)
 
     now = Time.now
@@ -143,7 +144,7 @@ RSpec.describe Prouterd::Runtime::Scheduler do
     store.commit(doc)
 
     out = StringIO.new
-    scheduler = described_class.new(store: store, runner: runner, output: out)
+    scheduler = described_class.new(store: store, runner: runner, jobs: jobs, output: out)
     scheduler.instance_variable_set(:@last_fired_warm, Time.now - 120)
     scheduler.tick(now: Time.now)
 

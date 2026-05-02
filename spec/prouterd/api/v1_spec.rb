@@ -9,10 +9,11 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
   let(:runner) { Prouterd::Runner::StubRunner.new }
   let(:in_flight) { Prouterd::Runtime::InFlightRegistry.new }
   let(:metrics) { Prouterd::API::Metrics.new(in_flight: in_flight) }
+  let(:jobs) { Prouterd::Storage::Repositories::Jobs.new(db) }
 
   let(:app) do
     Prouterd::API::App.new(
-      store: store, runner: runner,
+      store: store, runner: runner, jobs: jobs,
       in_flight: in_flight, metrics: metrics, admin_token: nil
     )
   end
@@ -156,6 +157,27 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
     end
   end
 
+  describe "GET /v1/runs replay_of_uid resolution" do
+    it "fills replay_of_uid when a run was triggered as a replay of another" do
+      runs_repo = Prouterd::Storage::Repositories::Runs.new(db)
+      original = runs_repo.create_run(process_name: "pipeline", input_event: { "x" => 1 })
+      replay   = runs_repo.create_run(
+        process_name: "pipeline",
+        input_event:  { "x" => 1 },
+        replay_of_run_id: original.id
+      )
+
+      get "/v1/runs"
+      data = JSON.parse(last_response.body)["data"]
+      replay_row = data.find { |r| r["uid"] == replay.uid }
+      original_row = data.find { |r| r["uid"] == original.uid }
+
+      expect(replay_row["replay_of_uid"]).to eq(original.uid)
+      expect(replay_row["replay_of"]).to eq(original.id)
+      expect(original_row["replay_of_uid"]).to be_nil
+    end
+  end
+
   describe "GET /v1/processes" do
     it "lists processes" do
       get "/v1/processes"
@@ -183,8 +205,9 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
     it "409s when there is no running config to bless" do
       empty_db    = Prouterd::Storage::DB.open(":memory:")
       empty_store = Prouterd::ControlPlane::ConfigStore.new(empty_db)
+      empty_jobs  = Prouterd::Storage::Repositories::Jobs.new(empty_db)
       empty_app   = Prouterd::API::App.new(
-        store: empty_store, runner: runner,
+        store: empty_store, runner: runner, jobs: empty_jobs,
         in_flight: in_flight, metrics: metrics, admin_token: nil
       )
 
@@ -449,7 +472,7 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
   describe "admin auth" do
     let(:app) do
       Prouterd::API::App.new(
-        store: store, runner: runner,
+        store: store, runner: runner, jobs: jobs,
         in_flight: in_flight, metrics: metrics,
         admin_token: "topsecret"
       )

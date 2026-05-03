@@ -25,8 +25,3 @@
 /db/*.sqlite3-journal
 /db/*.sqlite3-wal
 /db/*.sqlite3-shm
-
-# Reference clones (separate git repos kept around for study)
-/vyos-build/
-/vyos-1x/
-/vyatta-cfg/

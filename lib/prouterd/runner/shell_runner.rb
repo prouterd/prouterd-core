@@ -27,10 +27,12 @@ module Prouterd
       INPUT_FILENAME = "input.json".freeze
       OUTPUT_FILENAME = "output.json".freeze
       ARTIFACTS_DIRNAME = "artifacts".freeze
+      INPUTS_DIRNAME = "inputs".freeze
 
       def run(request)
         work_dir = Dir.mktmpdir(WORK_DIR_PREFIX)
         prepare_work_dir(work_dir, request.input_json)
+        stage_inputs(work_dir, request.staged_inputs)
 
         cmd = parse_command(request.field("exec"), request.field("shell"))
         env = build_env(request, work_dir)
@@ -120,7 +122,23 @@ module Prouterd
         env["PROUTER_OUTPUT_PATH"]   = File.join(work_dir, OUTPUT_FILENAME)
         env["PROUTER_ARTIFACTS_DIR"] = File.join(work_dir, ARTIFACTS_DIRNAME)
         env["PROUTER_WORKDIR"]       = work_dir
+        # Same redirection for staged-artifact env vars: the orchestrator
+        # sets PROUTER_INPUT_<NAME>=/prouter/inputs/<name> for the docker
+        # mount; rewrite to the host-side staging directory.
+        (request.staged_inputs || {}).each_key do |local_name|
+          env["PROUTER_INPUT_#{local_name.upcase}"] = File.join(work_dir, INPUTS_DIRNAME, local_name)
+        end
         env
+      end
+
+      def stage_inputs(work_dir, staged)
+        return if staged.nil? || staged.empty?
+
+        inputs_dir = File.join(work_dir, INPUTS_DIRNAME)
+        FileUtils.mkdir_p(inputs_dir)
+        staged.each do |local_name, src_path|
+          FileUtils.cp(src_path, File.join(inputs_dir, local_name))
+        end
       end
 
       def classify_outcome(work_dir, exit_code)

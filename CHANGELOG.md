@@ -371,13 +371,67 @@ must change to `prouterd --bind X --port Y` (same flags, different
 binary). Inside Docker the entrypoint switch is invisible to operators
 who use the default `docker run prouterd:latest`.
 
+### Phase 20: Typed artifacts — files between blocks
+
+Closes the long-standing gap where `output.json` was the only sanctioned
+way to pass data between blocks. ML / data pipelines need to hand
+parquet, pickle, model binaries downstream — sticking those into JSON
+was the obvious anti-pattern. The runtime already archived
+`/prouter/artifacts/` to disk, so this phase just adds the DSL surface
+to declare-and-consume that archive across blocks.
+
+DSL additions:
+- `produces <relpath>` (block-level) — declares a file the block MUST
+  write into `/prouter/artifacts/`. Multiple per block. Missing on
+  success → `error_type: "missing_artifact"`, retry/on-failure applies.
+- `input from <upstream_block>.<relpath>` (block-level) — pulls the
+  named artifact from the upstream's archive. The local name (used for
+  the staged path and env var) is derived from the basename minus its
+  last extension: `model.pkl` → `model`, `metrics.json` → `metrics`.
+- Existing `input <ctx.path>` (event-data flow) remains; the two are
+  orthogonal abstractions and can coexist on the same block.
+
+Runtime:
+- Orchestrator `stage_artifact_inputs` looks up archived rows in the
+  `artifacts` table by `(block_name, name)` and hands a
+  `Hash<local_name, host_path>` to the runner via the new
+  `RunRequest.staged_inputs` field.
+- `DockerRunner#stage_inputs` and `ShellRunner#stage_inputs` copy each
+  staged file into `<work_dir>/inputs/<local_name>` — exposed at
+  `/prouter/inputs/<local_name>` inside Docker, at the host path for
+  shell.
+- Env: `PROUTER_INPUT_<UPPER(local_name)>` → the staged path, alongside
+  the existing `PROUTER_INPUT_PATH` (the event JSON).
+- `enforce_produces` reshapes a successful result into a
+  `missing_artifact` failure if any declared `produces` file is absent;
+  uses the same retry / on-failure machinery as any other block error.
+
+Validator:
+- Cross-process refs: `input from Y.Z` requires Y to be a block in the
+  same process AND declare `produces Z`.
+- Topology check: Y must be reachable upstream of the consumer in the
+  route graph.
+- Collision check: two inputs deriving the same local name
+  (e.g. `train.model.pkl` + `train.model.json`) error with a fix-it
+  pointer to rename `produces` upstream.
+
+No DB migrations needed — the existing `artifacts` table already keys
+on `(run_id, block_name, name)`. No `/v1` API changes — artifacts were
+already exposed.
+
+Spec coverage: 18 new specs (parser: 4, renderer roundtrip: 1,
+validator: 5, e2e via StubRunner: 2, plus existing-form regressions).
+Suite at 550 examples / 0 failures.
+
+Worked example in [examples/08_typed_artifacts.prc](examples/08_typed_artifacts.prc).
+
 ## Status
 
-- 19 phases shipped, one git commit per phase
-- 532 RSpec specs, 0 failures
+- 20 phases shipped, one git commit per phase
+- 550 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - All spec §28 acceptance criteria + production hardening + IPC +
-  contracts + router-CLI compatibility + binary split
+  contracts + router-CLI compatibility + binary split + typed artifacts
 - End-to-end smoke-tested against real Docker + Puma + cron + shell exec
 - Distributable as a Docker image (`docker build . && docker run`)
 - Pluggable runners: third-party gems can register a new `type` without

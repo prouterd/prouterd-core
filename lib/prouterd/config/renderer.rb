@@ -118,7 +118,11 @@ module Prouterd
 
         # Common block fields, post-type, in spec order
         emit(level + 1, "input #{block.input}") if block.input
+        block.artifact_inputs.each do |ai|
+          emit(level + 1, "input from #{ai.from_block}.#{ai.from_artifact}")
+        end
         emit(level + 1, "output #{block.output}") if block.output
+        block.produces.each { |p| emit(level + 1, "produces #{p}") }
         emit(level + 1, "timeout #{Util::DurationParser.render(block.timeout_ms)}") if block.timeout_ms
         emit(level + 1, "retry #{block.retry_policy_name}") if block.retry_policy_name
         emit(level + 1, "contract #{block.contract_name}") if block.contract_name

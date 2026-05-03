@@ -131,7 +131,7 @@ module Prouterd
         # Common block fields (apply regardless of execution_type):
         attr_accessor :name, :timeout_ms, :retry_policy_name, :contract_name,
                       :input, :output, :shutdown, :line, :execution_type
-        attr_reader :secret_names
+        attr_reader :secret_names, :produces, :artifact_inputs
 
         # Per-type fields live in this hash keyed by the plugin's field name.
         # Plugins describe their schema; parser/validator/renderer/show all
@@ -151,6 +151,8 @@ module Prouterd
           @output = nil
           @shutdown = false
           @type_fields = {}
+          @produces = []
+          @artifact_inputs = []
         end
 
         def docker?
@@ -194,6 +196,27 @@ module Prouterd
 
         def shell_env
           @type_fields["env"] ||= {}
+        end
+      end
+
+      # Named artifact handed from one block to another. The downstream
+      # block declares `input from <upstream_block>.<relpath>`; the
+      # orchestrator copies the archived file into /prouter/inputs/<local>
+      # and exposes its path via env PROUTER_INPUT_<UPCASE(local)>.
+      # `local` is the basename of <relpath> minus its last extension —
+      # `model.pkl` -> `model`, `metrics.json` -> `metrics`. The validator
+      # rejects two inputs in the same block that derive the same local.
+      class ArtifactInput
+        attr_accessor :from_block, :from_artifact, :line
+
+        def initialize(from_block:, from_artifact:, line:)
+          @from_block = from_block
+          @from_artifact = from_artifact
+          @line = line
+        end
+
+        def local_name
+          File.basename(@from_artifact, ".*")
         end
       end
 

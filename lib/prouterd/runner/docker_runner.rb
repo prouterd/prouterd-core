@@ -26,6 +26,7 @@ module Prouterd
       INPUT_FILENAME = "input.json".freeze
       OUTPUT_FILENAME = "output.json".freeze
       ARTIFACTS_DIRNAME = "artifacts".freeze
+      INPUTS_DIRNAME = "inputs".freeze
 
       def initialize(in_flight: nil)
         @in_flight = in_flight
@@ -34,6 +35,7 @@ module Prouterd
       def run(request)
         work_dir = Dir.mktmpdir(WORK_DIR_PREFIX)
         prepare_work_dir(work_dir, request.input_json)
+        stage_inputs(work_dir, request.staged_inputs)
 
         ensure_image(request)
         container = create_container(request, work_dir)
@@ -110,6 +112,21 @@ module Prouterd
         # here because the dir lives in the host's /tmp and has a unique name.
         File.chmod(0o777, dir)
         File.chmod(0o777, File.join(dir, ARTIFACTS_DIRNAME))
+      end
+
+      # Copy each archived artifact into <work_dir>/inputs/<local_name>. The
+      # bind mount of work_dir as /prouter exposes them at /prouter/inputs/*
+      # inside the container; the orchestrator already set
+      # PROUTER_INPUT_<local_name> env vars pointing at those paths.
+      def stage_inputs(work_dir, staged)
+        return if staged.nil? || staged.empty?
+
+        inputs_dir = File.join(work_dir, INPUTS_DIRNAME)
+        FileUtils.mkdir_p(inputs_dir)
+        staged.each do |local_name, src_path|
+          FileUtils.cp(src_path, File.join(inputs_dir, local_name))
+        end
+        File.chmod(0o755, inputs_dir)
       end
 
       def create_container(request, work_dir)

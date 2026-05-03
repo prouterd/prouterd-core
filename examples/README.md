@@ -13,6 +13,7 @@ Docker available — no custom images.
 | `05_cron.prc`                   | cron interface + scheduler                |
 | `06_shell_block.prc`            | mixed `type shell` + `type docker` blocks |
 | `07_contract.prc`               | output JSON contract + `on violation` policy |
+| `08_typed_artifacts.prc`        | named files passed between blocks (`produces` / `input … from …`) |
 
 Each file's top comment shows the exact commands to run it. Common setup:
 

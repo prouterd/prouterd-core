@@ -234,4 +234,94 @@ RSpec.describe Prouterd::Config::Validator do
     SRC
     expect(result.errors.map(&:message).join("\n")).to match(/duplicate process 'p'/)
   end
+
+  describe "artifact flow" do
+    def validate_pipeline(body)
+      validate(<<~SRC)
+        router x
+        exit
+        process p
+        #{body.lines.map { |l| " #{l}" }.join}
+        exit
+      SRC
+    end
+
+    it "accepts well-formed produces/consume pair" do
+      _, result = validate_pipeline(<<~BLOCKS)
+        block train
+         image t:1
+         produces model.pkl
+        exit
+        block deploy
+         image d:1
+         input from train.model.pkl
+        exit
+        route train deploy
+      BLOCKS
+      expect(result.errors).to be_empty
+    end
+
+    it "errors when the upstream block does not exist" do
+      _, result = validate_pipeline(<<~BLOCKS)
+        block deploy
+         image d:1
+         input from ghost.model.pkl
+        exit
+      BLOCKS
+      expect(result.errors.map(&:message).join("\n"))
+        .to match(/references unknown block 'ghost'/)
+    end
+
+    it "errors when the upstream block does not declare the artifact" do
+      _, result = validate_pipeline(<<~BLOCKS)
+        block train
+         image t:1
+        exit
+        block deploy
+         image d:1
+         input from train.model.pkl
+        exit
+        route train deploy
+      BLOCKS
+      expect(result.errors.map(&:message).join("\n"))
+        .to match(/does not declare 'produces model.pkl'/)
+    end
+
+    it "errors when two inputs derive the same local name (basename collision)" do
+      _, result = validate_pipeline(<<~BLOCKS)
+        block train
+         image t:1
+         produces model.pkl
+         produces model.json
+        exit
+        block deploy
+         image d:1
+         input from train.model.pkl
+         input from train.model.json
+        exit
+        route train deploy
+      BLOCKS
+      expect(result.errors.map(&:message).join("\n"))
+        .to match(/both derive local name 'model'/)
+    end
+
+    it "errors when the upstream is not reachable in the route graph" do
+      _, result = validate_pipeline(<<~BLOCKS)
+        block train
+         image t:1
+         produces model.pkl
+        exit
+        block other
+         image o:1
+        exit
+        block deploy
+         image d:1
+         input from train.model.pkl
+        exit
+        route other deploy
+      BLOCKS
+      expect(result.errors.map(&:message).join("\n"))
+        .to match(/'train' is not upstream/)
+    end
+  end
 end

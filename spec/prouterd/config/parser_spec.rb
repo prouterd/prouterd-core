@@ -367,4 +367,106 @@ RSpec.describe Prouterd::Config::Parser do
       expect(doc.processes.first.blocks.first.command).to eq("echo hello")
     end
   end
+
+  describe "artifacts" do
+    def parse_block(body)
+      doc = parse(<<~SRC)
+        router x
+        exit
+        process p
+         block b
+          image alpine:latest
+        #{body.lines.map { |l| "  #{l}" }.join}
+         exit
+        exit
+      SRC
+      doc.processes.first.blocks.first
+    end
+
+    it "parses produces with a relative path" do
+      block = parse_block("produces model.pkl\nproduces metrics.json\n")
+      expect(block.produces).to eq(%w[model.pkl metrics.json])
+    end
+
+    it "parses produces with subdirectories" do
+      block = parse_block("produces subdir/file.json\n")
+      expect(block.produces).to eq(["subdir/file.json"])
+    end
+
+    it "rejects duplicate produces" do
+      expect { parse_block("produces a.json\nproduces a.json\n") }
+        .to raise_error(Prouterd::Config::ParseError, /duplicate produces 'a.json'/)
+    end
+
+    it "rejects absolute produces path" do
+      expect { parse_block("produces /etc/passwd\n") }
+        .to raise_error(Prouterd::Config::ParseError, /must be a relative path/)
+    end
+
+    it "rejects produces with .. traversal" do
+      expect { parse_block("produces ../escape.txt\n") }
+        .to raise_error(Prouterd::Config::ParseError, /must be a relative path/)
+    end
+
+    it "parses implicit `input from <block>.<relpath>` and derives local_name from basename" do
+      doc = parse(<<~SRC)
+        router x
+        exit
+        process p
+         block train
+          image t:1
+          produces model.pkl
+          produces metrics.json
+         exit
+         block deploy
+          image d:1
+          input from train.model.pkl
+          input from train.metrics.json
+         exit
+         route train deploy
+        exit
+      SRC
+      deploy = doc.processes.first.blocks.last
+      expect(deploy.artifact_inputs.length).to eq(2)
+      expect(deploy.artifact_inputs.map(&:local_name)).to eq(%w[model metrics])
+      expect(deploy.artifact_inputs.map(&:from_artifact)).to eq(%w[model.pkl metrics.json])
+    end
+
+    it "derives local_name from the basename of a subdirectory path" do
+      doc = parse(<<~SRC)
+        router x
+        exit
+        process p
+         block t
+          image t:1
+          produces sub/file.json
+         exit
+         block d
+          image d:1
+          input from t.sub/file.json
+         exit
+         route t d
+        exit
+      SRC
+      ai = doc.processes.first.blocks.last.artifact_inputs.first
+      expect(ai.local_name).to eq("file")
+      expect(ai.from_artifact).to eq("sub/file.json")
+    end
+
+    it "still accepts the existing single-arg input form (context path)" do
+      block = parse_block("input event.body\n")
+      expect(block.input).to eq("event.body")
+      expect(block.artifact_inputs).to be_empty
+    end
+
+    it "rejects malformed artifact reference" do
+      expect { parse_block("input from train_only_block\n") }
+        .to raise_error(Prouterd::Config::ParseError, /from <block>.<relpath>/)
+    end
+
+    it "rejects an artifact whose basename is not a valid identifier" do
+      expect { parse_block("input from train.weird-name.pkl\n") }
+        .to raise_error(Prouterd::Config::ParseError, /cannot derive a local name/)
+    end
+  end
 end

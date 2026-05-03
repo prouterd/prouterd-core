@@ -357,7 +357,12 @@ module Prouterd
         @events.publish(:step_created, step: step,         run_id: run.id, run_uid: run.uid) if step
         @events.publish(:step_updated, step: running_step, run_id: run.id, run_uid: run.uid) if running_step
 
+        staged_inputs = stage_artifact_inputs(run, block, db_mutex)
+
         env = build_env(run, process, block, document)
+        staged_inputs.each_key do |local_name|
+          env["PROUTER_INPUT_#{local_name.upcase}"] = "/prouter/inputs/#{local_name}"
+        end
         # Plugin defines the field schema; we hand the whole map plus
         # plugin defaults to the runner. Each runner reads only what it
         # cares about (DockerRunner reads "image"/"pull"/...; ShellRunner
@@ -373,10 +378,18 @@ module Prouterd
           env: env,
           input_json: input_payload,
           timeout_ms: block.timeout_ms,
-          type_fields: merged_fields
+          type_fields: merged_fields,
+          staged_inputs: staged_inputs
         )
 
         result = runner_for(block).run(request)
+
+        # Verify every `produces <relpath>` declaration was actually written.
+        # Failure here uses the same retry/on-failure machinery as any other
+        # block error so existing escalation logic applies unchanged.
+        if result.success? && !block.produces.empty?
+          result = enforce_produces(block, result)
+        end
 
         # Phase 14: enforce output contract if the block declares one.
         # A violation reshapes the result so the orchestrator's existing
@@ -408,6 +421,51 @@ module Prouterd
         end
 
         result
+      end
+
+      # Look up archived artifacts the block declares as `input X from Y.Z`.
+      # Returns Hash<local_name, host_path>. Validator already guarantees the
+      # upstream block exists and produces the artifact; here we just resolve
+      # to the row that was archived during this run. If the upstream step
+      # was skipped or its archive is missing, we raise — the orchestrator's
+      # outer rescue turns this into a normal block failure with retry.
+      def stage_artifact_inputs(run, block, db_mutex)
+        return {} if block.artifact_inputs.empty?
+
+        rows = nil
+        db_mutex.synchronize do
+          rows = @runs.list_artifacts(run.id)
+        end
+
+        block.artifact_inputs.each_with_object({}) do |ai, acc|
+          row = rows.find { |r| r.block_name == ai.from_block && r.name == ai.from_artifact }
+          unless row
+            raise TriggerError,
+                  "block '#{block.name}': artifact '#{ai.from_block}.#{ai.from_artifact}' " \
+                  "not found in run #{run.uid} (upstream block did not produce it)"
+          end
+          acc[ai.local_name] = row.path
+        end
+      end
+
+      # Reshape a successful result into a "missing_artifact" failure if any
+      # declared `produces <relpath>` is absent from the runner's output.
+      def enforce_produces(block, result)
+        produced = (result.artifacts || []).map(&:name).to_set
+        missing = block.produces.reject { |p| produced.include?(p) }
+        return result if missing.empty?
+
+        message = "block did not produce declared artifact(s): #{missing.join(', ')}"
+        Runner::ExecutionResult.new(
+          exit_code: result.exit_code,
+          stdout: result.stdout, stderr: result.stderr,
+          output_json: nil,
+          artifacts: result.artifacts,
+          error_type: "missing_artifact",
+          error_message: message,
+          duration_ms: result.duration_ms,
+          started_at: result.started_at, finished_at: result.finished_at
+        )
       end
 
       # If the block has `contract <name>` declared, validate output against

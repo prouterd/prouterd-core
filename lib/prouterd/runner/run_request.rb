@@ -14,6 +14,7 @@ module Prouterd
       :input_json,     # Ruby Hash — runner serializes to {input.json}
       :timeout_ms,     # Optional Integer
       :type_fields,    # Hash<String, Object> — plugin-defined fields (image, exec, ...)
+      :staged_inputs,  # Hash<String, String> — local_name => host path of artifact to stage at /prouter/inputs/<local_name>
       keyword_init: true
     ) do
       # Convenience for runners that want a single key without typing out

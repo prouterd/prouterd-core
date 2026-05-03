@@ -461,11 +461,28 @@ module Prouterd
           expect_token_count(line, 2, "contract <name>")
           node.contract_name = expect_identifier(line.tokens[1], "contract name")
         when "input"
-          expect_token_count(line, 2, "input <context.path>")
-          node.input = expect_context_path(line.tokens[1], "input")
+          # Two forms (orthogonal):
+          #   input <context.path>            event-data flow (in-memory JSON)
+          #   input from <block>.<relpath>    typed artifact (file from upstream archive)
+          if line.tokens.length == 3 && line.tokens[1].value == "from"
+            apply_artifact_input(node, line)
+          else
+            expect_token_count(line, 2, "input <context.path>  |  input from <block>.<relpath>")
+            node.input = expect_context_path(line.tokens[1], "input")
+          end
         when "output"
           expect_token_count(line, 2, "output <context.path>")
           node.output = expect_context_path(line.tokens[1], "output")
+        when "produces"
+          # `produces <relpath>` — declare a named file the block writes
+          # into /prouter/artifacts/. Downstream blocks pull it via
+          # `input <local> from <this_block>.<relpath>`.
+          expect_token_count(line, 2, "produces <relpath>")
+          relpath = expect_artifact_relpath(line.tokens[1], "produces")
+          if node.produces.include?(relpath)
+            raise ParseError.new("duplicate produces '#{relpath}' in block", line: line.number)
+          end
+          node.produces << relpath
         # ---- enable/disable: spec §3 shorthand for shutdown semantics.
         when "enable"
           expect_token_count(line, 1, "enable")
@@ -485,6 +502,48 @@ module Prouterd
         else
           raise ParseError.new("unknown directive '#{head}' in block", line: line.number)
         end
+      end
+
+      # `input from <block>.<relpath>` — declare that this block consumes a
+      # named artifact produced by an upstream block. The artifact reference
+      # is split on the FIRST dot: block names are dotless identifiers,
+      # artifact paths may contain dots and slashes (e.g. `subdir/file.json`).
+      # The local name (used for /prouter/inputs/<local> and PROUTER_INPUT_<UPPER>)
+      # is derived from the basename minus its last extension.
+      # Collision detection lives in the validator: a clear error there
+      # tells operators to rename `produces` upstream.
+      def apply_artifact_input(node, line)
+        ref = expect_word(line.tokens[2], "from <block>.<relpath>")
+        dot = ref.index(".")
+        unless dot && dot.positive? && dot < ref.length - 1
+          raise ParseError.new("expected 'from <block>.<relpath>', got '#{ref}'", line: line.number)
+        end
+
+        from_block = ref[0...dot]
+        from_artifact = ref[(dot + 1)..]
+        unless from_block.match?(IDENT_RE)
+          raise ParseError.new("invalid block name '#{from_block}' in artifact reference", line: line.number)
+        end
+        if from_artifact.empty? || from_artifact.start_with?("/") || from_artifact.split("/").include?("..")
+          raise ParseError.new("invalid artifact path '#{from_artifact}' (must be a relative path)", line: line.number)
+        end
+
+        # Make sure the basename produces a usable identifier (env-var suffix);
+        # otherwise we'd silently emit something like `PROUTER_INPUT_FILE-01`.
+        # Stricter than IDENT_RE: no hyphens — env-var rules.
+        derived = File.basename(from_artifact, ".*")
+        unless derived.match?(/\A[A-Za-z_][A-Za-z0-9_]*\z/)
+          raise ParseError.new(
+            "cannot derive a local name from '#{from_artifact}'; rename the file upstream so its basename is alphanumeric/underscore",
+            line: line.number
+          )
+        end
+
+        node.artifact_inputs << AST::ArtifactInput.new(
+          from_block: from_block,
+          from_artifact: from_artifact,
+          line: line.number
+        )
       end
 
       def parse_process_route(header)
@@ -876,6 +935,16 @@ module Prouterd
         value = expect_word(token, label)
         unless value.match?(/\A[A-Za-z_][A-Za-z0-9_.]*\z/)
           raise ParseError.new("invalid #{label} path '#{value}' (must be dotted identifier)", line: token.line, column: token.column)
+        end
+        value
+      end
+
+      # Relative path inside /prouter/artifacts/. Slashes allowed for
+      # subdirectories; no leading slash, no `..`, no whitespace.
+      def expect_artifact_relpath(token, label)
+        value = expect_word(token, label)
+        if value.empty? || value.start_with?("/") || value.split("/").include?("..")
+          raise ParseError.new("invalid #{label} path '#{value}' (must be a relative path under artifacts/)", line: token.line, column: token.column)
         end
         value
       end

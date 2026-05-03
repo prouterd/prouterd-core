@@ -205,6 +205,86 @@ module Prouterd
             @result.error("block '#{process.name}/#{block.name}' references unknown contract '#{block.contract_name}'", line: block.line)
           end
         end
+
+        check_artifact_flow(process)
+      end
+
+      # Verify every `input from Y.Z`:
+      #   - Y is a block in this process
+      #   - Y declares `produces Z`
+      #   - Y is reachable upstream of this block (path Y -> ... -> block)
+      #   - within a block, no two inputs derive the same local name
+      def check_artifact_flow(process)
+        block_index = process.blocks.each_with_object({}) { |b, h| h[b.name] = b }
+        adjacency = Hash.new { |h, k| h[k] = [] }
+        process.routes.each do |r|
+          adjacency[r.from_block] << r.to_block if block_index.key?(r.from_block) && block_index.key?(r.to_block)
+        end
+
+        process.blocks.each do |block|
+          check_artifact_input_collisions(process, block)
+          block.artifact_inputs.each do |ai|
+            upstream = block_index[ai.from_block]
+            unless upstream
+              @result.error(
+                "block '#{process.name}/#{block.name}' input '#{ai.local_name}' references unknown block '#{ai.from_block}'",
+                line: ai.line
+              )
+              next
+            end
+            unless upstream.produces.include?(ai.from_artifact)
+              @result.error(
+                "block '#{process.name}/#{block.name}' input '#{ai.local_name}' references " \
+                "'#{ai.from_block}.#{ai.from_artifact}' but '#{ai.from_block}' does not declare " \
+                "'produces #{ai.from_artifact}'",
+                line: ai.line
+              )
+              next
+            end
+            unless reachable_upstream?(adjacency, ai.from_block, block.name)
+              @result.error(
+                "block '#{process.name}/#{block.name}' consumes artifact from '#{ai.from_block}' " \
+                "but '#{ai.from_block}' is not upstream in the route graph",
+                line: ai.line
+              )
+            end
+          end
+        end
+      end
+
+      # Two inputs that derive the same local name would collide in
+      # /prouter/inputs/<local> and PROUTER_INPUT_<UPPER>. Report the
+      # second occurrence with a fix-it pointer.
+      def check_artifact_input_collisions(process, block)
+        seen = {}
+        block.artifact_inputs.each do |ai|
+          name = ai.local_name
+          if (prev = seen[name])
+            @result.error(
+              "block '#{process.name}/#{block.name}': inputs '#{prev.from_block}.#{prev.from_artifact}' " \
+              "and '#{ai.from_block}.#{ai.from_artifact}' both derive local name '#{name}'; " \
+              "rename one of them in the upstream block's `produces`",
+              line: ai.line
+            )
+          else
+            seen[name] = ai
+          end
+        end
+      end
+
+      def reachable_upstream?(adjacency, from, target)
+        return false if from == target
+
+        visited = Set.new
+        queue = [from]
+        until queue.empty?
+          node = queue.shift
+          next unless visited.add?(node)
+          return true if adjacency[node].include?(target)
+
+          adjacency[node].each { |n| queue << n }
+        end
+        false
       end
 
       def check_block_type(process, block)

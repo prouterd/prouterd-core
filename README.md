@@ -380,19 +380,30 @@ within one route AND together. There is no OR — use a separate route.
 
 The runner mounts a per-step directory at `/prouter` inside the container:
 
-| Path                         | Direction | Purpose                              |
-|------------------------------|-----------|--------------------------------------|
-| `/prouter/input.json`        | read      | run_id, process, block, input, ctx   |
-| `/prouter/output.json`       | write     | block's result (REQUIRED on success) |
-| `/prouter/artifacts/`        | write     | files to archive                     |
+| Path                         | Direction | Purpose                                                |
+|------------------------------|-----------|--------------------------------------------------------|
+| `/prouter/input.json`        | read      | run_id, process, block, input slice, full context      |
+| `/prouter/output.json`       | write     | block's JSON result (REQUIRED on success)              |
+| `/prouter/artifacts/`        | write     | files to archive (consumable by downstream blocks)     |
+| `/prouter/inputs/<name>`     | read      | staged artifact from upstream `produces` declarations  |
 
 Environment variables: `PROUTER_RUN_ID`, `PROUTER_PROCESS_NAME`,
 `PROUTER_BLOCK_NAME`, `PROUTER_ATTEMPT`, `PROUTER_INPUT_PATH`,
-`PROUTER_OUTPUT_PATH`, `PROUTER_ARTIFACTS_DIR`, plus every secret declared
-on the block.
+`PROUTER_OUTPUT_PATH`, `PROUTER_ARTIFACTS_DIR`, plus `PROUTER_INPUT_<NAME>`
+for each staged artifact and every secret declared on the block.
 
 A block succeeds iff `exit_code == 0` AND `/prouter/output.json` exists
-AND parses as valid JSON.
+AND parses as valid JSON AND every declared `produces <relpath>` was
+written.
+
+### Two ways data flows between blocks
+
+| Use for                                | Declare with                                | Lands at                            |
+|----------------------------------------|---------------------------------------------|-------------------------------------|
+| JSON event data (fields, numbers, …)   | `output <ctx.path>` / `input <ctx.path>`    | `/prouter/input.json` (`input` key) |
+| Files (model.pkl, parquet, CSV, blobs) | `produces <relpath>` / `input from <b>.<r>` | `/prouter/inputs/<derived_name>`    |
+
+Both can coexist on the same block. See [examples/08_typed_artifacts.prc](examples/08_typed_artifacts.prc).
 
 ## Architecture
 

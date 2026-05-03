@@ -159,4 +159,44 @@ RSpec.describe Prouterd::Config::Renderer do
       expect(second).to eq(first)
     end
   end
+
+  describe "artifacts" do
+    it "roundtrips produces and `input from` verbatim" do
+      src = <<~SRC
+        router demo
+        exit
+
+        process p
+         no shutdown
+
+         block train
+          type docker
+           image trainer:v1
+          exit
+          produces model.pkl
+          produces metrics.json
+          enable
+         exit
+
+         block deploy
+          type docker
+           image deploy:v1
+          exit
+          input event.body
+          input from train.model.pkl
+          input from train.metrics.json
+          enable
+         exit
+
+         route train deploy
+        exit
+      SRC
+      first = described_class.render(parse(src))
+      second = described_class.render(parse(first))
+      expect(second).to eq(first)
+      expect(first).to include("produces model.pkl")
+      expect(first).to include("input from train.model.pkl")
+      expect(first).to include("input from train.metrics.json")
+    end
+  end
 end

@@ -54,7 +54,7 @@ applies to one runner type) or **common**:
   shell): declared on the runner's plugin class via `field :foo, kind: :...`.
   See "Adding a new runner type" below — adding a type-specific field is
   one line in one plugin file, no edits to parser/renderer/validator.
-- **Common** (input, output, timeout, retry, contract, secret,
+- **Common** (input, output, produces, timeout, retry, contract, secret,
   enable/disable): handled in `parse_block_field` and rendered between the
   type sub-section and the closing `exit` of the block. The 5-step
   recipe above applies for these.
@@ -129,10 +129,15 @@ discover the new type through `Runner::Registry`.
 
 Implement `#run(RunRequest) -> ExecutionResult`. Read your inputs from
 `request.field("foo")` (a thin wrapper over `request.type_fields["foo"]`).
-The `/prouter/{input.json,output.json,artifacts}` contract is the
-invariant — your runner decides where those paths physically live (host
-fs for shell, container mount for docker, CRD for k8s, etc.); block
-authors write the same code regardless.
+The `/prouter/{input.json,output.json,artifacts/,inputs/}` contract is
+the invariant — your runner decides where those paths physically live
+(host fs for shell, container mount for docker, CRD for k8s, etc.);
+block authors write the same code regardless.
+
+If `request.staged_inputs` is non-empty, copy each `<src_path>` to
+`/prouter/inputs/<local_name>` so the orchestrator's
+`PROUTER_INPUT_<NAME>` env vars resolve. See `DockerRunner#stage_inputs`
+and `ShellRunner#stage_inputs` for reference.
 
 ```ruby
 # lib/prouterd/runner/lambda_runner.rb

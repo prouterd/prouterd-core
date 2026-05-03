@@ -1,8 +1,8 @@
 # prouterd
 
-A CLI-first process orchestrator. Events flow through declarative routes
-into containerized blocks. Configured via a router-style line-oriented
-DSL, operated via an interactive shell.
+A CLI-first process orchestrator. Events flow through declarative
+routes into executable blocks. Configured via a router-style
+line-oriented DSL, operated via an interactive shell.
 
 ```
 sales-prouter-01# show running-config
@@ -17,8 +17,11 @@ Commit complete.
 ```
 
 It feels like configuring a network router; underneath, it's a real
-Docker-driven scheduler with persistent commit history, conditional
-routing, retries, replay, webhooks, and cron — all behind one CLI.
+scheduler with persistent commit history, conditional routing, retries,
+replay, webhooks, and cron — all behind one CLI. Blocks run as
+host-side shell processes (`type shell`) or as Docker containers
+(`type docker`) — the orchestrator doesn't care which, and pipelines
+can mix.
 
 ## Quick start
 
@@ -43,15 +46,18 @@ curl -s http://127.0.0.1:8080/v1/status
 docker exec <container> bundle exec ruby exe/prouter exec "show running-config"
 ```
 
-The `/var/run/docker.sock` mount is required for `type docker` blocks
-(which spawn child containers on the host's Docker daemon). Pure
-shell-block pipelines don't need it. There's also a `docker-compose.yml`
-in the repo for a persistent setup.
+The `/var/run/docker.sock` mount is what lets `type docker` blocks
+spawn child containers on the host's Docker daemon. If your pipelines
+are pure `type shell` (host processes), you can drop the socket mount
+and `--runner shell` entirely — prouterd has no hard dependency on
+Docker. There's also a `docker-compose.yml` in the repo for a
+persistent setup.
 
 ### Option B — local Ruby
 
-Requires Ruby ≥ 3.2, Docker daemon (for `type docker` blocks), and
-`libsqlite3-dev`.
+Requires Ruby ≥ 3.2 and `libsqlite3-dev`. A Docker daemon is required
+ONLY if you actually use `type docker` blocks — pipelines built from
+`type shell` blocks (host-side processes) need nothing but Ruby.
 
 ```bash
 git clone <this-repo>
@@ -90,8 +96,8 @@ process-router# exit
 
 Replace visual no-code workflow tools with something that scales like
 infrastructure: declarative config in version control, isolated
-executables (containers), durable run history, and a CLI you can drive
-from scripts and tail in tmux.
+executables, durable run history, and a CLI you can drive from scripts
+and tail in tmux.
 
 | Network router    | Process Router        |
 |-------------------|-----------------------|
@@ -114,7 +120,9 @@ Configuration answers only:
 - which policies apply
 - what to do on failure
 
-Business logic lives **inside blocks** (containers), not in the config.
+Business logic lives **inside blocks** — the config doesn't care
+whether a block is a Docker container, a host-side shell process, or
+a future Lambda/k8s plugin. It just routes events to them.
 
 ## CLI reference
 
@@ -349,18 +357,45 @@ exit
 
 ### Block execution types (spec §2-§5)
 
-Every block declares its runner via a `type` sub-section. Built-in:
+Every block declares its runner via a `type` sub-section. Docker is
+NOT a hardcoded dependency of prouterd — it's one of two built-in
+plugins, and pipelines can run without Docker entirely.
 
-- `type docker` — runs in a container via `DockerRunner`.
-  Fields: `image` (required), `command`, `pull`, `network`, `user`,
-  `memory`, `cpu`.
-- `type shell` — runs as a host process via `ShellRunner`.
-  Fields: `exec` (required), `cwd`, `shell`, `env KEY VALUE`.
+- `type shell` — runs the block as a host process via `Open3`. Fields:
+  `exec` (required), `cwd`, `shell`, `env KEY VALUE`. No Docker daemon
+  needed. Lower latency (~80ms startup vs ~200ms for Docker), no image
+  pull / no registry, blocks see the daemon's filesystem (`cwd` scopes
+  them). Best for: bash + curl + jq pipelines, single-host automation,
+  edge / IoT, or anywhere `docker pull` is overkill.
+- `type docker` — runs the block as a Docker container. Fields:
+  `image` (required), `command`, `pull`, `network`, `user`, `memory`,
+  `cpu`. Best for: multi-language pipelines (one block needs Python
+  3.11, another needs Node 20), audit-grade reproducibility (config
+  pins an image digest), strong isolation, or distributing blocks
+  across hosts via a registry.
 
-Same `/prouter/{input.json,output.json,artifacts/}` contract for both.
-The orchestrator dispatches per-block, so pipelines can mix types
-freely. Pre-Phase-12 inline form (`image foo` directly in the block)
-still parses — `execution_type=docker` is auto-inferred.
+Both runners honor the same `/prouter/{input.json,output.json,artifacts/,inputs/}`
+contract. The orchestrator dispatches per-block, so a single pipeline
+can mix types freely — `type shell` for a fast preprocessor,
+`type docker` for the heavy step that needs CUDA. Pre-Phase-12 inline
+form (`image foo` directly in the block) still parses —
+`execution_type=docker` is auto-inferred.
+
+#### Choosing between them
+
+| Concern                                        | `type shell` | `type docker` |
+|------------------------------------------------|:------------:|:-------------:|
+| Block uses curl / jq / sh / Ruby script        | ✓            | overkill      |
+| Multiple blocks, different language runtimes   | painful      | ✓             |
+| Audit / reproducibility via image digest       | —            | ✓             |
+| Block needs to run untrusted code              | —            | ✓             |
+| Resource limits (memory / CPU caps)            | —            | ✓             |
+| Single-host, no registry, low latency          | ✓            | overhead      |
+| Edge / IoT (no Docker daemon)                  | ✓            | —             |
+
+For docker-less hosts run `prouterd --runner shell`: every block type
+is routed through `ShellRunner`, and `type docker` blocks fall back to
+running `command` on the host instead of in a container.
 
 **Adding your own runner type** is a single plugin file + a single
 `Runner` class — parser/validator/renderer/show/CLI all discover the

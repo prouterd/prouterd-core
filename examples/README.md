@@ -14,6 +14,7 @@ Docker available — no custom images.
 | `06_shell_block.prc`            | mixed `type shell` + `type docker` blocks |
 | `07_contract.prc`               | output JSON contract + `on violation` policy |
 | `08_typed_artifacts.prc`        | named files passed between blocks (`produces` / `input … from …`) |
+| `10_tg_github/`                 | full real-world pipeline: GitHub webhook → match by event type → format → post to Telegram. `type shell` blocks (no Docker), 2 Ruby format scripts + an inline `curl` send block, secrets, retry policy. |
 
 Each file's top comment shows the exact commands to run it. Common setup:
 

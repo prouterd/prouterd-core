@@ -185,11 +185,12 @@ module Prouterd
       def collect_policies(process)
         process.blocks.each do |block|
           summary = {}
-          summary[:type] = block.execution_type if block.execution_type
+          ref = block.interface_ref
+          summary[:interface] = "#{ref.type} #{ref.name}" if ref
 
-          plugin = Prouterd::Runner::Registry.lookup(block.execution_type)
+          plugin = ref && Prouterd::Iface::Registry.lookup(ref.type)
           if plugin
-            plugin.fields.each do |field|
+            plugin.call_fields.each do |field|
               value = block.type_fields[field.storage_key]
               next if value.nil?
               next if !field.default.nil? && value == field.default

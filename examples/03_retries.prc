@@ -20,6 +20,10 @@ interface manual cli
  no shutdown
 exit
 
+interface docker alpine
+ image alpine:latest
+exit
+
 policy r3_exp
  retry attempts 3
  retry backoff exponential
@@ -31,11 +35,8 @@ process flaky_pipe
  queue default
  no shutdown
  block flaky
-  type docker
-   image alpine:latest
-   command "sh -c 'echo always-fails >&2; exit 1'"
-  exit
-  output result
+  interface docker alpine
+  command "sh -c 'echo always-fails >&2; exit 1'"
   timeout 30s
   retry r3_exp
   enable

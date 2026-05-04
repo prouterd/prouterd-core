@@ -16,17 +16,17 @@ interface manual cli
  no shutdown
 exit
 
+interface docker alpine
+ image alpine:latest
+exit
+
 process hello
  queue default
  no shutdown
 
  block greet
-  type docker
-   image alpine:latest
-   command "sh -c 'NAME=$(cat $PROUTER_INPUT_PATH | sed -n \"s/.*\\\"name\\\":\\\"\\([^\\\"]*\\)\\\".*/\\1/p\"); echo \"hello, $NAME!\" >&2; echo \"{\\\"greeted\\\":\\\"$NAME\\\"}\" > /prouter/output.json'"
-  exit
-  input event
-  output greeting
+  interface docker alpine
+  command "sh -c 'NAME=$(cat $PROUTER_INPUT_PATH | sed -n \"s/.*\\\"name\\\":\\\"\\([^\\\"]*\\)\\\".*/\\1/p\"); echo \"hello, $NAME!\" >&2; echo \"{\\\"greeted\\\":\\\"$NAME\\\"}\" > /prouter/output.json'"
   timeout 30s
   enable
  exit

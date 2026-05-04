@@ -1,5 +1,4 @@
 require "set"
-require_relative "../runner/registry"
 require_relative "../iface/registry"
 
 module Prouterd
@@ -296,47 +295,66 @@ module Prouterd
       end
 
       def check_block_type(process, block)
-        # Every block must have an execution_type set. The legacy DSL
-        # form (e.g. `image` directly in block) auto-infers to "docker"
-        # in the parser; an absent type means the user didn't declare
-        # any runner-typed fields at all.
-        unless block.execution_type
+        # Every block must reference an outbound interface via
+        # `interface <type> <name>` in its body.
+        ref = block.interface_ref
+        unless ref
           @result.error(
-            "block '#{process.name}/#{block.name}' missing 'type' section " \
-            "(use 'type <#{Runner::Registry.types.join('|')}>')",
+            "block '#{process.name}/#{block.name}' missing `interface <type> <name>` directive",
             line: block.line
           )
           return
         end
 
-        plugin = Runner::Registry.lookup(block.execution_type)
+        plugin = Iface::Registry.lookup(ref.type)
         unless plugin
           @result.error(
-            "block '#{process.name}/#{block.name}' references unknown type " \
-            "'#{block.execution_type}'",
-            line: block.line
+            "block '#{process.name}/#{block.name}' references unknown interface type '#{ref.type}'",
+            line: ref.line
           )
           return
         end
 
-        # Required-field check from plugin schema.
-        plugin.fields.each do |field|
+        unless plugin.outbound?
+          @result.error(
+            "block '#{process.name}/#{block.name}' references '#{ref.type}' interface, " \
+            "but '#{ref.type}' is #{plugin.direction} (only outbound interfaces are usable from blocks)",
+            line: ref.line
+          )
+          return
+        end
+
+        iface = @doc.interfaces.find { |i| i.name == ref.name }
+        unless iface
+          @result.error(
+            "block '#{process.name}/#{block.name}' references unknown interface '#{ref.name}'",
+            line: ref.line
+          )
+          return
+        end
+
+        unless iface.type == ref.type
+          @result.error(
+            "block '#{process.name}/#{block.name}' says `interface #{ref.type} #{ref.name}` " \
+            "but '#{ref.name}' is declared as type '#{iface.type}'",
+            line: ref.line
+          )
+          return
+        end
+
+        # Required call-fields per plugin schema.
+        plugin.call_fields.each do |field|
           next unless field.required
 
           value = block.type_fields[field.storage_key]
           if value.nil? || (value.respond_to?(:empty?) && value.empty?)
             @result.error(
-              "block '#{process.name}/#{block.name}' (type #{plugin.type_name}) " \
-              "missing '#{field.dsl_keyword}'",
+              "block '#{process.name}/#{block.name}' (interface #{plugin.type_name} #{ref.name}) " \
+              "missing call-field '#{field.dsl_keyword}'",
               line: block.line
             )
           end
         end
-
-        # Cross-type fields are caught implicitly: parser stores fields
-        # under storage_key from the active plugin, so a `type shell` block
-        # cannot end up with type_fields["image"] unless someone hand-edited
-        # the AST. Skip the explicit check here.
       end
 
       def check_process_routes(process)

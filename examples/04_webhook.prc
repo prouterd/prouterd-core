@@ -29,16 +29,16 @@ interface webhook leads_in
  no shutdown
 exit
 
+interface docker alpine
+ image alpine:latest
+exit
+
 process pipeline
  queue default
  no shutdown
  block extract
-  type docker
-   image alpine:latest
-   command "sh -c 'echo extracted >&2; echo \"{\\\"raw\\\":true}\" > /prouter/output.json'"
-  exit
-  input event.body
-  output lead.raw
+  interface docker alpine
+  command "sh -c 'echo extracted >&2; echo \"{\\\"raw\\\":true}\" > /prouter/output.json'"
   timeout 30s
   enable
  exit

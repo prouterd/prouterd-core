@@ -1,5 +1,4 @@
 require_relative "../util/duration_parser"
-require_relative "../runner/registry"
 require_relative "../iface/registry"
 
 module Prouterd
@@ -90,8 +89,7 @@ module Prouterd
         emit(0, "exit")
       end
 
-      # Per-kind emission for interface body fields. Mirrors
-      # `render_type_section` for blocks.
+      # Per-kind emission for interface body fields.
       def render_iface_field(field, value, level)
         case field.kind
         when :string
@@ -102,6 +100,12 @@ module Prouterd
           emit(level, "#{field.dsl_keyword} #{value}")
         when :auth_bearer
           emit(level, "#{field.dsl_keyword} #{value.scheme} secret #{value.secret_name}")
+        when :command
+          emit(level, "#{field.dsl_keyword} #{quote_string(value)}")
+        when :env_pair
+          value.each do |k, v|
+            emit(level, "#{field.dsl_keyword} #{k} #{quote_if_needed(v)}")
+          end
         end
       end
 
@@ -127,16 +131,27 @@ module Prouterd
       def render_block(block, level)
         emit(level, "block #{block.name}")
 
-        plugin = Runner::Registry.lookup(block.execution_type)
-        render_type_section(plugin, block, level + 1) if plugin
+        if (ref = block.interface_ref)
+          emit(level + 1, "interface #{ref.type} #{ref.name}")
+          # Per-call args, driven off the interface plugin's call_field schema.
+          plugin = Iface::Registry.lookup(ref.type)
+          if plugin
+            plugin.call_fields.each do |field|
+              value = block.type_fields[field.storage_key]
+              next if skip_value?(value, field)
 
-        # Common block fields, post-type, in spec order
-        emit(level + 1, "input #{block.input}") if block.input
+              render_call_field(field, value, level + 1)
+            end
+          end
+        end
+
+        # Typed-artifact inputs.
         block.artifact_inputs.each do |ai|
           emit(level + 1, "input from #{ai.from_block}.#{ai.from_artifact}")
         end
-        emit(level + 1, "output #{block.output}") if block.output
         block.produces.each { |p| emit(level + 1, "produces #{p}") }
+
+        # Common block fields.
         emit(level + 1, "timeout #{Util::DurationParser.render(block.timeout_ms)}") if block.timeout_ms
         emit(level + 1, "retry #{block.retry_policy_name}") if block.retry_policy_name
         emit(level + 1, "contract #{block.contract_name}") if block.contract_name
@@ -146,30 +161,20 @@ module Prouterd
         emit(level, "exit")
       end
 
-      # Generic per-plugin renderer. Walks the plugin's declared fields in
-      # declaration order so the canonical output is stable across runs.
-      def render_type_section(plugin, block, level)
-        emit(level, "type #{plugin.type_name}")
-        plugin.fields.each do |field|
-          value = block.type_fields[field.storage_key]
-          next if skip_value?(value, field)
-
-          case field.kind
-          when :string
-            emit(level + 1, "#{field.dsl_keyword} #{quote_if_needed(value)}")
-          when :enum
-            emit(level + 1, "#{field.dsl_keyword} #{value}")
-          when :command
-            # Always quote — embedded shell metacharacters would otherwise
-            # be lost on re-parse since the lexer re-tokenizes whitespace.
-            emit(level + 1, "#{field.dsl_keyword} #{quote_string(value)}")
-          when :env_pair
-            value.each do |k, v|
-              emit(level + 1, "#{field.dsl_keyword} #{k} #{quote_if_needed(v)}")
-            end
+      # Render a single call_field value per its declared kind.
+      def render_call_field(field, value, level)
+        case field.kind
+        when :string
+          emit(level, "#{field.dsl_keyword} #{quote_if_needed(value)}")
+        when :enum, :http_method
+          emit(level, "#{field.dsl_keyword} #{value}")
+        when :command
+          emit(level, "#{field.dsl_keyword} #{quote_string(value)}")
+        when :env_pair
+          value.each do |k, v|
+            emit(level, "#{field.dsl_keyword} #{k} #{quote_if_needed(v)}")
           end
         end
-        emit(level, "exit")
       end
 
       def skip_value?(value, field)

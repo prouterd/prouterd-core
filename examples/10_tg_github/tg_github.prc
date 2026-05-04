@@ -4,7 +4,7 @@
 !   POST /i/github  →  match (PR or issue, real action only)  →
 !     format Markdown message  →  POST to Telegram Bot API
 !
-! Setup (host-side, no Docker required — uses type shell):
+! Setup (host-side, no Docker required):
 !
 !   1. Telegram bot:
 !      - Create via @BotFather, save the token.
@@ -29,9 +29,6 @@
 !   4. Apply:
 !      $ prouter apply examples/10_tg_github/tg_github.prc \
 !          --db /var/lib/prouterd/db
-!
-! Smoke (without GitHub): post a fake event to /i/github and watch Telegram.
-! See README.md alongside this file for an example payload + curl.
 
 router gh_relay
  hostname gh-relay-01
@@ -65,13 +62,17 @@ queue notify
  timeout 30s
 exit
 
-! ----- inbound webhook from GitHub -----
+! ----- interfaces -----
 
 interface webhook github_in
  path /i/github
  method POST
  auth bearer secret GH_WEBHOOK_SECRET
  no shutdown
+exit
+
+interface shell ruby_blocks
+ cwd ./examples/10_tg_github
 exit
 
 ! ----- pipeline: pull requests -----
@@ -82,22 +83,15 @@ process pr_notify
  no shutdown
 
  block format
-  type shell
-   exec "ruby blocks/format_pr.rb"
-   cwd ./examples/10_tg_github
-  exit
-  input event
-  output tg
+  interface shell ruby_blocks
+  exec "ruby blocks/format_pr.rb"
   timeout 5s
   enable
  exit
 
  block send
-  type shell
-   exec "sh -c 'TEXT=$(jq -r .input.text \"$PROUTER_INPUT_PATH\") && curl -fsS -X POST \"https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage\" --data-urlencode \"chat_id=${TG_CHAT_ID}\" --data-urlencode \"parse_mode=Markdown\" --data-urlencode \"text=$TEXT\" -o \"$PROUTER_OUTPUT_PATH\"'"
-  exit
-  input tg
-  output tg.result
+  interface shell ruby_blocks
+  exec "sh -c 'TEXT=$(jq -r .input.text \"$PROUTER_INPUT_PATH\") && curl -fsS -X POST \"https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage\" --data-urlencode \"chat_id=${TG_CHAT_ID}\" --data-urlencode \"parse_mode=Markdown\" --data-urlencode \"text=$TEXT\" -o \"$PROUTER_OUTPUT_PATH\"'"
   secret TG_BOT_TOKEN
   secret TG_CHAT_ID
   retry retry_tg
@@ -116,22 +110,15 @@ process issue_notify
  no shutdown
 
  block format
-  type shell
-   exec "ruby blocks/format_issue.rb"
-   cwd ./examples/10_tg_github
-  exit
-  input event
-  output tg
+  interface shell ruby_blocks
+  exec "ruby blocks/format_issue.rb"
   timeout 5s
   enable
  exit
 
  block send
-  type shell
-   exec "sh -c 'TEXT=$(jq -r .input.text \"$PROUTER_INPUT_PATH\") && curl -fsS -X POST \"https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage\" --data-urlencode \"chat_id=${TG_CHAT_ID}\" --data-urlencode \"parse_mode=Markdown\" --data-urlencode \"text=$TEXT\" -o \"$PROUTER_OUTPUT_PATH\"'"
-  exit
-  input tg
-  output tg.result
+  interface shell ruby_blocks
+  exec "sh -c 'TEXT=$(jq -r .input.text \"$PROUTER_INPUT_PATH\") && curl -fsS -X POST \"https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage\" --data-urlencode \"chat_id=${TG_CHAT_ID}\" --data-urlencode \"parse_mode=Markdown\" --data-urlencode \"text=$TEXT\" -o \"$PROUTER_OUTPUT_PATH\"'"
   secret TG_BOT_TOKEN
   secret TG_CHAT_ID
   retry retry_tg

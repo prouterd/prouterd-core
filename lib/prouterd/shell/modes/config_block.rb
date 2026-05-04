@@ -59,9 +59,9 @@ module Prouterd
             expect_arg_count(tokens, 3, "no secret <NAME>")
             removed = @block.secret_names.delete(tokens[2].value)
             raise CommandError, "no such secret reference '#{tokens[2].value}' on this block" unless removed
-          when "command"
-            expect_arg_count(tokens, 2, "no command")
-            @block.command = nil
+          when "interface"
+            expect_arg_count(tokens, 2, "no interface")
+            @block.interface_ref = nil
           when "retry"
             expect_arg_count(tokens, 3, "no retry policy")
             unless tokens[2].value == "policy"
@@ -71,14 +71,17 @@ module Prouterd
           when "timeout"
             expect_arg_count(tokens, 2, "no timeout")
             @block.timeout_ms = nil
-          when "input"
-            expect_arg_count(tokens, 2, "no input")
-            @block.input = nil
-          when "output"
-            expect_arg_count(tokens, 2, "no output")
-            @block.output = nil
+          when "contract"
+            expect_arg_count(tokens, 2, "no contract")
+            @block.contract_name = nil
           else
-            raise CommandError, "cannot 'no #{kind}' on a block"
+            # Per-call args live in @block.type_fields keyed by their DSL
+            # keyword. `no <field>` clears them by removing the entry.
+            if @block.type_fields.key?(kind)
+              @block.type_fields.delete(kind)
+            else
+              raise CommandError, "cannot 'no #{kind}' on a block"
+            end
           end
           :handled
         end

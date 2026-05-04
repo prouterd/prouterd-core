@@ -1,4 +1,4 @@
-! Lead processing pipeline (canonical example from the spec, Phase 12 form)
+! Lead processing pipeline (canonical example from the spec)
 router sales_ops
  version 1
  hostname prouter-01
@@ -31,27 +31,35 @@ interface webhook leads_in
  no shutdown
 exit
 
+interface docker extractor
+ image registry.local/blocks/extract-lead:v1
+exit
+
+interface docker enricher
+ image registry.local/blocks/enrich-lead:v3
+exit
+
+interface docker scorer
+ image registry.local/blocks/score-lead:v2
+exit
+
+interface docker notifier
+ image registry.local/blocks/notify-sales:v1
+exit
+
 process lead_pipeline
  description "Lead enrichment and sales notification"
  queue default
  no shutdown
 
  block extract
-  type docker
-   image registry.local/blocks/extract-lead:v1
-  exit
-  input event.body
-  output lead.raw
+  interface docker extractor
   timeout 30s
   enable
  exit
 
  block enrich
-  type docker
-   image registry.local/blocks/enrich-lead:v3
-  exit
-  input lead.raw
-  output lead.enriched
+  interface docker enricher
   timeout 120s
   retry retry_standard
   secret CLEARBIT_API_KEY
@@ -59,21 +67,13 @@ process lead_pipeline
  exit
 
  block score
-  type docker
-   image registry.local/blocks/score-lead:v2
-  exit
-  input lead.enriched
-  output lead.scored
+  interface docker scorer
   timeout 20s
   enable
  exit
 
  block notify_sales
-  type docker
-   image registry.local/blocks/notify-sales:v1
-  exit
-  input lead.scored
-  output notification.result
+  interface docker notifier
   timeout 15s
   enable
  exit
@@ -82,7 +82,7 @@ process lead_pipeline
  route enrich score
 
  route score notify_sales
-  match lead.scored.score gt 70
+  match score.score gt 70
  exit
 exit
 

@@ -1,11 +1,9 @@
-! type-shell example: a block that runs a local script via the
-! ShellRunner instead of a Docker container. ShellRunner is faster for
-! dev / iteration and works without docker-api, but the block runs under
-! the daemon's user with the daemon's filesystem — DON'T use it for
-! untrusted code.
+! Mixed shell + docker pipeline.
 !
-! Mixed pipelines (some shell, some docker) work transparently — the
-! orchestrator dispatches per-block based on `type`.
+! `interface shell` declares a host-process execution environment;
+! ShellRunner runs blocks under the daemon's user — DON'T use it for
+! untrusted code. `interface docker` declares an isolated container
+! environment. The orchestrator dispatches per-block.
 !
 !   $ prouter apply examples/06_shell_block.prc --db /tmp/o.db
 !   $ echo '{}' > /tmp/event.json
@@ -23,29 +21,29 @@ interface manual cli
  no shutdown
 exit
 
+interface shell host
+exit
+
+interface docker alpine
+ image alpine:latest
+exit
+
 process mixed
  queue default
  no shutdown
 
  ! Step 1: shell block — runs as a local process
  block prepare
-  type shell
-   exec "sh -c 'echo \"{\\\"prepared\\\":true,\\\"by\\\":\\\"shell\\\"}\" > $PROUTER_OUTPUT_PATH'"
-  exit
-  input event
-  output prep.result
+  interface shell host
+  exec "sh -c 'echo \"{\\\"prepared\\\":true,\\\"by\\\":\\\"shell\\\"}\" > $PROUTER_OUTPUT_PATH'"
   timeout 10s
   enable
  exit
 
  ! Step 2: docker block — runs as a container
  block finalize
-  type docker
-   image alpine:latest
-   command "sh -c 'echo done-via-docker >&2; echo \"{\\\"ok\\\":true}\" > /prouter/output.json'"
-  exit
-  input prep.result
-  output final.result
+  interface docker alpine
+  command "sh -c 'echo done-via-docker >&2; echo \"{\\\"ok\\\":true}\" > /prouter/output.json'"
   timeout 30s
   enable
  exit

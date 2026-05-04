@@ -620,12 +620,13 @@ module Prouterd
         raise CommandError, "no such block '#{pname}/#{bname}'" unless b
 
         out.puts "block #{pname}/#{b.name}"
-        out.puts "  type:    #{b.execution_type || '(none)'}"
-        plugin = Prouterd::Runner::Registry.lookup(b.execution_type)
+        ref = b.interface_ref
+        out.puts "  interface: #{ref ? "#{ref.type} #{ref.name}" : '(none)'}"
+        plugin = ref && Prouterd::Iface::Registry.lookup(ref.type)
         if plugin
-          plugin.fields.each do |field|
+          plugin.call_fields.each do |field|
             value = b.type_fields[field.storage_key]
-            label = "#{field.dsl_keyword}:".ljust(8)
+            label = "#{field.dsl_keyword}:".ljust(10)
             case field.kind
             when :env_pair
               next if value.nil? || value.empty?
@@ -638,12 +639,10 @@ module Prouterd
             end
           end
         end
-        out.puts "  timeout: #{b.timeout_ms ? Util::DurationParser.render(b.timeout_ms) : '-'}"
-        out.puts "  retry:   #{b.retry_policy_name || '-'}"
+        out.puts "  timeout:  #{b.timeout_ms ? Util::DurationParser.render(b.timeout_ms) : '-'}"
+        out.puts "  retry:    #{b.retry_policy_name || '-'}"
         out.puts "  contract: #{b.contract_name || '-'}"
-        out.puts "  input:   #{b.input || '-'}"
-        out.puts "  output:  #{b.output || '-'}"
-        out.puts "  state:   #{b.shutdown ? 'disabled' : 'enabled'}"
+        out.puts "  state:    #{b.shutdown ? 'disabled' : 'enabled'}"
         unless b.secret_names.empty?
           out.puts "  secrets: #{b.secret_names.join(', ')}"
         end
@@ -699,20 +698,23 @@ module Prouterd
         raise CommandError, "syntax: #{syntax}"
       end
 
-      # One-line summary of a block for table/list views. Each plugin
-      # decides what's the most informative single field by convention:
-      # the first :string or :command field declared (typically image / exec).
-      # Callers truncate as needed (e.g. column-aligned tables).
+      # One-line summary of a block for table/list views. Shows the
+      # interface it references plus the most informative call-field
+      # (the first :string or :command call_field — typically path / exec /
+      # command). Callers truncate as needed for column-aligned tables.
       def block_summary_tag(block)
-        plugin = Prouterd::Runner::Registry.lookup(block.execution_type)
-        return "(no type)" unless plugin
+        ref = block.interface_ref
+        return "(no interface)" unless ref
 
-        headline_field = plugin.fields.find { |f| %i[string command].include?(f.kind) }
-        return plugin.type_name unless headline_field
+        plugin = Prouterd::Iface::Registry.lookup(ref.type)
+        return "#{ref.type} #{ref.name}" unless plugin
+
+        headline_field = plugin.call_fields.find { |f| %i[string command].include?(f.kind) }
+        return "#{ref.type} #{ref.name}" unless headline_field
 
         value = block.type_fields[headline_field.storage_key].to_s
         value = "-" if value.empty?
-        "#{plugin.type_name} #{headline_field.dsl_keyword}=#{value}"
+        "#{ref.type} #{ref.name} #{headline_field.dsl_keyword}=#{value}"
       end
 
       # Minimal line-by-line diff using LCS over arrays of lines.

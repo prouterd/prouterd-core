@@ -32,16 +32,16 @@ module Prouterd
     class Orchestrator
       attr_reader :runs
 
-      # `runner` is either a single runner (legacy, treated as docker) or a
-      # Hash<String, Runner> mapping execution_type → runner instance.
-      # Phase 12 introduced the `block ... type docker|shell` DSL; the
-      # orchestrator dispatches based on block.execution_type.
+      # `runner` is a single runner (typically `Runner::CallRunner` in
+      # production, `Runner::StubRunner` in tests). Per-block dispatch by
+      # interface type happens inside CallRunner — the orchestrator
+      # itself is dispatch-agnostic.
       def initialize(db:, runner:, artifact_store: nil, secret_resolver: nil,
                      logger: Prouterd::NullLogger.new,
                      max_parallelism: 8, in_flight: nil, metrics: nil,
                      events: Prouterd::Events.default)
         @db = db
-        @runners = normalize_runners(runner)
+        @runner = runner
         @runs = Storage::Repositories::Runs.new(db)
         @artifact_store = artifact_store || ArtifactStore.new
         @secret_resolver = secret_resolver || EnvSecretResolver.new
@@ -50,20 +50,6 @@ module Prouterd
         @in_flight = in_flight
         @metrics = metrics
         @events = events
-      end
-
-      def normalize_runners(runner)
-        return runner.transform_keys(&:to_s) if runner.is_a?(Hash)
-
-        # Legacy: single runner means "use this for everything". Treat as
-        # docker for backward compat — most existing tests use StubRunner
-        # for either kind, and StubRunner doesn't care about execution_type.
-        { "docker" => runner, "shell" => runner }
-      end
-
-      def runner_for(block)
-        kind = block.execution_type || "docker"
-        @runners[kind] || @runners["docker"] || raise(TriggerError, "no runner registered for type '#{kind}'")
       end
 
       # Trigger a process. Returns the Run record after execution completes.
@@ -331,10 +317,38 @@ module Prouterd
       # for input + set for output go through ctx_mutex. Runner.run() runs
       # OUTSIDE both — that's where the actual concurrency happens.
       def execute_single_attempt(run, process, block, attempt, context, document, db_mutex, ctx_mutex, redactor)
+        # Resolve `interface <type> <name>` reference to the AST::Interface
+        # declared at top level. Validator already ensured this exists and
+        # is outbound; defensive lookup here is just for runtime safety.
+        ref = block.interface_ref
+        unless ref
+          return Runner::ExecutionResult.new(
+            exit_code: nil, stdout: "", stderr: "",
+            output_json: nil, artifacts: [],
+            error_type: "invalid_block",
+            error_message: "block '#{block.name}' has no `interface` directive",
+            duration_ms: 0, started_at: nil, finished_at: nil
+          )
+        end
+        iface = document.interfaces.find { |i| i.name == ref.name && i.type == ref.type }
+        unless iface
+          return Runner::ExecutionResult.new(
+            exit_code: nil, stdout: "", stderr: "",
+            output_json: nil, artifacts: [],
+            error_type: "invalid_interface",
+            error_message: "block '#{block.name}' references undeclared interface " \
+                           "'#{ref.type} #{ref.name}'",
+            duration_ms: 0, started_at: nil, finished_at: nil
+          )
+        end
+
+        # Build per-run context payload — full context flows in, no slice.
+        # Templating in call-fields reads paths directly from this payload.
         input_payload = nil
+        templated_call_fields = nil
         ctx_mutex.synchronize do
-          input_value = block.input ? context.get(block.input) : nil
-          input_payload = build_input_payload(run, block, input_value, context)
+          input_payload = build_input_payload(run, block, context)
+          templated_call_fields = templated_fields(block.type_fields, context)
         end
 
         step = nil
@@ -344,7 +358,7 @@ module Prouterd
             run_id: run.id,
             block_name: block.name,
             attempt: attempt,
-            image: block.type_fields["image"]
+            image: iface.type_fields["image"]
           )
           running_step = @runs.update_step(
             step.id,
@@ -363,17 +377,17 @@ module Prouterd
         staged_inputs.each_key do |local_name|
           env["PROUTER_INPUT_#{local_name.upcase}"] = "/prouter/inputs/#{local_name}"
         end
-        # Plugin defines the field schema; we hand the whole map plus
-        # plugin defaults to the runner. Each runner reads only what it
-        # cares about (DockerRunner reads "image"/"pull"/...; ShellRunner
-        # reads "exec"/"cwd"/...).
-        plugin = Runner::Registry.lookup(block.execution_type)
-        merged_fields = (plugin&.defaults || {}).merge(block.type_fields)
+
+        # Merge interface-config + per-call args. iface fields are static
+        # config (base-url, image, cwd, ...). Block fields are templated
+        # per-call args (method, path, command, exec, ...). Caller reads
+        # whichever it needs from the merged Hash via request.field("X").
+        merged_fields = (iface.type_fields || {}).merge(templated_call_fields)
         request = Runner::RunRequest.new(
           run_uid: run.uid,
           process_name: process.name,
           block_name: block.name,
-          execution_type: block.execution_type || "docker",
+          execution_type: iface.type,
           attempt: attempt,
           env: env,
           input_json: input_payload,
@@ -382,7 +396,7 @@ module Prouterd
           staged_inputs: staged_inputs
         )
 
-        result = runner_for(block).run(request)
+        result = @runner.run(request)
 
         # Verify every `produces <relpath>` declaration was actually written.
         # Failure here uses the same retry/on-failure machinery as any other
@@ -519,14 +533,28 @@ module Prouterd
         end
       end
 
-      def build_input_payload(run, block, input_value, context)
+      def build_input_payload(run, block, context)
         {
           "run_id" => run.uid,
           "process" => run.process_name,
           "block" => block.name,
-          "input" => input_value,
           "context" => context.to_h
         }
+      end
+
+      # Apply Util::Templater to every value in `fields`, leaving non-string
+      # values untouched. Used to substitute {{ctx.path}} in per-call args
+      # right before handing them to the caller.
+      def templated_fields(fields, context)
+        return fields if fields.empty?
+
+        fields.each_with_object({}) do |(k, v), h|
+          h[k] = case v
+                 when String then Prouterd::Util::Templater.render(v, context)
+                 when Hash   then v.transform_values { |sub| sub.is_a?(String) ? Prouterd::Util::Templater.render(sub, context) : sub }
+                 else             v
+                 end
+        end
       end
 
       def build_env(run, process, block, document)
@@ -604,9 +632,11 @@ module Prouterd
       end
 
       def update_context_with_output(block, context, result)
-        return unless result.success? && result.output_json && block.output
+        return unless result.success? && result.output_json
 
-        context.set(block.output, result.output_json)
+        # Auto-key by block name. Downstream blocks reference via templating:
+        # `{{<block_name>.field}}`.
+        context.set(block.name, result.output_json)
       end
 
       def update_run_context(run, context)

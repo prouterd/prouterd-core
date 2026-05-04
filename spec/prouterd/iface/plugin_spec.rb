@@ -2,13 +2,15 @@ require "spec_helper"
 
 RSpec.describe Prouterd::Iface::Plugin do
   describe "Registry" do
-    it "registers built-in inbound plugins" do
-      expect(Prouterd::Iface::Registry.types).to contain_exactly("webhook", "cron", "manual")
+    it "registers the built-in plugins" do
+      expect(Prouterd::Iface::Registry.types)
+        .to include("webhook", "cron", "manual", "http")
     end
 
-    it "exposes inbound vs outbound classification" do
-      expect(Prouterd::Iface::Registry.inbound_types).to contain_exactly("webhook", "cron", "manual")
-      expect(Prouterd::Iface::Registry.outbound_types).to be_empty
+    it "classifies inbound vs outbound correctly" do
+      expect(Prouterd::Iface::Registry.inbound_types)
+        .to include("webhook", "cron", "manual")
+      expect(Prouterd::Iface::Registry.outbound_types).to include("http")
     end
 
     it "lookup returns the plugin class for a known type" do

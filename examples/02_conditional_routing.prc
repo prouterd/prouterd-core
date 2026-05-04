@@ -19,47 +19,40 @@ interface manual cli
  no shutdown
 exit
 
+interface docker alpine
+ image alpine:latest
+exit
+
 process score_pipe
  queue default
  no shutdown
 
  block scorer
-  type docker
-   image alpine:latest
-   command "sh -c 'echo \"{\\\"score\\\":85}\" > /prouter/output.json'"
-  exit
-  output lead.scored
+  interface docker alpine
+  command "sh -c 'echo \"{\\\"score\\\":85}\" > /prouter/output.json'"
   timeout 30s
   enable
  exit
 
  block notify_sales
-  type docker
-   image alpine:latest
-   command "sh -c 'echo HIGH-VALUE >&2; echo \"{\\\"sent\\\":\\\"sales\\\"}\" > /prouter/output.json'"
-  exit
-  input lead.scored
-  output sales.notified
+  interface docker alpine
+  command "sh -c 'echo HIGH-VALUE >&2; echo \"{\\\"sent\\\":\\\"sales\\\"}\" > /prouter/output.json'"
   timeout 30s
   enable
  exit
 
  block notify_marketing
-  type docker
-   image alpine:latest
-   command "sh -c 'echo NURTURE >&2; echo \"{\\\"sent\\\":\\\"marketing\\\"}\" > /prouter/output.json'"
-  exit
-  input lead.scored
-  output marketing.notified
+  interface docker alpine
+  command "sh -c 'echo NURTURE >&2; echo \"{\\\"sent\\\":\\\"marketing\\\"}\" > /prouter/output.json'"
   timeout 30s
   enable
  exit
 
  route scorer notify_sales
-  match lead.scored.score gt 70
+  match scorer.score gt 70
  exit
  route scorer notify_marketing
-  match lead.scored.score lte 70
+  match scorer.score lte 70
  exit
 exit
 

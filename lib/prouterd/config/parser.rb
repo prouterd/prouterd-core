@@ -1,5 +1,4 @@
 require_relative "../util/duration_parser"
-require_relative "../runner/registry"
 require_relative "../iface/registry"
 
 module Prouterd
@@ -375,104 +374,34 @@ module Prouterd
         advance
 
         each_body_line("block #{name}") do |line|
-          if line.head.value == "type"
-            parse_block_type_section(node, line)
-            next
-          end
           parse_block_field(node, line)
         end
 
         node
       end
 
-      # Parse the `type <name> ... exit` sub-section. The set of legal type
-      # names is whatever's currently registered with Runner::Registry —
-      # adding a runner type doesn't require editing this file.
-      def parse_block_type_section(node, header)
-        expect_token_count(header, 2, "type <#{Runner::Registry.types.join('|')}>")
-        kind = expect_word(header.tokens[1], "block type")
-        plugin = Runner::Registry.lookup(kind)
-        unless plugin
-          raise ParseError.new(
-            "invalid block type '#{kind}' (registered: #{Runner::Registry.types.join(', ')})",
-            line: header.number
-          )
-        end
-        if node.execution_type
-          raise ParseError.new("block '#{node.name}' already has a type section", line: header.number)
-        end
-        node.execution_type = kind
-        advance
-
-        each_body_line("type #{kind}") do |line|
-          apply_plugin_field(plugin, node, line)
-        end
-      end
-
-      # Generic per-line dispatch driven by the plugin's field schema. The
-      # plugin declares `field :foo, kind: :string|:enum|:command|:env_pair`
-      # and this method does the actual token-shape parsing.
-      def apply_plugin_field(plugin, node, line)
-        head = line.head.value
-        field = plugin.field_for(head)
-        unless field
-          raise ParseError.new(
-            "unknown directive '#{head}' in 'type #{plugin.type_name}' block",
-            line: line.number
-          )
-        end
-
-        case field.kind
-        when :string
-          expect_token_count(line, 2, "#{field.dsl_keyword} <value>")
-          node.type_fields[field.storage_key] = expect_word_or_string(line.tokens[1], field.dsl_keyword)
-        when :enum
-          expect_token_count(line, 2, "#{field.dsl_keyword} <#{field.enum.join('|')}>")
-          value = expect_word(line.tokens[1], field.dsl_keyword)
-          unless field.enum.include?(value)
-            raise ParseError.new(
-              "invalid #{field.dsl_keyword} '#{value}' (allowed: #{field.enum.join(', ')})",
-              line: line.number
-            )
-          end
-          node.type_fields[field.storage_key] = value
-        when :command
-          expect_min_tokens(line, 2, "#{field.dsl_keyword} <args...>")
-          node.type_fields[field.storage_key] = line.tokens[1..].map(&:value).join(" ")
-        when :env_pair
-          expect_token_count(line, 3, "#{field.dsl_keyword} <KEY> <VALUE>")
-          key = expect_word(line.tokens[1], "#{field.dsl_keyword} key")
-          value = expect_word_or_string(line.tokens[2], "#{field.dsl_keyword} value")
-          (node.type_fields[field.storage_key] ||= {})[key] = value
-        else
-          raise ParseError.new("plugin '#{plugin.type_name}' field '#{field.name}' has unknown kind #{field.kind.inspect}", line: line.number)
-        end
-      end
-
+      # A block has three kinds of body directives:
+      #   1. `interface <type> <name>` — references the outbound interface
+      #      this block invokes. Required exactly once. Must come before
+      #      any call-fields so the parser can look up the plugin's
+      #      call_field schema for the rest of the body.
+      #   2. Common fields (`timeout`, `retry`, `secret`, `contract`,
+      #      `produces`, `input from`, `enable`/`disable`/`shutdown`/
+      #      `no shutdown`) — work the same regardless of which interface.
+      #   3. Call-fields — type-specific args validated against the
+      #      interface plugin's call_field schema (`method`/`path` for
+      #      http, `command` for docker, `prompt` for llm, `exec` for
+      #      shell, etc.).
       def parse_block_field(node, line)
         head = line.head.value
 
-        # ---- Phase 1-11 inline shape: docker fields (image/command/network)
-        # are accepted directly inside `block` without a `type docker`
-        # wrapper. We delegate to the docker plugin's field schema so the
-        # rules live in one place. execution_type is inferred as 'docker'
-        # the first time we see one of these.
-        docker_plugin = Runner::Registry.lookup("docker")
-        if docker_plugin&.field_for(head)
-          node.execution_type ||= "docker"
-          apply_plugin_field(docker_plugin, node, line)
-          return
-        end
-
         case head
-        # ---- Common block fields
+        when "interface"
+          parse_block_interface_ref(node, line)
         when "timeout"
           expect_token_count(line, 2, "timeout <duration>")
           node.timeout_ms = expect_duration(line.tokens[1], "timeout")
         when "retry"
-          # Two accepted forms:
-          #   retry policy <name>   (Phase 1 verbose)
-          #   retry <name>          (Phase 12 short)
           if line.tokens.length == 3 && line.tokens[1].value == "policy"
             node.retry_policy_name = expect_identifier(line.tokens[2], "retry policy name")
           elsif line.tokens.length == 2
@@ -491,29 +420,24 @@ module Prouterd
           expect_token_count(line, 2, "contract <name>")
           node.contract_name = expect_identifier(line.tokens[1], "contract name")
         when "input"
-          # Two forms (orthogonal):
-          #   input <context.path>            event-data flow (in-memory JSON)
-          #   input from <block>.<relpath>    typed artifact (file from upstream archive)
-          if line.tokens.length == 3 && line.tokens[1].value == "from"
-            apply_artifact_input(node, line)
-          else
-            expect_token_count(line, 2, "input <context.path>  |  input from <block>.<relpath>")
-            node.input = expect_context_path(line.tokens[1], "input")
+          # Only the typed-artifact form: `input from <block>.<relpath>`.
+          # The legacy `input <context.path>` is gone — templating reads
+          # context directly from any call-field via `{{ctx.path}}`.
+          unless line.tokens.length == 3 && line.tokens[1].value == "from"
+            raise ParseError.new(
+              "block 'input' supports only `input from <block>.<relpath>` (typed artifact); " \
+              "for context flow, reference paths via {{...}} in call-fields",
+              line: line.number
+            )
           end
-        when "output"
-          expect_token_count(line, 2, "output <context.path>")
-          node.output = expect_context_path(line.tokens[1], "output")
+          apply_artifact_input(node, line)
         when "produces"
-          # `produces <relpath>` — declare a named file the block writes
-          # into /prouter/artifacts/. Downstream blocks pull it via
-          # `input <local> from <this_block>.<relpath>`.
           expect_token_count(line, 2, "produces <relpath>")
           relpath = expect_artifact_relpath(line.tokens[1], "produces")
           if node.produces.include?(relpath)
             raise ParseError.new("duplicate produces '#{relpath}' in block", line: line.number)
           end
           node.produces << relpath
-        # ---- enable/disable: shorthand for shutdown semantics.
         when "enable"
           expect_token_count(line, 1, "enable")
           node.shutdown = false
@@ -530,7 +454,107 @@ module Prouterd
           end
           node.shutdown = false
         else
-          raise ParseError.new("unknown directive '#{head}' in block", line: line.number)
+          # Anything else must be a call-field for the interface this block
+          # uses. Requires `interface <type> <name>` to have been declared.
+          parse_block_call_field(node, line)
+        end
+      end
+
+      def parse_block_interface_ref(node, line)
+        expect_token_count(line, 3, "interface <type> <name>")
+        type = expect_word(line.tokens[1], "interface type")
+        plugin = Iface::Registry.lookup(type)
+        unless plugin
+          raise ParseError.new(
+            "invalid interface type '#{type}' (registered: #{Iface::Registry.types.join(', ')})",
+            line: line.number
+          )
+        end
+        unless plugin.outbound?
+          raise ParseError.new(
+            "block 'interface' must reference an outbound interface; " \
+            "'#{type}' is #{plugin.direction} (only blocks reference outbound)",
+            line: line.number
+          )
+        end
+        name = expect_identifier(line.tokens[2], "interface name")
+        if node.interface_ref
+          raise ParseError.new(
+            "block '#{node.name}' already references " \
+            "'interface #{node.interface_ref.type} #{node.interface_ref.name}'",
+            line: line.number
+          )
+        end
+        node.interface_ref = AST::InterfaceRef.new(type: type, name: name, line: line.number)
+      end
+
+      # Apply a per-call argument as defined by the referenced interface's
+      # plugin call_field schema. Requires the block's `interface <type>
+      # <name>` directive to have been parsed already so we know which
+      # plugin's schema is in play.
+      def parse_block_call_field(node, line)
+        unless node.interface_ref
+          raise ParseError.new(
+            "unknown directive '#{line.head.value}' in block; " \
+            "did you forget `interface <type> <name>` before per-call args?",
+            line: line.number
+          )
+        end
+
+        plugin = Iface::Registry.lookup(node.interface_ref.type)
+        # Plugin existence already validated when parsing interface ref.
+        head = line.head.value
+        field = plugin.call_field_for(head)
+        unless field
+          allowed = plugin.call_fields.map(&:dsl_keyword).join(", ")
+          raise ParseError.new(
+            "unknown directive '#{head}' in block (interface '#{node.interface_ref.type} " \
+            "#{node.interface_ref.name}' allows: #{allowed.empty? ? '(no call-fields)' : allowed})",
+            line: line.number
+          )
+        end
+
+        apply_call_field_value(plugin, field, node, line)
+      end
+
+      def apply_call_field_value(plugin, field, node, line)
+        case field.kind
+        when :string
+          expect_token_count(line, 2, "#{field.dsl_keyword} <value>")
+          node.type_fields[field.storage_key] = expect_word_or_string(line.tokens[1], field.dsl_keyword)
+        when :enum
+          expect_token_count(line, 2, "#{field.dsl_keyword} <#{field.enum.join('|')}>")
+          value = expect_word(line.tokens[1], field.dsl_keyword)
+          unless field.enum.include?(value)
+            raise ParseError.new(
+              "invalid #{field.dsl_keyword} '#{value}' (allowed: #{field.enum.join(', ')})",
+              line: line.number
+            )
+          end
+          node.type_fields[field.storage_key] = value
+        when :http_method
+          expect_token_count(line, 2, "#{field.dsl_keyword} <METHOD>")
+          value = expect_word(line.tokens[1], field.dsl_keyword).upcase
+          unless HTTP_METHODS.include?(value)
+            raise ParseError.new(
+              "invalid HTTP method '#{value}' (allowed: #{HTTP_METHODS.join(', ')})",
+              line: line.number
+            )
+          end
+          node.type_fields[field.storage_key] = value
+        when :command
+          expect_min_tokens(line, 2, "#{field.dsl_keyword} <args...>")
+          node.type_fields[field.storage_key] = line.tokens[1..].map(&:value).join(" ")
+        when :env_pair
+          expect_token_count(line, 3, "#{field.dsl_keyword} <KEY> <VALUE>")
+          key = expect_word(line.tokens[1], "#{field.dsl_keyword} key")
+          value = expect_word_or_string(line.tokens[2], "#{field.dsl_keyword} value")
+          (node.type_fields[field.storage_key] ||= {})[key] = value
+        else
+          raise ParseError.new(
+            "interface plugin '#{plugin.type_name}' call_field '#{field.name}' has unknown kind #{field.kind.inspect}",
+            line: line.number
+          )
         end
       end
 

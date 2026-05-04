@@ -21,15 +21,16 @@ interface cron every_minute
  no shutdown
 exit
 
+interface docker alpine
+ image alpine:latest
+exit
+
 process tick
  queue default
  no shutdown
  block log_tick
-  type docker
-   image alpine:latest
-   command "sh -c 'echo TICK at $(date -u +%FT%TZ) >&2; echo \"{\\\"ok\\\":true}\" > /prouter/output.json'"
-  exit
-  output result
+  interface docker alpine
+  command "sh -c 'echo TICK at $(date -u +%FT%TZ) >&2; echo \"{\\\"ok\\\":true}\" > /prouter/output.json'"
   timeout 30s
   enable
  exit

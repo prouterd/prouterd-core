@@ -120,75 +120,38 @@ module Prouterd
         end
       end
 
+      # Reference from a block to its interface. Same shape as the interface
+      # declaration header: `interface <type> <name>`. Stored on Block so the
+      # validator can check the type matches the declaration and the runtime
+      # can resolve the AST::Interface for dispatch.
+      InterfaceRef = Struct.new(:type, :name, :line, keyword_init: true)
+
       class Block
-        # Common block fields (apply regardless of execution_type):
-        attr_accessor :name, :timeout_ms, :retry_policy_name, :contract_name,
-                      :input, :output, :shutdown, :line, :execution_type
+        # Block declares one outbound interface (HTTP endpoint, LLM, Docker
+        # image, shell environment, ...) and supplies per-call args validated
+        # against that interface plugin's call_fields. Output is auto-stored
+        # at context[block.name]; templating reads from the full context.
+        attr_accessor :name, :line, :shutdown,
+                      :timeout_ms, :retry_policy_name, :contract_name,
+                      :interface_ref
         attr_reader :secret_names, :produces, :artifact_inputs
 
-        # Per-type fields live in this hash keyed by the plugin's field name.
-        # Plugins describe their schema; parser/validator/renderer/show all
-        # drive off the schema, so adding a new runner type doesn't require
-        # adding new slots here.
+        # Per-call args keyed by the interface plugin's call_field
+        # storage_key. Templated at run time against the current context.
         attr_accessor :type_fields
 
         def initialize(name:, line:)
           @name = name
           @line = line
-          @execution_type = nil
+          @shutdown = false
           @timeout_ms = nil
           @retry_policy_name = nil
           @contract_name = nil
           @secret_names = []
-          @input = nil
-          @output = nil
-          @shutdown = false
+          @interface_ref = nil
           @type_fields = {}
           @produces = []
           @artifact_inputs = []
-        end
-
-        def docker?
-          execution_type == "docker"
-        end
-
-        def shell?
-          execution_type == "shell"
-        end
-
-        # Convenience accessors that proxy to type_fields. Keep the read sites
-        # readable (block.image vs block.type_fields["image"]).
-        %w[image command network pull user memory cpu].each do |key|
-          define_method(key) { @type_fields[key] }
-          define_method("#{key}=") { |v| @type_fields[key] = v }
-        end
-
-        def shell_exec
-          @type_fields["exec"]
-        end
-
-        def shell_exec=(v)
-          @type_fields["exec"] = v
-        end
-
-        def shell_cwd
-          @type_fields["cwd"]
-        end
-
-        def shell_cwd=(v)
-          @type_fields["cwd"] = v
-        end
-
-        def shell_path
-          @type_fields["shell"]
-        end
-
-        def shell_path=(v)
-          @type_fields["shell"] = v
-        end
-
-        def shell_env
-          @type_fields["env"] ||= {}
         end
       end
 

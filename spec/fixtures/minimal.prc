@@ -11,16 +11,17 @@ interface manual cli
  no shutdown
 exit
 
+interface docker alpine
+ image alpine:latest
+exit
+
 process pipeline
  queue default
  no shutdown
 
  block hello
-  type docker
-   image alpine:latest
-   command "echo hello"
-  exit
-  output result
+  interface docker alpine
+  command "echo hello"
   timeout 5s
   enable
  exit

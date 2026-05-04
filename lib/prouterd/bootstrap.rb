@@ -27,29 +27,22 @@ module Prouterd
       :error
     end
 
-    # Build the per-execution-type runner map. `real`/`docker` asks each
-    # registered Plugin for its runner. `shell` routes every type to
-    # ShellRunner (docker-less hosts). `stub` is the test fixture.
+    # Build the orchestrator's runner. Always a `CallRunner`: it dispatches
+    # by interface type at runtime, so one runner suffices.
+    #
+    # `kind` selects the dispatch policy:
+    #   * "real" / "docker" / nil — normal CallRunner. Each block resolves
+    #     to its declared `interface <type> <name>` and invokes the
+    #     corresponding caller class (DockerRunner, ShellRunner, HttpCaller, ...).
+    #   * "stub" — every block is handed to StubRunner. Tests use this.
     def build_runner(kind, in_flight: nil)
-      opts = { in_flight: in_flight }
       case kind
-      when nil, "real", "docker"
-        Prouterd::Runner::Registry.all.each_with_object({}) do |plugin, h|
-          h[plugin.type_name] = plugin.build_runner(opts)
-        end
-      when "shell"
-        shell = Prouterd::Runner::ShellRunner.new
-        Prouterd::Runner::Registry.types.each_with_object({}) do |type, h|
-          h[type] = shell
-        end
+      when nil, "real", "docker", "shell"
+        Prouterd::Runner::CallRunner.new(in_flight: in_flight)
       when "stub"
-        stub = Prouterd::Runner::StubRunner.new
-        Prouterd::Runner::Registry.types.each_with_object({}) do |type, h|
-          h[type] = stub
-        end
+        Prouterd::Runner::StubRunner.new
       else
-        allowed = (%w[real shell stub] + Prouterd::Runner::Registry.types).uniq.join("|")
-        @stderr.puts "prouter: unknown runner kind '#{kind}' (#{allowed})"
+        @stderr.puts "prouter: unknown runner kind '#{kind}' (real | shell | stub)"
         :error
       end
     rescue LoadError, StandardError => e

@@ -1,5 +1,6 @@
 require_relative "../util/duration_parser"
 require_relative "../runner/registry"
+require_relative "../iface/registry"
 
 module Prouterd
   module Config
@@ -11,9 +12,8 @@ module Prouterd
     class Parser
       IDENT_RE = /\A[A-Za-z_][A-Za-z0-9_-]*\z/.freeze
       ENV_NAME_RE = /\A[A-Z_][A-Z0-9_]*\z/.freeze
-      HTTP_METHODS = %w[GET POST PUT PATCH DELETE].freeze
+      HTTP_METHODS = Iface::Plugins::Webhook::HTTP_METHODS
       BACKOFF_TYPES = AST::Policy::BACKOFF_TYPES
-      INTERFACE_TYPES = AST::Interface::TYPES
 
       ROUTE_BODY_HEADS = %w[match on-failure shutdown no].freeze
 
@@ -210,8 +210,10 @@ module Prouterd
       def parse_interface(header)
         expect_token_count(header, 3, "interface <type> <name>")
         type = expect_word(header.tokens[1], "interface type")
-        unless INTERFACE_TYPES.include?(type)
-          raise ParseError.new("invalid interface type '#{type}' (allowed: #{INTERFACE_TYPES.join(', ')})", line: header.number)
+        plugin = Iface::Registry.lookup(type)
+        unless plugin
+          allowed = Iface::Registry.types.join(", ")
+          raise ParseError.new("invalid interface type '#{type}' (allowed: #{allowed})", line: header.number)
         end
         name = expect_identifier(header.tokens[2], "interface name")
         node = AST::Interface.new(type: type, name: name, line: header.number)
@@ -225,61 +227,89 @@ module Prouterd
       end
 
       def parse_interface_field(node, line)
+        plugin = Iface::Registry.lookup(node.type) or
+          raise ParseError.new("interface '#{node.name}' has unknown type '#{node.type}'", line: node.line)
         head = line.head.value
 
+        # Shared shutdown/no-shutdown plumbing — applies to every interface
+        # type regardless of plugin, because it's a runtime gate not a
+        # type-specific config field.
         case head
         when "shutdown"
           expect_token_count(line, 1, "shutdown")
           node.shutdown = true
+          return
         when "no"
           expect_token_count(line, 2, "no shutdown")
           unless line.tokens[1].value == "shutdown"
             raise ParseError.new("only 'no shutdown' is supported here", line: line.number)
           end
           node.shutdown = false
-        when "path"
-          require_interface_type(node, "webhook", "path", line)
-          expect_token_count(line, 2, "path <path>")
-          path = expect_word_or_string(line.tokens[1], "path")
-          raise ParseError.new("path must start with '/'", line: line.number) unless path.start_with?("/")
-          node.path = path
-        when "method"
-          require_interface_type(node, "webhook", "method", line)
-          expect_token_count(line, 2, "method <METHOD>")
-          method = expect_word(line.tokens[1], "method").upcase
-          unless HTTP_METHODS.include?(method)
-            raise ParseError.new("invalid HTTP method '#{method}' (allowed: #{HTTP_METHODS.join(', ')})", line: line.number)
+          return
+        end
+
+        # Plugin-defined field.
+        field = plugin.field_for(head)
+        unless field
+          raise ParseError.new(
+            "unknown directive '#{head}' in interface '#{node.type}'",
+            line: line.number
+          )
+        end
+
+        case field.kind
+        when :string
+          expect_token_count(line, 2, "#{field.dsl_keyword} <value>")
+          node.type_fields[field.storage_key] =
+            expect_word_or_string(line.tokens[1], field.dsl_keyword)
+        when :path
+          expect_token_count(line, 2, "#{field.dsl_keyword} <path>")
+          value = expect_word_or_string(line.tokens[1], field.dsl_keyword)
+          unless value.start_with?("/")
+            raise ParseError.new("#{field.dsl_keyword} must start with '/'", line: line.number)
           end
-          node.method = method
-        when "auth"
-          require_interface_type(node, "webhook", "auth", line)
-          expect_token_count(line, 4, "auth bearer secret <NAME>")
+          node.type_fields[field.storage_key] = value
+        when :enum
+          expect_token_count(line, 2, "#{field.dsl_keyword} <#{field.enum.join('|')}>")
+          value = expect_word(line.tokens[1], field.dsl_keyword)
+          unless field.enum.include?(value)
+            raise ParseError.new(
+              "invalid #{field.dsl_keyword} '#{value}' (allowed: #{field.enum.join(', ')})",
+              line: line.number
+            )
+          end
+          node.type_fields[field.storage_key] = value
+        when :http_method
+          expect_token_count(line, 2, "#{field.dsl_keyword} <METHOD>")
+          value = expect_word(line.tokens[1], field.dsl_keyword).upcase
+          unless HTTP_METHODS.include?(value)
+            raise ParseError.new(
+              "invalid HTTP method '#{value}' (allowed: #{HTTP_METHODS.join(', ')})",
+              line: line.number
+            )
+          end
+          node.type_fields[field.storage_key] = value
+        when :auth_bearer
+          expect_token_count(line, 4, "#{field.dsl_keyword} bearer secret <NAME>")
           scheme = expect_word(line.tokens[1], "auth scheme")
           unless AST::Auth::SCHEMES.include?(scheme)
-            raise ParseError.new("invalid auth scheme '#{scheme}' (allowed: #{AST::Auth::SCHEMES.join(', ')})", line: line.number)
+            raise ParseError.new(
+              "invalid auth scheme '#{scheme}' (allowed: #{AST::Auth::SCHEMES.join(', ')})",
+              line: line.number
+            )
           end
           unless line.tokens[2].value == "secret"
-            raise ParseError.new("expected 'secret' keyword in auth directive", line: line.number)
+            raise ParseError.new("expected 'secret' keyword in #{field.dsl_keyword} directive", line: line.number)
           end
           secret_name = expect_env_name(line.tokens[3], "secret name")
-          node.auth = AST::Auth.new(scheme: scheme, secret_name: secret_name, line: line.number)
-        when "schedule"
-          require_interface_type(node, "cron", "schedule", line)
-          expect_token_count(line, 2, "schedule <cron-expression>")
-          node.schedule = expect_word_or_string(line.tokens[1], "schedule")
-        when "timezone"
-          require_interface_type(node, "cron", "timezone", line)
-          expect_token_count(line, 2, "timezone <tz>")
-          node.timezone = expect_word_or_string(line.tokens[1], "timezone")
+          node.type_fields[field.storage_key] =
+            AST::Auth.new(scheme: scheme, secret_name: secret_name, line: line.number)
         else
-          raise ParseError.new("unknown directive '#{head}' in interface #{node.type}", line: line.number)
+          raise ParseError.new(
+            "interface plugin '#{plugin.type_name}' field '#{field.name}' has unknown kind #{field.kind.inspect}",
+            line: line.number
+          )
         end
-      end
-
-      def require_interface_type(node, expected, directive, line)
-        return if node.type == expected
-
-        raise ParseError.new("'#{directive}' is only valid in interface type '#{expected}', got '#{node.type}'", line: line.number)
       end
 
       def parse_process(header)

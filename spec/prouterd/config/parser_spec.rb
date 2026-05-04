@@ -128,10 +128,10 @@ RSpec.describe Prouterd::Config::Parser do
       iface = doc.interfaces.first
       expect(iface.type).to eq("webhook")
       expect(iface.name).to eq("leads_in")
-      expect(iface.path).to eq("/leads")
-      expect(iface.method).to eq("POST")
-      expect(iface.auth.scheme).to eq("bearer")
-      expect(iface.auth.secret_name).to eq("WEBHOOK_TOKEN")
+      expect(iface.type_fields["path"]).to eq("/leads")
+      expect(iface.type_fields["method"]).to eq("POST")
+      expect(iface.type_fields["auth"].scheme).to eq("bearer")
+      expect(iface.type_fields["auth"].secret_name).to eq("WEBHOOK_TOKEN")
       expect(iface.shutdown).to be(false)
     end
 
@@ -142,7 +142,7 @@ RSpec.describe Prouterd::Config::Parser do
            path /foo
           exit
         SRC
-      end.to raise_error(Prouterd::Config::ParseError, /'path' is only valid in interface type 'webhook'/)
+      end.to raise_error(Prouterd::Config::ParseError, /unknown directive 'path' in interface 'manual'/)
     end
 
     it "parses cron interface" do
@@ -154,8 +154,8 @@ RSpec.describe Prouterd::Config::Parser do
         exit
       SRC
       iface = doc.interfaces.first
-      expect(iface.schedule).to eq("0 9 * * *")
-      expect(iface.timezone).to eq("Asia/Almaty")
+      expect(iface.type_fields["schedule"]).to eq("0 9 * * *")
+      expect(iface.type_fields["timezone"]).to eq("Asia/Almaty")
     end
 
     it "rejects invalid HTTP method" do

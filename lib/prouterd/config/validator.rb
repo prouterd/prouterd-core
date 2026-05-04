@@ -1,5 +1,6 @@
 require "set"
 require_relative "../runner/registry"
+require_relative "../iface/registry"
 
 module Prouterd
   module Config
@@ -134,25 +135,32 @@ module Prouterd
 
       def check_interfaces
         @doc.interfaces.each do |iface|
-          case iface.type
-          when "webhook"
-            check_webhook_interface(iface)
-          when "cron"
-            check_cron_interface(iface)
+          plugin = Iface::Registry.lookup(iface.type)
+          unless plugin
+            @result.error(
+              "interface '#{iface.name}' has unknown type '#{iface.type}'",
+              line: iface.line
+            )
+            next
           end
-        end
-      end
 
-      def check_webhook_interface(iface)
-        @result.error("interface '#{iface.name}' (webhook) missing 'path'", line: iface.line) if iface.path.nil?
-        @result.error("interface '#{iface.name}' (webhook) missing 'method'", line: iface.line) if iface.method.nil?
-        if iface.auth && !secret_defined?(iface.auth.secret_name)
-          @result.error("interface '#{iface.name}' references unknown secret '#{iface.auth.secret_name}'", line: iface.auth.line)
-        end
-      end
+          # Required-field check, driven off the plugin schema.
+          plugin.fields.each do |field|
+            next unless field.required
 
-      def check_cron_interface(iface)
-        @result.error("interface '#{iface.name}' (cron) missing 'schedule'", line: iface.line) if iface.schedule.nil?
+            value = iface.type_fields[field.storage_key]
+            if value.nil? || (value.respond_to?(:empty?) && value.empty?)
+              @result.error(
+                "interface '#{iface.name}' (#{plugin.type_name}) missing '#{field.dsl_keyword}'",
+                line: iface.line
+              )
+            end
+          end
+
+          # Plugin-specific cross-field validation (e.g. webhook `auth`
+          # references an existing secret).
+          plugin.validate(iface, @doc, @result)
+        end
       end
 
       def check_processes

@@ -418,10 +418,10 @@ module Prouterd
           name:     i.name,
           type:     i.type,
           shutdown: i.shutdown,
-          path:     i.respond_to?(:path)   ? i.path   : nil,
-          method:   i.respond_to?(:method) ? i.method : nil,
-          schedule: i.respond_to?(:schedule) ? i.schedule : nil,
-          timezone: i.respond_to?(:timezone) ? i.timezone : nil
+          path:     i.type_fields["path"],
+          method:   i.type_fields["method"],
+          schedule: i.type_fields["schedule"],
+          timezone: i.type_fields["timezone"]
         }.compact
       end
 
@@ -465,9 +465,10 @@ module Prouterd
           end
         end
         document.interfaces.each do |iface|
-          if iface.respond_to?(:auth) && iface.auth && iface.auth.respond_to?(:secret_name) && iface.auth.secret_name
-            idx[iface.auth.secret_name] << "interface #{iface.name}"
-          end
+          auth = iface.type_fields["auth"]
+          next unless auth.respond_to?(:secret_name) && auth.secret_name
+
+          idx[auth.secret_name] << "interface #{iface.name}"
         end
         idx
       end

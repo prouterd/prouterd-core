@@ -1,5 +1,6 @@
 require_relative "../util/duration_parser"
 require_relative "../runner/registry"
+require_relative "../iface/registry"
 
 module Prouterd
   module Config
@@ -76,19 +77,32 @@ module Prouterd
 
       def render_interface(iface)
         emit(0, "interface #{iface.type} #{iface.name}")
-        case iface.type
-        when "webhook"
-          emit(1, "path #{iface.path}") if iface.path
-          emit(1, "method #{iface.method}") if iface.method
-          if iface.auth
-            emit(1, "auth #{iface.auth.scheme} secret #{iface.auth.secret_name}")
+        plugin = Iface::Registry.lookup(iface.type)
+        if plugin
+          plugin.fields.each do |field|
+            value = iface.type_fields[field.storage_key]
+            next if skip_value?(value, field)
+
+            render_iface_field(field, value, 1)
           end
-        when "cron"
-          emit(1, "schedule #{quote_if_needed(iface.schedule)}") if iface.schedule
-          emit(1, "timezone #{quote_if_needed(iface.timezone)}") if iface.timezone
         end
         emit(1, iface.shutdown ? "shutdown" : "no shutdown")
         emit(0, "exit")
+      end
+
+      # Per-kind emission for interface body fields. Mirrors
+      # `render_type_section` for blocks.
+      def render_iface_field(field, value, level)
+        case field.kind
+        when :string
+          emit(level, "#{field.dsl_keyword} #{quote_if_needed(value)}")
+        when :path
+          emit(level, "#{field.dsl_keyword} #{value}")
+        when :enum, :http_method
+          emit(level, "#{field.dsl_keyword} #{value}")
+        when :auth_bearer
+          emit(level, "#{field.dsl_keyword} #{value.scheme} secret #{value.secret_name}")
+        end
       end
 
       def render_process(process)

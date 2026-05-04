@@ -39,7 +39,7 @@ module Prouterd
 
         # Method enforcement: webhook interfaces declare a `method`.
         # Default to POST when not declared so existing fixtures keep working.
-        expected_method = (interface.method || "POST").to_s.upcase
+        expected_method = (interface.type_fields["method"] || "POST").to_s.upcase
         actual_method = request.request_method.to_s.upcase
         if actual_method != expected_method
           return json_error(405, "method '#{actual_method}' not allowed; interface accepts '#{expected_method}'",
@@ -53,8 +53,8 @@ module Prouterd
           return json_error(429, "rate limit exceeded for interface '#{interface_name}'")
         end
 
-        if interface.auth
-          token = resolve_secret(document, interface.auth.secret_name)
+        if (auth = interface.type_fields["auth"])
+          token = resolve_secret(document, auth.secret_name)
           err = Auth.check_bearer(request, token)
           return json_error(*err) if err
         end

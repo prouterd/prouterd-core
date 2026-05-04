@@ -96,16 +96,18 @@ module Prouterd
       end
 
       def parse_cron(iface)
-        return nil unless iface.schedule
+        schedule = iface.type_fields["schedule"]
+        return nil unless schedule
 
         # Fugit accepts a trailing timezone in the cron expression itself:
         # "0 9 * * * Europe/Berlin". We append the interface's `timezone`
         # field if set so users keep DSL-level timezone configuration.
-        expr = iface.timezone ? "#{iface.schedule} #{iface.timezone}" : iface.schedule
+        timezone = iface.type_fields["timezone"]
+        expr = timezone ? "#{schedule} #{timezone}" : schedule
         Fugit.parse_cron(expr)
       rescue StandardError
         @logger.warn("scheduler: invalid cron expression",
-                     interface: iface.name, schedule: iface.schedule.inspect)
+                     interface: iface.name, schedule: iface.type_fields["schedule"].inspect)
         nil
       end
 

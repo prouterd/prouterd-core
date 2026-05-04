@@ -70,25 +70,18 @@ module Prouterd
 
       class Interface
         attr_accessor :type, :name, :shutdown, :line
-
-        # Webhook-only fields
-        attr_accessor :path, :method, :auth
-
-        # Cron-only fields
-        attr_accessor :schedule, :timezone
-
-        TYPES = %w[webhook manual cron].freeze
+        # Plugin-defined body fields, keyed by the plugin's field storage_key.
+        # Mirrors `Block#type_fields`. Read directly:
+        #   iface.type_fields["path"]
+        #   iface.type_fields["auth"]&.secret_name
+        attr_accessor :type_fields
 
         def initialize(type:, name:, line:)
           @type = type
           @name = name
           @line = line
           @shutdown = false
-          @path = nil
-          @method = nil
-          @auth = nil
-          @schedule = nil
-          @timezone = nil
+          @type_fields = {}
         end
 
         def webhook?; type == "webhook"; end

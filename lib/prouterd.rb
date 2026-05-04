@@ -5,9 +5,11 @@ require_relative "prouterd/config/errors"
 require_relative "prouterd/config/token"
 require_relative "prouterd/config/lexer"
 require_relative "prouterd/config/ast"
-# Runner plugins must be registered before the parser/validator/renderer
-# use Registry to dispatch on `type <name>`.
+# Runner and Iface plugins must be registered before the parser/validator/
+# renderer use their Registries to dispatch on `type <name>` (block) and
+# `interface <type>` (interface).
 require_relative "prouterd/runner"
+require_relative "prouterd/iface"
 require_relative "prouterd/config/parser"
 require_relative "prouterd/config/validator"
 require_relative "prouterd/config/renderer"

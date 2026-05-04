@@ -683,8 +683,8 @@ module Prouterd
         else
           document.interfaces.each do |iface|
             extras = case iface.type
-                     when "webhook" then "#{iface.method || '?'} #{iface.path || '?'}"
-                     when "cron"    then "schedule=#{iface.schedule.inspect}"
+                     when "webhook" then "#{iface.type_fields['method'] || '?'} #{iface.type_fields['path'] || '?'}"
+                     when "cron"    then "schedule=#{iface.type_fields['schedule'].inspect}"
                      else                ""
                      end
             @stdout.puts "  #{iface.name} #{iface.type} #{extras}".rstrip

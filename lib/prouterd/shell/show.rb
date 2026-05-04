@@ -477,8 +477,8 @@ module Prouterd
         ifaces.each do |i|
           state = i.shutdown ? "down" : "up"
           detail = case i.type
-                   when "webhook" then "#{i.method || '?'} #{i.path || '?'}"
-                   when "cron"    then "schedule=#{i.schedule.inspect}"
+                   when "webhook" then "#{i.type_fields['method'] || '?'} #{i.type_fields['path'] || '?'}"
+                   when "cron"    then "schedule=#{i.type_fields['schedule'].inspect}"
                    else                "-"
                    end
           out.puts "%-30s %-10s %-8s %s" % [i.name, i.type, state, detail]
@@ -495,14 +495,14 @@ module Prouterd
         out.puts "  state:    #{i.shutdown ? 'shutdown' : 'no shutdown'}"
         case i.type
         when "webhook"
-          out.puts "  path:     #{i.path || '(unset)'}"
-          out.puts "  method:   #{i.method || '(unset)'}"
-          if i.auth
-            out.puts "  auth:     #{i.auth.scheme} secret=#{i.auth.secret_name}"
+          out.puts "  path:     #{i.type_fields['path'] || '(unset)'}"
+          out.puts "  method:   #{i.type_fields['method'] || '(unset)'}"
+          if (auth = i.type_fields['auth'])
+            out.puts "  auth:     #{auth.scheme} secret=#{auth.secret_name}"
           end
         when "cron"
-          out.puts "  schedule: #{i.schedule || '(unset)'}"
-          out.puts "  timezone: #{i.timezone || '(unset)'}"
+          out.puts "  schedule: #{i.type_fields['schedule'] || '(unset)'}"
+          out.puts "  timezone: #{i.type_fields['timezone'] || '(unset)'}"
         end
       end
 

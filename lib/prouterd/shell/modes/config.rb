@@ -18,7 +18,6 @@ module Prouterd
 
         IDENT_RE = Prouterd::Config::Parser::IDENT_RE
         ENV_NAME_RE = Prouterd::Config::Parser::ENV_NAME_RE
-        INTERFACE_TYPES = Prouterd::Config::AST::Interface::TYPES
 
         def prompt_suffix
           PROMPT_SUFFIX
@@ -102,8 +101,9 @@ module Prouterd
           expect_arg_count(tokens, 3, "interface <type> <name>")
           type = tokens[1].value
           name = tokens[2].value
-          unless INTERFACE_TYPES.include?(type)
-            raise CommandError, "invalid interface type '#{type}' (allowed: #{INTERFACE_TYPES.join(', ')})"
+          unless Prouterd::Iface::Registry.lookup(type)
+            raise CommandError,
+                  "invalid interface type '#{type}' (allowed: #{Prouterd::Iface::Registry.types.join(', ')})"
           end
           check_identifier(name, "interface name")
           existing = session.candidate_config.interfaces.find { |i| i.name == name }

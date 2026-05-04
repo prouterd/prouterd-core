@@ -306,25 +306,7 @@ spec; wait for a real driver:
 - **Cron catch-up after daemon outage.** `@last_fired` is in-memory.
   Misses during downtime are silently dropped — by spec §31, "not MVP".
 - **Web UI, distributed multi-daemon workers, advanced expression
-  language.** Spec §3 ("non-goals") and §31 explicitly out of scope.
+  language.** Out of scope per spec §3 (non-goals) and §31.
 
-## What the spec says vs what's built
-
-Spec §28 lists the acceptance criteria. All five categories pass.
-Spec §29 lists 8 phases — all 8 are committed in git history (one
-commit per phase). Spec §31 lists the "narrowest MVP" — every item
-on that list is implemented.
-
-The codebase has gone beyond the original spec in three ways:
-
-- **Phases 9-11**: cancel + diff + cron, then full /v1 HTTP API +
-  /metrics + graceful shutdown + cleanup, then SQLite-backed job queue
-  with crash-survivable in-flight runs.
-- **Phase 12 (separate Block Execution Types spec)**: removes Docker
-  centrism. Each block declares `type docker` or `type shell` in a
-  sub-section; `ShellRunner` runs blocks as host processes via Open3.
-  Same `/prouter/*` contract for both. Mixed pipelines work.
-
-The spec also lists "non-goals" (non-goals) — visual editor, full Temporal
-replacement, low-code canvas, distributed workers. Those are still
-non-goals.
+For the full version-by-version history of what was built when, see
+[CHANGELOG.md](CHANGELOG.md).

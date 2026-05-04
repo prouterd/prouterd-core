@@ -489,49 +489,18 @@ end-to-end.
 
 ## Status
 
-Implemented (all of the spec's §28 acceptance criteria):
+Production-ready core: config language, persistent commit history,
+runtime, retries, replay, webhooks, cron, /v1 HTTP API, /metrics,
+graceful shutdown, plugin-driven runners, output contracts, typed
+artifacts. See [CHANGELOG.md](CHANGELOG.md) for the full per-version
+breakdown.
 
-- ✅ Config language: lexer/parser/AST/validator/canonical renderer
-- ✅ router-style shell with running/candidate/startup configs
-- ✅ Persistent commit history, rollback, `write memory`, audit trail
-- ✅ Docker block execution, run/step/log/artifact persistence
-- ✅ Match conditions, parallel branching, sequential queue
-- ✅ Retry policies (fixed/exp/linear backoff), on-failure stop/continue
-- ✅ Replay run + replay from block (context-seeded)
-- ✅ Soft + hard cancel (kills in-flight container via in-flight registry)
-- ✅ `diff <file> running-config`
-- ✅ Webhooks (HTTP daemon, bearer auth, async dispatch, method enforcement)
-- ✅ Cron scheduler (fugit, timezone-aware)
-- ✅ Crash recovery sweep at daemon start
-- ✅ Secret redaction in logs/errors
-- ✅ /v1 HTTP API for runs/configs/processes/traces (admin bearer auth)
-- ✅ /metrics Prometheus endpoint (counters + gauges)
-- ✅ Graceful shutdown: 503 + in-flight drain
-- ✅ `cleanup --older-than` retention sweep
-- ✅ Persistent SQLite-backed job queue + worker pool (`--workers N`),
-  daemon crash mid-run is recovered on next boot
-- ✅ Reline (history + line editing) in interactive shell
-- ✅ Per-interface webhook rate limiting (`PROUTERD_WEBHOOK_RATE`)
-- ✅ Block execution types: `type docker` and `type shell` runners
-  dispatched per-block; mixed pipelines work transparently
-- ✅ Pluggable runner types via `Runner::Plugin` — third-party gems can
-  register new `type <foo>` keywords without forking the core
-- ✅ Output contract validation (`contract <name>` with type/range/
-  format/pattern/enum constraints, `on violation fail|retry|warn`)
-- ✅ router-CLI compatibility: prefix abbreviation (`sh run`, `conf t`,
-  `wr m`), `end`, `do <command>`, context-sensitive `?` (`show ?`,
-  `show run ?`), `copy running-config startup-config`, `logout`/
-  `quit` aliases, `show clock`/`logging`/`history`, multi-word
-  `description` (router-style free-text)
-- ✅ Production hardening: structured Logger, request body limits
-  (1 MB / 4 MB for config), HTTPS via Puma SSL, chunked artifact
-  download, capped container log capture, graceful container stop
-  (SIGTERM → SIGKILL with timeout), `RateLimiter` bucket eviction,
-  file-based secrets (`source file /run/secrets/x`), batched
-  `cleanup`, `PROUTERD_ARTIFACTS_ROOT` / `PROUTERD_JOB_LOCK_TIMEOUT` /
-  `PROUTERD_LOG_LEVEL` env knobs
+A web console (object tree, run inspector, embedded CLI, live updates
+over WebSocket) ships as a separate gem, **prouterd-web**, which
+connects to the daemon's `/v1` HTTP + `/v1/events` WS — no shared gem
+or DB.
 
-Deliberately out of v0.1 scope (per spec §31, "workable without these for now"):
+Deliberately out of v0.1 scope (workable without these for now):
 
 - ☐ KubernetesRunner / LambdaRunner / ... (the plugin interface is
   ready — write a plugin file and a Runner class, no core edits)
@@ -541,4 +510,3 @@ Deliberately out of v0.1 scope (per spec §31, "workable without these for now")
 - ☐ RBAC / mTLS / OIDC (basic admin bearer is in; HTTPS is on)
 - ☐ Postgres adapter (`Storage::DB` abstraction ready)
 - ☐ Idempotency keys
-- ☐ Web UI

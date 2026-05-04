@@ -554,10 +554,60 @@ overlay isolation between blocks, parser/renderer roundtrip.
 Worked example: [examples/11_retry_when.prc](examples/11_retry_when.prc).
 Suite at 584 examples, 0 failures.
 
+### Phase 26: `interface postgres` + Jira-debug worked example
+
+A first-class outbound `interface postgres <name>` plugin lands
+alongside docker / shell / http / llm. Per-call `query "..."` plus
+optional `params "..."` (comma-separated, bound to `$1..$N`).
+Statement timeout configurable on the interface, applied as
+`SET LOCAL statement_timeout = …` inside a per-call transaction.
+
+```
+secret PG_DSN
+ source env PG_DSN
+exit
+
+interface postgres warehouse
+ dsn "{{secret.PG_DSN}}"
+ statement-timeout 5000
+exit
+
+block lookup
+ interface postgres warehouse
+ query "SELECT id, status FROM tickets WHERE key = $1"
+ params "{{event.issue.key}}"
+exit
+```
+
+The `pg` gem is required lazily by the caller — installations that
+never use `interface postgres` don't pay the dependency cost. If pg
+is missing at first call, the caller returns a clean
+`error_type: "missing_dependency"` result that retry-when can then
+choose to skip. SQLSTATE `57014` (statement-timeout-cancel) is
+mapped to `error_type: "timeout"` so retry policies that include
+`timeout` in their `retry when ... in` list catch slow queries
+naturally.
+
+13 new specs cover: missing-pg fallback, exec / exec_params dispatch,
+result shape, comma-split params, statement-timeout SET LOCAL,
+error categorisation (sql_error vs timeout via SQLSTATE),
+parser/validator/renderer plugin schema.
+
+The companion **examples/12_jira_debug/** demonstrates the full
+unified-interface story end-to-end: a webhook fires the pipeline,
+`interface http jira` pulls the ticket, `interface postgres
+warehouse` looks up history, `interface llm claude` writes a debug
+brief, and `interface http jira` posts it back as a comment. One
+`policy transient_only` covers retries across all four outbound
+calls. This is the canonical "ticket comes in, Claude debugs it"
+workflow the unification phases were aimed at.
+
+Suite at 597 examples, 0 failures.
+
 ## Status
 
-- 25 phases shipped, one git commit per phase
-- 584 RSpec specs, 0 failures
+- 26 phases shipped, one git commit per phase
+- 597 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - All v0.1 acceptance criteria + production hardening + IPC +
   contracts + router-CLI compatibility + binary split + typed artifacts

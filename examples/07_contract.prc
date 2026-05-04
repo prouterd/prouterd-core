@@ -1,4 +1,4 @@
-! Phase 14 contract example: declare a JSON-output contract in the DSL,
+! Contract example: declare a JSON-output contract in the DSL,
 ! attach it to a block, and let the runtime enforce it.
 !
 ! How it works:

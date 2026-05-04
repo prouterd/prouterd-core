@@ -1,5 +1,4 @@
 ! Smallest pipeline that does anything: one block that echoes hello.
-! Phase 12 canonical form uses `type docker` sub-section.
 !
 !   $ prouter apply examples/01_hello_world.prc --db /tmp/prouterd.db
 !   $ echo '{"name":"world"}' > /tmp/event.json

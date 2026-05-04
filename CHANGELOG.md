@@ -38,7 +38,7 @@
 - MatchEvaluator: 8 operators (`eq`/`neq`/`gt`/`gte`/`lt`/`lte`/`exists`/`in`)
 - Level-by-level parallel execution via threads + per-run mutexes
 - Tracer: static "what would happen" walk with runtime-dependent
-  annotations; TracerRenderer renders spec §16 text format
+  annotations; TracerRenderer renders the canonical text format
 - `prouter trace event <file>`
 - Renderer fix: `command` always quoted (preserves shell metacharacters
   through render→parse roundtrip)
@@ -430,7 +430,7 @@ Worked example in [examples/08_typed_artifacts.prc](examples/08_typed_artifacts.
 - 20 phases shipped, one git commit per phase
 - 550 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
-- All spec §28 acceptance criteria + production hardening + IPC +
+- All v0.1 acceptance criteria + production hardening + IPC +
   contracts + router-CLI compatibility + binary split + typed artifacts
 - End-to-end smoke-tested against real Docker + Puma + cron + shell exec
 - Distributable as a Docker image (`docker build . && docker run`)

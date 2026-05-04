@@ -1,8 +1,8 @@
-! Phase 12 type-shell example: a block that runs a local script via the
+! type-shell example: a block that runs a local script via the
 ! ShellRunner instead of a Docker container. ShellRunner is faster for
 ! dev / iteration and works without docker-api, but the block runs under
 ! the daemon's user with the daemon's filesystem — DON'T use it for
-! untrusted code. Spec §18 explains the trade-offs.
+! untrusted code.
 !
 ! Mixed pipelines (some shell, some docker) work transparently — the
 ! orchestrator dispatches per-block based on `type`.

@@ -355,7 +355,7 @@ route interface leads_in process lead_pipeline
 exit
 ```
 
-### Block execution types (spec §2-§5)
+### Block execution types
 
 Every block declares its runner via a `type` sub-section. Docker is
 NOT a hardcoded dependency of prouterd — it's one of two built-in
@@ -377,9 +377,9 @@ plugins, and pipelines can run without Docker entirely.
 Both runners honor the same `/prouter/{input.json,output.json,artifacts/,inputs/}`
 contract. The orchestrator dispatches per-block, so a single pipeline
 can mix types freely — `type shell` for a fast preprocessor,
-`type docker` for the heavy step that needs CUDA. Pre-Phase-12 inline
-form (`image foo` directly in the block) still parses —
-`execution_type=docker` is auto-inferred.
+`type docker` for the heavy step that needs CUDA. The legacy inline
+form (`image foo` directly in the block, no `type docker` wrapper)
+still parses — `execution_type=docker` is auto-inferred.
 
 #### Choosing between them
 
@@ -411,7 +411,7 @@ defines a fake `printer` plugin in-test and exercises parse → validate
 `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `exists`, `in`. Multiple matches
 within one route AND together. There is no OR — use a separate route.
 
-### Block contract (spec §10)
+### Block contract
 
 The runner mounts a per-step directory at `/prouter` inside the container:
 

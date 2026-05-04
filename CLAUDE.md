@@ -288,25 +288,25 @@ containers and assert on persisted state.
 
 ## What's intentionally NOT here
 
-These came up in design and were declined for v0.1. Don't add them on
-spec; wait for a real driver:
+These came up in design and were declined for v0.1. Don't add them
+speculatively; wait for a real driver:
 
 - **Postgres adapter.** `Storage::DB` is a thin wrapper, but only the
   SQLite implementation exists. SQL itself is portable; transaction
   semantics, `last_insert_row_id`, and `RETURNING` would need adapting.
 - **KubernetesRunner / S3 ArtifactStore.** Runner interface is
-  pluggable (Phase 12); add a new entry in `AST::Block::EXECUTION_TYPES`,
-  parse/validate/render its `type` sub-section, and add the runner class.
-  Nobody has asked yet.
-- **RBAC, mTLS, OIDC.** Spec §23.4 future-version. Webhook bearer auth
-  + admin bearer for `/v1/*` are the only auth mechanisms today.
-- **Idempotency keys** (spec §12.6 future). At-least-once execution
-  semantics are the documented contract; block authors are responsible
-  for idempotency.
+  pluggable; add a new plugin file with the runner's class — no edits
+  to parser/validator/renderer/show.
+- **RBAC, mTLS, OIDC.** Webhook bearer auth + admin bearer for
+  `/v1/*` are the only auth mechanisms today.
+- **Idempotency keys.** At-least-once execution semantics are the
+  documented contract; block authors are responsible for idempotency.
 - **Cron catch-up after daemon outage.** `@last_fired` is in-memory.
-  Misses during downtime are silently dropped — by spec §31, "not MVP".
-- **Web UI, distributed multi-daemon workers, advanced expression
-  language.** Out of scope per spec §3 (non-goals) and §31.
+  Misses during downtime are silently dropped.
+- **Web UI inside this gem, distributed multi-daemon workers,
+  advanced expression language.** A web console exists as a separate
+  gem (`prouterd-web`) talking to the daemon over `/v1` HTTP + WS.
+  The other two are out of scope.
 
 For the full version-by-version history of what was built when, see
 [CHANGELOG.md](CHANGELOG.md).

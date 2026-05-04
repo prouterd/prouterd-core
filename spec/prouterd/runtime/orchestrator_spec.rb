@@ -16,21 +16,24 @@ RSpec.describe Prouterd::Runtime::Orchestrator do
     parse(<<~PRC)
       router demo
       exit
+      interface docker img1
+       image alpine:1
+      exit
+      interface docker img2
+       image alpine:2
+      exit
+      interface docker img3
+       image alpine:3
+      exit
       process p
        block extract
-        image alpine:1
-        input event.body
-        output lead.raw
+        interface docker img1
        exit
        block enrich
-        image alpine:2
-        input lead.raw
-        output lead.enriched
+        interface docker img2
        exit
        block notify
-        image alpine:3
-        input lead.enriched
-        output notify.result
+        interface docker img3
        exit
        route extract enrich
        route enrich notify
@@ -40,11 +43,11 @@ RSpec.describe Prouterd::Runtime::Orchestrator do
 
   it "runs the full DAG when every block returns success" do
     runner.program("extract") do |req|
-      expect(req.input_json["input"]).to eq("hello")
+      expect(req.input_json["context"]["event"]["body"]).to eq("hello")
       Prouterd::Runner::StubRunner.success(output: { "name" => "raw-data" }).call(req)
     end
     runner.program("enrich") do |req|
-      expect(req.input_json["input"]).to eq({ "name" => "raw-data" })
+      expect(req.input_json["context"]["extract"]).to eq({ "name" => "raw-data" })
       Prouterd::Runner::StubRunner.success(output: { "score" => 87 }).call(req)
     end
     runner.program("notify") { |req| Prouterd::Runner::StubRunner.success(output: { "ok" => true }).call(req) }
@@ -61,7 +64,6 @@ RSpec.describe Prouterd::Runtime::Orchestrator do
   it "stops the run on a block failure" do
     runner.program("extract", &Prouterd::Runner::StubRunner.success(output: { "x" => 1 }))
     runner.program("enrich", &Prouterd::Runner::StubRunner.failure(error_type: "non_zero_exit", error_message: "boom"))
-    # notify should not be called.
 
     run = orchestrator.trigger(document, "p", input_event: {})
 
@@ -82,14 +84,16 @@ RSpec.describe Prouterd::Runtime::Orchestrator do
     doc = parse(<<~PRC)
       router demo
       exit
+      interface docker img1
+       image alpine:1
+      exit
       secret CLEARBIT_API_KEY
        source env CLEARBIT_API_KEY
       exit
       process p
        block enrich
-        image x
+        interface docker img1
         secret CLEARBIT_API_KEY
-        output e
        exit
       exit
     PRC
@@ -113,18 +117,18 @@ RSpec.describe Prouterd::Runtime::Orchestrator do
     doc = parse(<<~PRC)
       router demo
       exit
+      interface docker img1
+       image alpine:1
+      exit
       process fan
        block start
-        image x
-        output result
+        interface docker img1
        exit
        block left
-        image x
-        output l
+        interface docker img1
        exit
        block right
-        image x
-        output r
+        interface docker img1
        exit
        route start left
        route start right
@@ -138,14 +142,14 @@ RSpec.describe Prouterd::Runtime::Orchestrator do
     expect(run.status).to eq("success")
   end
 
-  it "writes block output back to context at the configured path" do
+  it "writes block output back to context auto-keyed by block name" do
     runner.program("extract", &Prouterd::Runner::StubRunner.success(output: { "name" => "Acme" }))
     runner.program("enrich") do |req|
-      expect(req.input_json["context"]["lead"]["raw"]).to eq({ "name" => "Acme" })
+      expect(req.input_json["context"]["extract"]).to eq({ "name" => "Acme" })
       Prouterd::Runner::StubRunner.success(output: { "score" => 99 }).call(req)
     end
     runner.program("notify") do |req|
-      expect(req.input_json["context"]["lead"]["enriched"]).to eq({ "score" => 99 })
+      expect(req.input_json["context"]["enrich"]).to eq({ "score" => 99 })
       Prouterd::Runner::StubRunner.success.call(req)
     end
 
@@ -197,11 +201,10 @@ RSpec.describe Prouterd::Runtime::Orchestrator do
       expect(received[:run_updated]).not_to be_empty
       expect(received[:run_updated].last[:run].status).to eq("success")
 
-      expect(received[:step_created].size).to eq(3) # 3 blocks, 1 attempt each
+      expect(received[:step_created].size).to eq(3)
       expect(received[:step_created].first).to include(:step, :run_id, :run_uid)
       expect(received[:step_created].first[:run_uid]).to eq(run.uid)
 
-      # step_updated fires multiple times per step (running -> finished)
       expect(received[:step_updated].size).to be >= 6
       finished = received[:step_updated].select { |p| p[:step].status == "success" }
       expect(finished.size).to eq(3)

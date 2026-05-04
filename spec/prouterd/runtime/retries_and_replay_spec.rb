@@ -9,8 +9,14 @@ RSpec.describe "Phase 6: retries, on-failure, dead-letter, replay" do
 
   after { db.close }
 
+  IFACES = <<~PRC.freeze
+    interface docker img1
+     image alpine:1
+    exit
+  PRC
+
   def parse(prc)
-    Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(prc))
+    Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(IFACES + prc))
   end
 
   describe "retry policies" do
@@ -26,9 +32,8 @@ RSpec.describe "Phase 6: retries, on-failure, dead-letter, replay" do
         exit
         process p
          block flaky
-          image x
+          interface docker img1
           retry policy r3_fixed
-          output result
          exit
         exit
       PRC
@@ -58,7 +63,7 @@ RSpec.describe "Phase 6: retries, on-failure, dead-letter, replay" do
       run = orchestrator.trigger(document, "p", input_event: {})
       expect(run.status).to eq("failed")
       steps = repo.list_steps(run.id)
-      expect(steps.length).to eq(3) # 3 attempts all failed
+      expect(steps.length).to eq(3)
       expect(steps.map(&:status)).to all(eq("failed"))
       expect(run.error_summary).to include("non_zero_exit")
     end
@@ -89,23 +94,16 @@ RSpec.describe "Phase 6: retries, on-failure, dead-letter, replay" do
         exit
         process p
          block start
-          image x
-          output kickoff
+          interface docker img1
          exit
          block flaky
-          image x
-          input kickoff
-          output flaky_out
+          interface docker img1
          exit
          block survivor
-          image x
-          input kickoff
-          output survivor_out
+          interface docker img1
          exit
          block downstream_of_survivor
-          image x
-          input survivor_out
-          output final
+          interface docker img1
          exit
          route start flaky
           on-failure continue
@@ -134,13 +132,10 @@ RSpec.describe "Phase 6: retries, on-failure, dead-letter, replay" do
         exit
         process p
          block a
-          image x
-          output r
+          interface docker img1
          exit
          block b
-          image x
-          input r
-          output rb
+          interface docker img1
          exit
          route a b
         exit
@@ -157,14 +152,20 @@ RSpec.describe "Phase 6: retries, on-failure, dead-letter, replay" do
 
   describe "show dead-letter" do
     it "lists only failed runs" do
-      doc = parse("router x\nexit\nprocess p\n block a\n  image x\n  output r\n exit\nexit\n")
+      doc = parse(<<~PRC)
+        router x
+        exit
+        process p
+         block a
+          interface docker img1
+         exit
+        exit
+      PRC
       store.commit(doc)
 
-      # one success
       runner.default(&Prouterd::Runner::StubRunner.success)
       orchestrator.trigger(doc, "p", input_event: {}, commit_id: store.running_commit.id)
 
-      # one failure
       runner.default(&Prouterd::Runner::StubRunner.failure(error_type: "non_zero_exit", error_message: "boom"))
       orchestrator.trigger(doc, "p", input_event: {}, commit_id: store.running_commit.id)
 
@@ -181,9 +182,7 @@ RSpec.describe "Phase 6: retries, on-failure, dead-letter, replay" do
         exit
         process p
          block a
-          image x
-          input event.payload
-          output r
+          interface docker img1
          exit
         exit
       PRC
@@ -206,21 +205,15 @@ RSpec.describe "Phase 6: retries, on-failure, dead-letter, replay" do
     it "uses the historical commit even after the running config has changed" do
       store.commit(document)
 
-      # Apply a "broken" config that would fail validation if the replayed
-      # run used the running config instead of the pinned commit.
       broken = parse(<<~PRC)
         router demo
         exit
         process p
          block a
-          image x
-          input event.payload
-          output r
+          interface docker img1
          exit
          block extra
-          image x
-          input r
-          output r2
+          interface docker img1
          exit
          route a extra
         exit
@@ -233,7 +226,6 @@ RSpec.describe "Phase 6: retries, on-failure, dead-letter, replay" do
       session = Prouterd::Shell::Session.new(store: store, runner: runner)
       replayed = session.replay(original.uid)
 
-      # Replay used commit 1 (the original), so only block 'a' ran.
       executed = repo.list_steps(replayed.id).map(&:block_name)
       expect(executed).to eq(["a"])
     end

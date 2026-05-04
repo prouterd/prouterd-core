@@ -8,8 +8,14 @@ RSpec.describe "Phase 5 conditional routing in Orchestrator" do
 
   after { db.close }
 
+  IFACES = <<~PRC.freeze
+    interface docker img1
+     image alpine:1
+    exit
+  PRC
+
   def parse(prc)
-    Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(prc))
+    Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(IFACES + prc))
   end
 
   describe "match conditions on outgoing routes" do
@@ -19,25 +25,19 @@ RSpec.describe "Phase 5 conditional routing in Orchestrator" do
         exit
         process p
          block score
-          image x
-          input event.body
-          output lead.scored
+          interface docker img1
          exit
          block notify_sales
-          image x
-          input lead.scored
-          output sales.notified
+          interface docker img1
          exit
          block notify_marketing
-          image x
-          input lead.scored
-          output marketing.notified
+          interface docker img1
          exit
          route score notify_sales
-          match lead.scored.score gt 70
+          match score.score gt 70
          exit
          route score notify_marketing
-          match lead.scored.score lte 70
+          match score.score lte 70
          exit
         exit
       PRC
@@ -70,16 +70,13 @@ RSpec.describe "Phase 5 conditional routing in Orchestrator" do
         exit
         process p
          block start
-          image x
-          output result
+          interface docker img1
          exit
          block left
-          image x
-          output l
+          interface docker img1
          exit
          block right
-          image x
-          output r
+          interface docker img1
          exit
          route start left
           match event.flag eq "go"
@@ -115,16 +112,13 @@ RSpec.describe "Phase 5 conditional routing in Orchestrator" do
         exit
         process fan
          block start
-          image x
-          output result
+          interface docker img1
          exit
          block left
-          image x
-          output l
+          interface docker img1
          exit
          block right
-          image x
-          output r
+          interface docker img1
          exit
          route start left
          route start right
@@ -149,7 +143,6 @@ RSpec.describe "Phase 5 conditional routing in Orchestrator" do
 
       run = orchestrator.trigger(doc, "fan", input_event: {})
       expect(run.status).to eq("success")
-      # If parallel, both starts come before both ends.
       starts = timeline.each_with_index.select { |s, _| s.to_s.end_with?("start") }.map(&:last)
       ends   = timeline.each_with_index.select { |s, _| s.to_s.end_with?("end") }.map(&:last)
       expect(starts.max).to be < ends.min

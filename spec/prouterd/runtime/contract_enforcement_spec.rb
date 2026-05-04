@@ -16,16 +16,16 @@ RSpec.describe "Phase 13 contract enforcement in Orchestrator" do
     parse(<<~PRC)
       router x
       exit
+      interface docker img1
+       image alpine:1
+      exit
       contract scored
        require score type integer min 70 max 100
        on violation #{on_violation}
       exit
       process p
        block scorer
-        type docker
-         image x
-        exit
-        output result
+        interface docker img1
         contract scored
        exit
       exit
@@ -37,15 +37,15 @@ RSpec.describe "Phase 13 contract enforcement in Orchestrator" do
       doc = parse(<<~PRC)
         router x
         exit
+        interface docker img1
+         image alpine:1
+        exit
         contract scored
          require score type integer min 70
         exit
         process p
          block scorer
-          type docker
-           image x
-          exit
-          output result
+          interface docker img1
           contract scored
          exit
         exit
@@ -62,15 +62,15 @@ RSpec.describe "Phase 13 contract enforcement in Orchestrator" do
       doc = parse(<<~PRC)
         router x
         exit
+        interface docker img1
+         image alpine:1
+        exit
         contract scored
          require score type integer min 70
         exit
         process p
          block scorer
-          type docker
-           image x
-          exit
-          output result
+          interface docker img1
           contract scored
          exit
         exit
@@ -87,6 +87,9 @@ RSpec.describe "Phase 13 contract enforcement in Orchestrator" do
       doc = parse(<<~PRC)
         router x
         exit
+        interface docker img1
+         image alpine:1
+        exit
         policy r3
          retry attempts 3
          retry backoff fixed
@@ -98,10 +101,7 @@ RSpec.describe "Phase 13 contract enforcement in Orchestrator" do
         exit
         process p
          block scorer
-          type docker
-           image x
-          exit
-          output result
+          interface docker img1
           retry r3
           contract scored
          exit
@@ -148,12 +148,12 @@ RSpec.describe "Phase 13 contract enforcement in Orchestrator" do
       doc = parse(<<~PRC)
         router x
         exit
+        interface docker img1
+         image alpine:1
+        exit
         process p
          block b
-          type docker
-           image x
-          exit
-          output r
+          interface docker img1
          exit
         exit
       PRC

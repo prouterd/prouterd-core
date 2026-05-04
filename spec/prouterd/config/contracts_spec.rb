@@ -107,13 +107,12 @@ RSpec.describe "Phase 13 contracts DSL" do
       _, r = validate(<<~PRC)
         router x
         exit
+        interface docker img1
+         image alpine:1
+        exit
         process p
          block b
-          type docker
-           image x
-          exit
-          input e
-          output o
+          interface docker img1
           contract ghost
          exit
         exit
@@ -125,16 +124,15 @@ RSpec.describe "Phase 13 contracts DSL" do
       _, r = validate(<<~PRC)
         router x
         exit
+        interface docker img1
+         image alpine:1
+        exit
         contract good
          require x type integer
         exit
         process p
          block b
-          type docker
-           image x
-          exit
-          input e
-          output o
+          interface docker img1
           contract good
          exit
         exit

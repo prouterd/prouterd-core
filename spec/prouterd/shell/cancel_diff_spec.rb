@@ -28,7 +28,7 @@ RSpec.describe "Phase 9 cancel + diff" do
 
   describe "cancel run" do
     it "marks a non-terminal run as canceled" do
-      doc = parse("router x\nexit\nprocess p\n block a\n  image x\n  output r\n exit\nexit\n")
+      doc = parse("router x\nexit\ninterface docker img1\n image x\nexit\nprocess p\n block a\n  interface docker img1\n exit\nexit\n")
       store.commit(doc)
 
       repo = Prouterd::Storage::Repositories::Runs.new(db)
@@ -50,7 +50,7 @@ RSpec.describe "Phase 9 cancel + diff" do
     end
 
     it "refuses to cancel a finished run" do
-      doc = parse("router x\nexit\nprocess p\n block a\n  image x\n  output r\n exit\nexit\n")
+      doc = parse("router x\nexit\ninterface docker img1\n image x\nexit\nprocess p\n block a\n  interface docker img1\n exit\nexit\n")
       store.commit(doc)
       repo = Prouterd::Storage::Repositories::Runs.new(db)
       run = repo.create_run(process_name: "p", input_event: {})
@@ -71,15 +71,15 @@ RSpec.describe "Phase 9 cancel + diff" do
       doc = parse(<<~PRC)
         router x
         exit
+        interface docker img1
+         image x
+        exit
         process p
          block a
-          image x
-          output r1
+          interface docker img1
          exit
          block b
-          image x
-          input r1
-          output r2
+          interface docker img1
          exit
          route a b
         exit

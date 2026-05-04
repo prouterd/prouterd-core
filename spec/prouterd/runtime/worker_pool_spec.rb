@@ -18,10 +18,12 @@ RSpec.describe Prouterd::Runtime::WorkerPool do
     parse(<<~PRC)
       router demo
       exit
+      interface docker img1
+       image x
+      exit
       process pipeline
        block extract
-        image x
-        output result
+        interface docker img1
        exit
       exit
     PRC
@@ -87,15 +89,15 @@ RSpec.describe Prouterd::Runtime::WorkerPool do
     doc2 = parse(<<~PRC)
       router demo
       exit
+      interface docker img1
+       image x
+      exit
       process p
        block a
-        image x
-        output r1
+        interface docker img1
        exit
        block b
-        image x
-        input r1
-        output r2
+        interface docker img1
        exit
        route a b
       exit

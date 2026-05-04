@@ -8,14 +8,14 @@ RSpec.describe "Phase 5 conditional routing in Orchestrator" do
 
   after { db.close }
 
-  IFACES = <<~PRC.freeze
+  CONDITIONAL_IFACES = <<~PRC.freeze
     interface docker img1
      image alpine:1
     exit
   PRC
 
   def parse(prc)
-    Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(IFACES + prc))
+    Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(CONDITIONAL_IFACES + prc))
   end
 
   describe "match conditions on outgoing routes" do

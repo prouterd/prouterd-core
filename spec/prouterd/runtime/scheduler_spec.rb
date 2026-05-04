@@ -26,11 +26,13 @@ RSpec.describe Prouterd::Runtime::Scheduler do
        schedule "* * * * *"
        no shutdown
       exit
+      interface docker img1
+       image x
+      exit
       process report
        queue default
        block produce
-        image x
-        output result
+        interface docker img1
        exit
       exit
       route interface daily_report process report
@@ -67,10 +69,12 @@ RSpec.describe Prouterd::Runtime::Scheduler do
        schedule "* * * * *"
        shutdown
       exit
+      interface docker img1
+       image x
+      exit
       process p
        block a
-        image x
-        output r
+        interface docker img1
        exit
       exit
       route interface noisy process p
@@ -93,10 +97,12 @@ RSpec.describe Prouterd::Runtime::Scheduler do
        schedule "* * * * *"
        no shutdown
       exit
+      interface docker img1
+       image x
+      exit
       process q
        block a
-        image x
-        output r
+        interface docker img1
        exit
       exit
     PRC
@@ -132,10 +138,12 @@ RSpec.describe Prouterd::Runtime::Scheduler do
        schedule "not a cron"
        no shutdown
       exit
+      interface docker img1
+       image x
+      exit
       process q
        block a
-        image x
-        output r
+        interface docker img1
        exit
       exit
       route interface bad process q

@@ -47,17 +47,27 @@ because they override `apply_field` to delegate to the parser's
 the corresponding mode for auto-completion or special UX, but the
 default fall-through works.
 
-For block fields, decide whether the field is **type-specific** (only
-applies to one runner type) or **common**:
+For block fields, decide whether the field is a **call-field**
+(per-block argument to the outbound interface — `command` for docker,
+`body` for http, etc.) or a **common block field**:
 
-- **Type-specific** (image/command/pull/... for docker; exec/cwd/... for
-  shell): declared on the runner's plugin class via `field :foo, kind: :...`.
-  See "Adding a new runner type" below — adding a type-specific field is
-  one line in one plugin file, no edits to parser/renderer/validator.
-- **Common** (input, output, produces, timeout, retry, contract, secret,
-  enable/disable): handled in `parse_block_field` and rendered between the
-  type sub-section and the closing `exit` of the block. The 5-step
-  recipe above applies for these.
+- **Call-field** (per-call args templated at runtime): declared on the
+  iface plugin class via `call_field :foo, kind: :...`. Each iface
+  plugin owns two field schemas: `field` for the interface-config body
+  (image, base url, …) and `call_field` for the block body (command,
+  query string, …). One line in one plugin file, no edits to
+  parser/renderer/validator.
+- **Common block field** (produces, timeout, retry, contract, secret,
+  enable/disable): handled in `parse_block_field` and rendered after
+  the `interface <type> <name>` line. The 5-step recipe above applies
+  for these.
+
+Note: blocks no longer have an `input` or `output` directive. Inputs
+flow through `{{path}}` templating (Util::Templater) inside call-field
+values, and outputs are auto-stored at `context[block.name]`. There is
+no `block.execution_type` / `block.image` / `block.command` accessor
+either — the block carries an `interface_ref` plus a `type_fields`
+hash whose schema is owned by the referenced iface plugin.
 
 ## Adding a new shell command
 
@@ -101,12 +111,14 @@ runs only the pending ones on `DB.open`.
   `Shell::CommandError` for user-visible CLI errors, `Storage::StorageError`
   for persistence, `Runtime::TriggerError` for orchestration. Never
   raise `RuntimeError` directly.
-- **Runner dispatch is plugin-driven.** The set of legal `type <name>`
-  keywords inside a block is whatever's currently registered in
-  `Runner::Registry`. Parser, validator, renderer, `show`, tracer, and
-  CLI all iterate over the registry and the plugin's declared field
-  schema — they hardcode no type names. See "Adding a new runner type"
-  below.
+- **Iface dispatch is plugin-driven.** The set of legal `interface
+  <type> <name>` types is whatever's currently registered in
+  `Iface::Registry`. Plugins declare `direction :inbound` (webhook,
+  cron, manual) or `:outbound` (docker, shell, http). Blocks may only
+  reference outbound interfaces; global routes wire inbound interfaces
+  to processes. Parser, validator, renderer, `show`, tracer, CallRunner,
+  and CLI all iterate over the registry and the plugin's declared
+  `field` / `call_field` schemas — they hardcode no type names.
 - **Logging is structured.** Build one `Prouterd::Logger` in `cmd_serve`
   and thread it through all components via `logger:` kwarg. Format is
   `<ts> <LEVEL> prouterd: <message> k=v k=v…` — single-line, grep-able,
@@ -119,34 +131,39 @@ runs only the pending ones on `DB.open`.
   ENV is for *deployment*. Document the new var in README's "Production
   env vars" table.
 
-## Adding a new runner type
+## Adding a new interface type
 
-A runner type is one plugin file + one Runner class. **Nothing else in the
-codebase needs to change** — parser/validator/renderer/show/tracer/CLI all
-discover the new type through `Runner::Registry`.
+An iface type is one plugin file (+ a caller class for outbound types).
+**Nothing else in the codebase needs to change** — parser, validator,
+renderer, show, tracer, CallRunner, and CLI all discover the new type
+through `Iface::Registry`.
 
-### 1. Write the runner
+### Inbound vs outbound
 
-Implement `#run(RunRequest) -> ExecutionResult`. Read your inputs from
-`request.field("foo")` (a thin wrapper over `request.type_fields["foo"]`).
-The `/prouter/{input.json,output.json,artifacts/,inputs/}` contract is
-the invariant — your runner decides where those paths physically live
-(host fs for shell, container mount for docker, CRD for k8s, etc.);
-block authors write the same code regardless.
+- **Inbound** (webhook, cron, manual): triggers runs. The plugin
+  declares `direction :inbound` and `field :foo, ...` for the
+  interface body. The plugin needs no caller — inbound interfaces are
+  driven by the daemon (Scheduler / webhook handler / `trigger`
+  command). They have no `call_field` schema.
+- **Outbound** (docker, shell, http): blocks reference these via
+  `interface <type> <name>` and supply per-call args
+  (`command`, `query`, `body`, ...). The plugin declares
+  `direction :outbound`, both `field` (interface-config schema) and
+  `call_field` (per-block-call schema), and `caller "ClassName"`.
 
-If `request.staged_inputs` is non-empty, copy each `<src_path>` to
-`/prouter/inputs/<local_name>` so the orchestrator's
-`PROUTER_INPUT_<NAME>` env vars resolve. See `DockerRunner#stage_inputs`
-and `ShellRunner#stage_inputs` for reference.
+### 1. Write the caller (outbound only)
+
+Implement `#call(request) -> ExecutionResult`. Read interface-config
+fields and call-fields from `request.type_fields["foo"]` (CallRunner
+templates `{{path}}` substitutions before dispatch). Output JSON,
+artifacts, exit code → `ExecutionResult`.
 
 ```ruby
-# lib/prouterd/runner/lambda_runner.rb
-module Prouterd::Runner
-  class LambdaRunner
-    def initialize(in_flight: nil); @in_flight = in_flight; end
-
-    def run(request)
-      arn = request.field("arn")
+# lib/prouterd/iface/lambda_caller.rb
+module Prouterd::Iface
+  class LambdaCaller
+    def call(request)
+      arn = request.type_fields["arn"]
       payload = request.input_json
       # ... invoke AWS Lambda, capture result, build ExecutionResult ...
     end
@@ -156,26 +173,28 @@ end
 
 ### 2. Write the plugin
 
-Subclass `Runner::Plugin`, declare the `type` keyword, list the fields,
-point at the runner class. One file, no boilerplate elsewhere.
+Subclass `Iface::Plugin`, declare type + direction, list the fields,
+point at the caller class. One file, no boilerplate elsewhere.
 
 ```ruby
-# lib/prouterd/runner/plugins/lambda.rb
+# lib/prouterd/iface/plugins/lambda.rb
 require_relative "../plugin"
 require_relative "../registry"
 
-module Prouterd::Runner::Plugins
-  class Lambda < Prouterd::Runner::Plugin
+module Prouterd::Iface::Plugins
+  class Lambda < Prouterd::Iface::Plugin
     type "lambda"
+    direction :outbound
 
     field :arn,    kind: :string, required: true, description: "Lambda function ARN"
     field :region, kind: :string, default: "us-east-1"
-    field :sync,   kind: :enum, enum: %w[on off], default: "on"
 
-    runner "Prouterd::Runner::LambdaRunner"
+    call_field :payload, kind: :string
+
+    caller "Prouterd::Iface::LambdaCaller"
   end
 
-  Prouterd::Runner::Registry.register!(Lambda)
+  Prouterd::Iface::Registry.register!(Lambda)
 end
 ```
 
@@ -185,21 +204,21 @@ Field kinds:
 - `:enum` — must match `enum:` list
 - `:command` — joins all remaining tokens, always quoted in canonical render
 - `:env_pair` — `KEY value` accumulating into a Hash<String,String>
+- `:path`, `:http_method`, `:auth_bearer` — used by webhook/http plugins
 
-Pass `runner` as a class OR a String class name. Strings are resolved
-lazily — useful when the runner pulls in a heavy dependency (e.g.
-`docker-api`) that you only want loaded when the runner is actually used.
+Pass `caller` as a class OR a String class name. Strings are resolved
+lazily — useful when the caller pulls in a heavy dependency (e.g.
+`docker-api`) that you only want loaded when the iface is actually used.
 
 ### 3. Make Prouterd load it
 
-Built-in plugins are required from `lib/prouterd/runner.rb`. Third-party
+Built-in plugins are required from `lib/prouterd/iface.rb`. Third-party
 plugins (in a separate gem) just `require` their plugin file at boot;
 the `Registry.register!` call at the bottom of the file does the rest.
 
 That's it. `prouter check`, `prouter render`, `prouter shell`, `prouter
-trigger`, and the daemon all immediately understand `type lambda`. The
-test in `spec/prouterd/runner/plugin_spec.rb` exercises the full chain on
-a fake `printer` plugin and is the worked reference.
+trigger`, and the daemon all immediately understand `interface lambda
+<name>`.
 
 ## Gotchas (real bugs caught the hard way)
 
@@ -228,15 +247,17 @@ non-success paths only — caught at smoke time.
 
 ### Shell `command "..."` quoting
 
-Block command strings in `.prc` go through:
+Block call-field command strings in `.prc` go through:
 
 1. Lexer (`\"` → `"`, `\\` → `\`)
-2. Stored verbatim in `block.command`
+2. Stored verbatim in `block.type_fields["command"]`
 3. **Renderer must quote them** — otherwise apply→reload loses spaces
-   and quotes. Currently fixed: `quote_string(block.command)` in
-   [`renderer.rb`](lib/prouterd/config/renderer.rb).
-4. Runner uses `Shellwords.split` to break into argv for Docker.
-5. Inside the container, `sh -c` re-parses.
+   and quotes. The renderer iterates the iface plugin's `call_fields`
+   and applies `quote_string` to `:command`-kind values.
+4. CallRunner runs the value through `Util::Templater` for `{{...}}`
+   substitution, then hands the templated string to the caller.
+5. The caller (DockerCaller / ShellCaller) uses `Shellwords.split` to
+   break into argv. Inside the container/process, `sh -c` re-parses.
 
 Net effect: to write `{"score":85}` to output.json from a shell-quoted
 command, you need TWO levels of escaping in the DSL string:
@@ -294,8 +315,8 @@ speculatively; wait for a real driver:
 - **Postgres adapter.** `Storage::DB` is a thin wrapper, but only the
   SQLite implementation exists. SQL itself is portable; transaction
   semantics, `last_insert_row_id`, and `RETURNING` would need adapting.
-- **KubernetesRunner / S3 ArtifactStore.** Runner interface is
-  pluggable; add a new plugin file with the runner's class — no edits
+- **KubernetesCaller / S3 ArtifactStore.** Iface plugin system is
+  pluggable; add a new plugin file with the caller class — no edits
   to parser/validator/renderer/show.
 - **RBAC, mTLS, OIDC.** Webhook bearer auth + admin bearer for
   `/v1/*` are the only auth mechanisms today.

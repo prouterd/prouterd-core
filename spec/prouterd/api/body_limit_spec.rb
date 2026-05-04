@@ -28,9 +28,12 @@ RSpec.describe "Prouterd::API::App body-size enforcement" do
     store.commit(parse(<<~PRC))
       router demo
       exit
+      interface docker img1
+       image x
+      exit
       process p
        block a
-        image x
+        interface docker img1
        exit
       exit
     PRC

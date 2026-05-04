@@ -30,27 +30,20 @@ RSpec.describe Prouterd::Shell::Completer do
       interface manual cli
        no shutdown
       exit
+      interface docker img1
+       image alpine
+      exit
       process lead_pipeline
        block extract
-        type docker
-         image alpine
-        exit
-        output r
+        interface docker img1
        exit
        block enrich
-        type docker
-         image alpine
-        exit
-        input r
-        output e
+        interface docker img1
        exit
       exit
       process billing
        block compute
-        type docker
-         image alpine
-        exit
-        output c
+        interface docker img1
        exit
       exit
     PRC

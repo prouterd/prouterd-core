@@ -72,7 +72,7 @@ RSpec.describe Prouterd::Shell::Shell do
     it "shows process detail" do
       _, out, _ = drive("enable\nshow process lead_pipeline\nexit\n", session: loaded_session)
       expect(out).to include("blocks (4)")
-      expect(out).to include("extract  docker image=registry.local/blocks/extract-lead:v1")
+      expect(out).to include("extract  docker extractor")
     end
 
     it "shows interface detail" do
@@ -133,10 +133,12 @@ RSpec.describe Prouterd::Shell::Shell do
         configure terminal
         router r
         exit
+        interface docker img1
+        image alpine:latest
+        exit
         process p
         block a
-        image alpine:latest
-        output result
+        interface docker img1
         commit
         show processes
         exit
@@ -165,11 +167,13 @@ RSpec.describe Prouterd::Shell::Shell do
         configure terminal
         router r
         exit
+        interface docker img1
+        image alpine
+        exit
         process p
         commit
         block a
-        image alpine
-        output result
+        interface docker img1
         commit
         exit
       SCRIPT

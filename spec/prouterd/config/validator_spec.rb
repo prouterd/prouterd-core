@@ -1,7 +1,7 @@
 require "spec_helper"
 
 RSpec.describe Prouterd::Config::Validator do
-  IFACES = <<~PRC.freeze
+  VALIDATOR_IFACES = <<~PRC.freeze
     interface docker img1
      image alpine:1
     exit
@@ -20,7 +20,7 @@ RSpec.describe Prouterd::Config::Validator do
   end
 
   def validate_with_ifaces(src)
-    validate(IFACES + src)
+    validate(VALIDATOR_IFACES + src)
   end
 
   it "accepts the canonical sales_ops fixture" do

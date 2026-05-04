@@ -35,12 +35,13 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
       interface manual cli
        no shutdown
       exit
+      interface docker img1
+       image alpine:1
+      exit
       process pipeline
        queue default
        block extract
-        image x
-        input event.body
-        output result
+        interface docker img1
        exit
       exit
       route interface cli process pipeline
@@ -126,11 +127,13 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
         interface manual cli
          no shutdown
         exit
+        interface docker img1
+         image alpine:1
+        exit
         process p2
          queue default
          block a
-          image x
-          output r
+          interface docker img1
          exit
         exit
         route interface cli process p2
@@ -271,8 +274,9 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
       get "/v1/interfaces"
       expect(last_response.status).to eq(200)
       data = JSON.parse(last_response.body)["data"]
-      expect(data.length).to eq(1)
-      expect(data.first).to include("name" => "cli", "type" => "manual")
+      expect(data.length).to eq(2)
+      expect(data.map { |d| d.values_at("name", "type") })
+        .to contain_exactly(["cli", "manual"], ["img1", "docker"])
     end
   end
 
@@ -308,12 +312,14 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
          concurrency 1
          timeout 1m
         exit
+        interface docker img1
+         image alpine:1
+        exit
         process p
          queue default
          block enrich
-          image x
+          interface docker img1
           secret CLEARBIT_API_KEY
-          output r
          exit
         exit
       PRC
@@ -530,10 +536,12 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
          auth bearer secret WEBHOOK_TOKEN
          no shutdown
         exit
+        interface docker img1
+         image alpine:1
+        exit
         process p
          block a
-          image x
-          output r
+          interface docker img1
          exit
         exit
         route interface leads_in process p

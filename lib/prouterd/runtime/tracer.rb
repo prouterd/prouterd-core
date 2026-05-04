@@ -170,7 +170,7 @@ module Prouterd
       end
 
       def collect_runtime_paths(process)
-        process.blocks.map(&:output).compact
+        process.blocks.map(&:name)
       end
 
       def depends_on_runtime?(match, runtime_paths)

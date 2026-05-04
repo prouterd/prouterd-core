@@ -7,9 +7,12 @@ line-oriented DSL, operated via an interactive shell.
 ```
 sales-prouter-01# show running-config
 sales-prouter-01# configure terminal
+sales-prouter-01(config)# interface docker enricher
+sales-prouter-01(config-iface)# image registry.local/blocks/enrich:v3
+sales-prouter-01(config-iface)# exit
 sales-prouter-01(config)# process lead_pipeline
 sales-prouter-01(config-process)# block enrich
-sales-prouter-01(config-block)# image registry.local/blocks/enrich:v3
+sales-prouter-01(config-block)# interface docker enricher
 sales-prouter-01(config-block)# timeout 120s
 sales-prouter-01(config-block)# exit
 sales-prouter-01(config-process)# commit
@@ -18,10 +21,11 @@ Commit complete.
 
 It feels like configuring a network router; underneath, it's a real
 scheduler with persistent commit history, conditional routing, retries,
-replay, webhooks, and cron — all behind one CLI. Blocks run as
-host-side shell processes (`type shell`) or as Docker containers
-(`type docker`) — the orchestrator doesn't care which, and pipelines
-can mix.
+replay, webhooks, and cron — all behind one CLI. Outbound interfaces
+(docker, shell, http) call out to the world; inbound interfaces
+(webhook, cron, manual) trigger runs. Blocks reference an outbound
+interface by full name and supply per-call args (`command`, `body`,
+…), templated against runtime context with `{{...}}`.
 
 ## Quick start
 
@@ -48,18 +52,19 @@ curl -s http://127.0.0.1:8080/v1/status
 docker exec <container> bundle exec ruby exe/prouter exec "show running-config"
 ```
 
-The `/var/run/docker.sock` mount is what lets `type docker` blocks
-spawn child containers on the host's Docker daemon. If your pipelines
-are pure `type shell` (host processes), you can drop the socket mount
-and `--runner shell` entirely — prouterd has no hard dependency on
+The `/var/run/docker.sock` mount is what lets `interface docker`
+blocks spawn child containers on the host's Docker daemon. If your
+pipelines are pure `interface shell` (host processes), you can drop
+the socket mount entirely — prouterd has no hard dependency on
 Docker. There's also a `docker-compose.yml` in the repo for a
 persistent setup.
 
 ### Option B — local Ruby
 
 Requires Ruby ≥ 3.2 and `libsqlite3-dev`. A Docker daemon is required
-ONLY if you actually use `type docker` blocks — pipelines built from
-`type shell` blocks (host-side processes) need nothing but Ruby.
+ONLY if you actually use `interface docker` blocks — pipelines built
+from `interface shell` blocks (host-side processes) need nothing but
+Ruby.
 
 ```bash
 git clone <this-repo>
@@ -299,44 +304,49 @@ process lead_pipeline
  queue default
  no shutdown
 
+interface docker extractor
+ image registry.local/blocks/extract:v1
+exit
+
+interface docker scorer
+ image registry.local/blocks/score:v2
+exit
+
+interface docker notifier
+ image registry.local/blocks/notify-sales:v1
+exit
+
+interface shell normalizer
+ cwd ./blocks/normalize
+exit
+
+process lead_pipeline
+ description "Lead enrichment + sales notification"
+ queue default
+ no shutdown
+
  block extract
-  type docker
-   image registry.local/blocks/extract:v1
-  exit
-  input event.body
-  output lead.raw
+  interface docker extractor
   timeout 30s
   enable
  exit
 
  block normalize
-  type shell
-   exec "ruby blocks/normalize/app.rb"
-   cwd ./blocks/normalize
-  exit
-  input lead.raw
-  output lead.normalized
+  interface shell normalizer
+  exec "ruby app.rb"
   timeout 20s
   enable
  exit
 
  block score
-  type docker
-   image registry.local/blocks/score:v2
-  exit
-  input lead.normalized
-  output lead.scored
+  interface docker scorer
   timeout 20s
   retry retry_standard
   enable
  exit
 
  block notify_sales
-  type docker
-   image registry.local/blocks/notify-sales:v1
-  exit
-  input lead.scored
-  output sales.notified
+  interface docker notifier
   timeout 15s
   secret WEBHOOK_TOKEN
   enable
@@ -346,9 +356,10 @@ process lead_pipeline
  route extract normalize
  route normalize score
 
- ! long-form route with match conditions
+ ! long-form route with match conditions, referencing the upstream
+ ! block's output by `<block-name>.<field>`
  route score notify_sales
-  match lead.scored.score gt 70
+  match score.value gt 70
  exit
 exit
 
@@ -357,56 +368,52 @@ route interface leads_in process lead_pipeline
 exit
 ```
 
-### Block execution types
+### Outbound interfaces (built-in)
 
-Every block declares its runner via a `type` sub-section. Docker is
-NOT a hardcoded dependency of prouterd — it's one of two built-in
-plugins, and pipelines can run without Docker entirely.
+Outbound interfaces are how blocks call out to the world. The plugin
+declares a `field` schema for the interface body (image, exec, base
+URL, …) and a `call_field` schema for the per-block-call body
+(command, query, body, …). The block references the interface by full
+name and overrides only what it needs:
 
-- `type shell` — runs the block as a host process via `Open3`. Fields:
-  `exec` (required), `cwd`, `shell`, `env KEY VALUE`. No Docker daemon
-  needed. Lower latency (~80ms startup vs ~200ms for Docker), no image
-  pull / no registry, blocks see the daemon's filesystem (`cwd` scopes
-  them). Best for: bash + curl + jq pipelines, single-host automation,
-  edge / IoT, or anywhere `docker pull` is overkill.
-- `type docker` — runs the block as a Docker container. Fields:
-  `image` (required), `command`, `pull`, `network`, `user`, `memory`,
-  `cpu`. Best for: multi-language pipelines (one block needs Python
-  3.11, another needs Node 20), audit-grade reproducibility (config
-  pins an image digest), strong isolation, or distributing blocks
-  across hosts via a registry.
+- `interface docker <name>` — runs the block as a Docker container.
+  Interface fields: `image` (required), `pull`, `network`, `user`,
+  `memory`, `cpu`. Per-call fields: `command`. Best for: multi-language
+  pipelines, audit-grade reproducibility (config pins an image
+  digest), strong isolation.
+- `interface shell <name>` — runs the block as a host process via
+  `Open3`. Interface fields: `cwd`, `shell`, `env KEY VALUE`. Per-call
+  fields: `exec` (required). No Docker daemon needed. Lower latency,
+  blocks see the daemon's filesystem.
+- `interface http <name>` — POSTs/GETs to a remote endpoint via
+  `Net::HTTP`. Interface fields: `base_url`, `auth bearer secret …`.
+  Per-call fields: `method`, `path`, `body`, `query KEY VALUE`,
+  `header KEY VALUE`. Useful for hitting Jira, GitHub, or any JSON
+  HTTP API as a step.
 
-Both runners honor the same `/prouter/{input.json,output.json,artifacts/,inputs/}`
-contract. The orchestrator dispatches per-block, so a single pipeline
-can mix types freely — `type shell` for a fast preprocessor,
-`type docker` for the heavy step that needs CUDA. The legacy inline
-form (`image foo` directly in the block, no `type docker` wrapper)
-still parses — `execution_type=docker` is auto-inferred.
+All three honor the same `/prouter/{input.json,output.json,artifacts/,inputs/}`
+contract. A single pipeline can mix types freely — `shell` for a fast
+preprocessor, `docker` for the heavy CUDA step, `http` for the
+external Jira call.
 
-#### Choosing between them
+#### Choosing between docker and shell
 
-| Concern                                        | `type shell` | `type docker` |
-|------------------------------------------------|:------------:|:-------------:|
-| Block uses curl / jq / sh / Ruby script        | ✓            | overkill      |
-| Multiple blocks, different language runtimes   | painful      | ✓             |
-| Audit / reproducibility via image digest       | —            | ✓             |
-| Block needs to run untrusted code              | —            | ✓             |
-| Resource limits (memory / CPU caps)            | —            | ✓             |
-| Single-host, no registry, low latency          | ✓            | overhead      |
-| Edge / IoT (no Docker daemon)                  | ✓            | —             |
+| Concern                                        | `shell` | `docker` |
+|------------------------------------------------|:-------:|:--------:|
+| Block uses curl / jq / sh / Ruby script        | ✓       | overkill |
+| Multiple blocks, different language runtimes   | painful | ✓        |
+| Audit / reproducibility via image digest       | —       | ✓        |
+| Block needs to run untrusted code              | —       | ✓        |
+| Resource limits (memory / CPU caps)            | —       | ✓        |
+| Single-host, no registry, low latency          | ✓       | overhead |
+| Edge / IoT (no Docker daemon)                  | ✓       | —        |
 
-For docker-less hosts run `prouterd --runner shell`: every block type
-is routed through `ShellRunner`, and `type docker` blocks fall back to
-running `command` on the host instead of in a container.
-
-**Adding your own runner type** is a single plugin file + a single
-`Runner` class — parser/validator/renderer/show/CLI all discover the
-type via `Runner::Registry`, so the core has zero hardcoded type names.
-See the "Adding a new runner type" section in
-[CLAUDE.md](CLAUDE.md#adding-a-new-runner-type) for the worked recipe.
-The reference test [`spec/prouterd/runner/plugin_spec.rb`](spec/prouterd/runner/plugin_spec.rb)
-defines a fake `printer` plugin in-test and exercises parse → validate
-→ render → orchestrate end-to-end on it.
+**Adding your own interface type** is a single plugin file + a single
+caller class — parser/validator/renderer/show/CLI all discover the
+type via `Iface::Registry`, so the core has zero hardcoded type names.
+See the "Adding a new interface type" section in
+[CLAUDE.md](CLAUDE.md#adding-a-new-interface-type) for the worked
+recipe.
 
 ### Match operators
 
@@ -435,12 +442,20 @@ written.
 
 ### Two ways data flows between blocks
 
-| Use for                                | Declare with                                | Lands at                            |
+| Use for                                | Declare with                                | Reaches the block via               |
 |----------------------------------------|---------------------------------------------|-------------------------------------|
-| JSON event data (fields, numbers, …)   | `output <ctx.path>` / `input <ctx.path>`    | `/prouter/input.json` (`input` key) |
+| JSON values (fields, numbers, …)       | `{{<upstream-block>.<field>}}` in call-args | templated call-fields + `/prouter/input.json` (`context` key) |
 | Files (model.pkl, parquet, CSV, blobs) | `produces <relpath>` / `input from <b>.<r>` | `/prouter/inputs/<derived_name>`    |
 
-Both can coexist on the same block. See [examples/08_typed_artifacts.prc](examples/08_typed_artifacts.prc).
+Each block's `output.json` is auto-stored at `context[block.name]`, so
+downstream blocks can reference it from call-fields with
+`{{<block-name>.<field>}}` (templated by `Util::Templater` right before
+dispatch) or read the full context from `/prouter/input.json`. There's
+no `input` / `output` directive on blocks — outputs are auto-keyed,
+inputs flow via templating.
+
+Both mechanisms can coexist on the same block. See
+[examples/08_typed_artifacts.prc](examples/08_typed_artifacts.prc).
 
 ## Architecture
 
@@ -450,11 +465,15 @@ lib/prouterd/
   shell/          mode stack (>, #, config, config-process, config-block)
   storage/        SQLite + migrations + repositories
   control_plane/  ConfigStore (commit/rollback/write_memory)
-  runner/         Plugin/Registry, DockerRunner, ShellRunner, StubRunner,
-                  plugins/{docker,shell}.rb
+  iface/          Plugin/Registry, plugins/{webhook,cron,manual,
+                  docker,shell,http}.rb, callers (DockerCaller,
+                  ShellCaller, HttpCaller)
+  runner/         CallRunner (dispatches to caller via Iface::Registry),
+                  StubRunner, RunRequest/ExecutionResult value types
   runtime/        Orchestrator, Context, MatchEvaluator, ContractValidator,
                   RetryCalculator, Redactor, Recovery, Tracer, Scheduler,
                   WorkerPool, InFlightRegistry
+  util/           Templater (lightweight {{path}} substitution)
   api/            Rack app + WebhookHandler + Puma launcher
   cli/main.rb     prouter binary
   daemon.rb       prouterd daemon entry point (exe/prouterd)
@@ -504,8 +523,8 @@ or DB.
 
 Deliberately out of v0.1 scope (workable without these for now):
 
-- ☐ KubernetesRunner / LambdaRunner / ... (the plugin interface is
-  ready — write a plugin file and a Runner class, no core edits)
+- ☐ KubernetesCaller / LambdaCaller / ... (the iface plugin interface
+  is ready — write a plugin file and a caller class, no core edits)
 - ☐ S3 / object-store artifacts (`ArtifactStore` interface ready)
 - ☐ Vault / AWS Secrets Manager (write a class with `#resolve(secret)`,
   inject via `secret_resolver:` — env + file are built-in)

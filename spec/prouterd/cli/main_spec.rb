@@ -31,7 +31,7 @@ RSpec.describe Prouterd::CLI::Main do
     expect(out).to include("sales_ops")
   end
 
-  it "exits 1 for invalid config (missing image)" do
+  it "exits 1 for invalid config (missing interface directive)" do
     Tempfile.create(["bad", ".prc"]) do |tmp|
       tmp.write(<<~PRC)
         router x
@@ -45,7 +45,7 @@ RSpec.describe Prouterd::CLI::Main do
       code, out, _err = run("check", tmp.path)
       expect(code).to eq(1)
       expect(out).to include("Config invalid.")
-      expect(out).to include("missing 'type' section")
+      expect(out).to include("missing `interface")
     end
   end
 

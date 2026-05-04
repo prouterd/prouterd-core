@@ -25,14 +25,20 @@ RSpec.describe "Typed artifacts: producer -> consumer" do
     parse(<<~PRC)
       router demo
       exit
+      interface docker trainer
+       image trainer:v1
+      exit
+      interface docker deployer
+       image deploy:v1
+      exit
       process p
        block train
-        image trainer:v1
+        interface docker trainer
         produces model.pkl
         produces metrics.json
        exit
        block deploy
-        image deploy:v1
+        interface docker deployer
         input from train.model.pkl
         input from train.metrics.json
        exit

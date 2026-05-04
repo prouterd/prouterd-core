@@ -400,9 +400,18 @@ module Prouterd
           description: p.description,
           queue: p.queue_name,
           shutdown: p.shutdown,
-          blocks: p.blocks.map { |b| { name: b.name, image: b.image, timeout_ms: b.timeout_ms,
-                                       retry_policy: b.retry_policy_name, input: b.input, output: b.output,
-                                       network: b.network, shutdown: b.shutdown } },
+          blocks: p.blocks.map do |b|
+            ref = b.interface_ref
+            {
+              name: b.name,
+              interface: ref ? { type: ref.type, name: ref.name } : nil,
+              call_fields: b.type_fields,
+              timeout_ms: b.timeout_ms,
+              retry_policy: b.retry_policy_name,
+              contract: b.contract_name,
+              shutdown: b.shutdown
+            }
+          end,
           routes: p.routes.map { |r| { from: r.from_block, to: r.to_block,
                                        on_failure: r.on_failure,
                                        matches: r.matches.map { |m| match_summary(m) } } }

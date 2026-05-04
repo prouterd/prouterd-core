@@ -425,14 +425,58 @@ Suite at 550 examples / 0 failures.
 
 Worked example in [examples/08_typed_artifacts.prc](examples/08_typed_artifacts.prc).
 
+### Phase 23: Unify the block model around outbound interfaces
+
+Phases 12 and 16 split execution into two parallel concepts:
+**inbound interfaces** (webhook / cron / manual) declared at the top
+level, and **runner types** (`type docker { ... }` / `type shell { ... }`)
+nested inside each block. They lived in two different plugin
+registries (`Iface` for inbound, `Runner` for outbound), with two sets
+of plugin classes, two field-schema mechanisms, and two dispatch
+paths. Block bodies grew tangled: a `type docker` sub-section, plus
+an `input <ctx.path>` directive, plus an `output <ctx.path>` directive,
+plus call-args in the type sub-section. Adding `interface http jira`
+would have meant a third pattern.
+
+This phase collapses everything into one concept: **interfaces have
+direction**.
+
+- One registry: `Iface::Registry` with `direction :inbound` (webhook,
+  cron, manual) or `:outbound` (docker, shell, http).
+- One plugin base class: `Iface::Plugin`, declaring `field` (interface
+  body) and `call_field` (per-block-call args, templated at runtime).
+- Outbound plugins point to a caller class via `caller "ClassName"`;
+  CallRunner replaces the old DockerRunner / ShellRunner dispatch.
+- Blocks reference interfaces by full form: `interface <type> <name>`,
+  symmetric with the declaration. The type stays visible at the call
+  site, so both `interface docker enricher` and `interface http jira`
+  are obvious from one line.
+- `block.input` / `block.output` directives are gone. Inputs flow
+  through `{{path}}` templating (`Util::Templater`, lightweight,
+  intentionally not a full expression language) inside call-field
+  values. Outputs are auto-keyed at `context[block.name]`.
+- `Runner::Plugin` registry, the `runner/plugins/` directory, the old
+  per-block `type X { ... } exit` parsing, and the `block.execution_type` /
+  `block.image` / `block.command` accessors all dropped — no
+  legacy compatibility paths.
+
+Migration touched everything: AST, parser, validator, renderer,
+orchestrator, tracer, show formatter, completer, all 9 examples, both
+fixtures, ~330 spec lines. `interface http <name>` lands as a built-in
+caller backed by `Net::HTTP` (no external HTTP gem), so the canonical
+"hit Jira from a block" example is one block, not a custom runner.
+
+Suite at 561 examples, 0 failures.
+
 ## Status
 
-- 20 phases shipped, one git commit per phase
-- 550 RSpec specs, 0 failures
+- 23 phases shipped, one git commit per phase
+- 561 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - All v0.1 acceptance criteria + production hardening + IPC +
   contracts + router-CLI compatibility + binary split + typed artifacts
+  + unified interface model
 - End-to-end smoke-tested against real Docker + Puma + cron + shell exec
 - Distributable as a Docker image (`docker build . && docker run`)
-- Pluggable runners: third-party gems can register a new `type` without
-  forking the core.
+- Pluggable interfaces: third-party gems can register a new
+  inbound/outbound `interface` type without forking the core.

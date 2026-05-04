@@ -13,21 +13,18 @@ RSpec.describe "Phase 8 replay from block" do
     Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(<<~PRC))
       router demo
       exit
+      interface docker img1
+       image x
+      exit
       process p
        block extract
-        image x
-        input event.body
-        output lead.raw
+        interface docker img1
        exit
        block enrich
-        image x
-        input lead.raw
-        output lead.enriched
+        interface docker img1
        exit
        block notify
-        image x
-        input lead.enriched
-        output notify.result
+        interface docker img1
        exit
        route extract enrich
        route enrich notify
@@ -87,8 +84,7 @@ RSpec.describe "Phase 8 replay from block" do
     session = Prouterd::Shell::Session.new(store: store, runner: runner)
     session.replay_from(original.uid, "enrich")
 
-    expect(captured.input_json["input"]).to eq({ "name" => "Acme" })
-    expect(captured.input_json["context"]["lead"]["raw"]).to eq({ "name" => "Acme" })
+    expect(captured.input_json["context"]["extract"]).to eq({ "name" => "Acme" })
   end
 
   it "errors when the block was never reached on the original run" do

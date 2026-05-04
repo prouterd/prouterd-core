@@ -39,11 +39,12 @@ RSpec.describe Prouterd::API::App do
        auth bearer secret WEBHOOK_TOKEN
        no shutdown
       exit
+      interface docker img1
+       image x
+      exit
       process pipeline
        block extract
-        image x
-        input event.body
-        output result
+        interface docker img1
        exit
       exit
       route interface leads_in process pipeline
@@ -63,7 +64,7 @@ RSpec.describe Prouterd::API::App do
       expect(last_response.status).to eq(200)
       body = JSON.parse(last_response.body)
       expect(body["version"]).to eq(Prouterd::VERSION)
-      expect(body["interfaces"]).to eq(1)
+      expect(body["interfaces"]).to eq(2)
       expect(body["processes"]).to eq(1)
       expect(body["running_commit"]).to be_a(Integer)
     end
@@ -137,10 +138,12 @@ RSpec.describe Prouterd::API::App do
          method POST
          shutdown
         exit
+        interface docker img1
+         image x
+        exit
         process p
          block a
-          image x
-          output r
+          interface docker img1
          exit
         exit
         route interface iface process p

@@ -65,18 +65,18 @@ RSpec.describe Prouterd::Runtime::Tracer do
       interface manual cli
        no shutdown
       exit
+      interface docker img1
+       image x
+      exit
       process p
        block a
-        image x
-        output r1
+        interface docker img1
        exit
        block lonely
-        image x
-        output r2
+        interface docker img1
        exit
        block b
-        image x
-        output r3
+        interface docker img1
        exit
        route a b
       exit

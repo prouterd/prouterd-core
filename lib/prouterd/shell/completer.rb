@@ -226,7 +226,7 @@ module Prouterd
         case tokens.length
         when 1 then ["event"]
         when 3 then ["interface"]
-        when 4 then interface_names
+        when 4 then inbound_interface_names
         else []
         end
       end
@@ -347,6 +347,11 @@ module Prouterd
 
       def interface_names
         active_doc.interfaces.map(&:name)
+      end
+
+      def inbound_interface_names
+        inbound = Prouterd::Iface::Registry.inbound_types
+        active_doc.interfaces.select { |i| inbound.include?(i.type) }.map(&:name)
       end
 
       def policy_names

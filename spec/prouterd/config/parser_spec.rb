@@ -8,7 +8,7 @@ RSpec.describe Prouterd::Config::Parser do
   # Many block-side tests need an outbound interface to reference via
   # `interface docker <name>`. Helper prepends a minimal one so test
   # sources can focus on the block body / route shape under test.
-  IFACES = <<~PRC.freeze
+  PARSER_IFACES = <<~PRC.freeze
     interface docker img1
      image alpine:1
     exit
@@ -18,7 +18,7 @@ RSpec.describe Prouterd::Config::Parser do
   PRC
 
   def parse_with_ifaces(src)
-    parse(IFACES + src)
+    parse(PARSER_IFACES + src)
   end
 
   describe "router" do

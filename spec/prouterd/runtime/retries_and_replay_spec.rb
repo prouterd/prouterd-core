@@ -9,14 +9,14 @@ RSpec.describe "Phase 6: retries, on-failure, dead-letter, replay" do
 
   after { db.close }
 
-  IFACES = <<~PRC.freeze
+  RETRIES_IFACES = <<~PRC.freeze
     interface docker img1
      image alpine:1
     exit
   PRC
 
   def parse(prc)
-    Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(IFACES + prc))
+    Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(RETRIES_IFACES + prc))
   end
 
   describe "retry policies" do

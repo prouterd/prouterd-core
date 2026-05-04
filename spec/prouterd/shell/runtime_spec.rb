@@ -34,16 +34,18 @@ RSpec.describe "Phase 4 runtime through the shell" do
     parse(<<~PRC)
       router demo
       exit
+      interface docker img1
+       image alpine:1
+      exit
+      interface docker img2
+       image alpine:2
+      exit
       process pipeline
        block extract
-        image alpine:1
-        input event.body
-        output lead.raw
+        interface docker img1
        exit
        block enrich
-        image alpine:2
-        input lead.raw
-        output lead.enriched
+        interface docker img2
        exit
        route extract enrich
       exit

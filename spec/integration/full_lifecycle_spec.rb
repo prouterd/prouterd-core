@@ -38,17 +38,16 @@ RSpec.describe "Full lifecycle integration" do
         interface manual cli
          no shutdown
         exit
+        interface docker img1
+         image alpine:latest
+        exit
         process pipeline
          queue default
          block extract
-          image alpine:latest
-          input event.body
-          output lead.raw
+          interface docker img1
          exit
          block enrich
-          image alpine:latest
-          input lead.raw
-          output lead.enriched
+          interface docker img1
          exit
          route extract enrich
         exit
@@ -109,12 +108,13 @@ RSpec.describe "Full lifecycle integration" do
           interface manual cli
            no shutdown
           exit
+          interface docker img1
+           image alpine:latest
+          exit
           process pipeline
            queue default
            block extract
-            image alpine:latest
-            input event.body
-            output lead.raw
+            interface docker img1
            exit
           exit
           route interface cli process pipeline
@@ -144,10 +144,12 @@ RSpec.describe "Full lifecycle integration" do
         interface manual cli
          no shutdown
         exit
+        interface docker img1
+         image alpine:latest
+        exit
         process p
          block a
-          image alpine:latest
-          output result
+          interface docker img1
          exit
         exit
         route interface cli process p

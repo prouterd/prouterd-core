@@ -1,7 +1,7 @@
 require "spec_helper"
 
 RSpec.describe Prouterd::Config::Renderer do
-  IFACES = <<~PRC.freeze
+  RENDERER_IFACES = <<~PRC.freeze
     interface docker img1
      image alpine:1
     exit
@@ -15,7 +15,7 @@ RSpec.describe Prouterd::Config::Renderer do
   end
 
   def render_with_ifaces(src)
-    described_class.render(parse(IFACES + src))
+    described_class.render(parse(RENDERER_IFACES + src))
   end
 
   it "renders a router section" do

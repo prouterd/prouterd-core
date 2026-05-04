@@ -7,6 +7,7 @@ require_relative "iface/registry"
 module Prouterd
   module Iface
     autoload :HttpCaller, File.expand_path("iface/http_caller", __dir__)
+    autoload :LlmCaller,  File.expand_path("iface/llm_caller",  __dir__)
   end
 end
 
@@ -16,5 +17,6 @@ require_relative "iface/plugins/webhook"
 require_relative "iface/plugins/cron"
 require_relative "iface/plugins/manual"
 require_relative "iface/plugins/http"
+require_relative "iface/plugins/llm"
 require_relative "iface/plugins/docker"
 require_relative "iface/plugins/shell"

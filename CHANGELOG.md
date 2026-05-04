@@ -468,10 +468,53 @@ caller backed by `Net::HTTP` (no external HTTP gem), so the canonical
 
 Suite at 561 examples, 0 failures.
 
+### Phase 24: `interface llm` — provider-dispatching outbound
+
+A first-class outbound `interface llm <name>` lands as a built-in
+plugin alongside docker / shell / http. One DSL keyword, two providers
+(`anthropic`, `openai`), one Net::HTTP-based caller — no extra gem
+dependency.
+
+```
+secret CLAUDE_KEY
+ source env CLAUDE_KEY
+exit
+
+interface llm claude
+ provider anthropic
+ model claude-haiku-4-5-20251001
+ auth bearer secret CLAUDE_KEY
+exit
+
+process triage
+ block summarize
+  interface llm claude
+  system "You summarize tickets in one sentence."
+  prompt "{{event.body}}"
+  max-tokens 256
+ exit
+exit
+```
+
+The plugin-level `auth bearer secret <NAME>` resolves to the API key,
+which the caller then attaches as the provider's expected header
+(`x-api-key` for Anthropic, `Authorization: Bearer …` for OpenAI). The
+output JSON is provider-shaped on the way out: `{text, model, usage,
+stop_reason, raw}` — downstream blocks reference `{{summarize.text}}`.
+
+Per-call fields (`prompt`, `system`, `max-tokens`, `temperature`) are
+all `:string` so `{{...}}` templating works on every one of them; the
+caller parses int/float at dispatch time.
+
+15 new specs: 8 caller, 7 plugin schema. Suite at 577 examples, 0
+failures.
+
+Worked example in [examples/09_llm.prc](examples/09_llm.prc).
+
 ## Status
 
-- 23 phases shipped, one git commit per phase
-- 561 RSpec specs, 0 failures
+- 24 phases shipped, one git commit per phase
+- 576 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - All v0.1 acceptance criteria + production hardening + IPC +
   contracts + router-CLI compatibility + binary split + typed artifacts

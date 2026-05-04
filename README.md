@@ -29,7 +29,7 @@ can mix.
 
 ```bash
 docker build -t prouterd:latest .
-docker run --rm -p 8080:8080 \
+docker run --rm -p 127.0.0.1:8080:8080 \
   -v prouterd-data:/data \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -e PROUTERD_ADMIN_TOKEN=demo \
@@ -37,7 +37,9 @@ docker run --rm -p 8080:8080 \
 ```
 
 That gets you the HTTP daemon + cron scheduler + worker pool on
-`127.0.0.1:8080`. From another shell:
+`127.0.0.1:8080` of the host (loopback only — for multi-host access
+put a TLS reverse proxy in front and change `127.0.0.1:8080:8080` to
+`8080:8080`). From another shell:
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/status

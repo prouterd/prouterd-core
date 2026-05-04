@@ -17,7 +17,11 @@ services:
     build: .
     image: prouterd:latest
     ports:
-      - "8080:8080"
+      # Bound to loopback so the daemon isn't exposed to the world by
+      # default. For multi-host or LAN access put a TLS-terminating
+      # reverse proxy (nginx, caddy, traefik) in front and change to
+      # "8080:8080".
+      - "127.0.0.1:8080:8080"
     environment:
       PROUTERD_ADMIN_TOKEN: changeme         # required for /v1/* admin routes
       PROUTERD_WEBHOOK_RATE: 60/1            # max 60 req/sec per webhook iface

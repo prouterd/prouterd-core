@@ -18,8 +18,8 @@ module Prouterd
     # Per-interface "last fired at" is held in-memory; on daemon restart we
     # treat the recovery sweep as the boundary and start tracking forward.
     # That means a cron job missed during a daemon outage is genuinely
-    # missed — spec §31 lists "human approval" / sophisticated scheduling
-    # as out-of-MVP-scope, and a simple-skip-during-outage matches that.
+    # missed; sophisticated catch-up logic is intentionally out of scope
+    # for v0.1 and a simple skip-during-outage matches that.
     class Scheduler
       TICK_SECONDS = 1.0
 

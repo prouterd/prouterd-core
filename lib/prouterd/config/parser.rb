@@ -483,7 +483,7 @@ module Prouterd
             raise ParseError.new("duplicate produces '#{relpath}' in block", line: line.number)
           end
           node.produces << relpath
-        # ---- enable/disable: spec §3 shorthand for shutdown semantics.
+        # ---- enable/disable: shorthand for shutdown semantics.
         when "enable"
           expect_token_count(line, 1, "enable")
           node.shutdown = false

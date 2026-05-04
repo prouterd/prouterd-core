@@ -3,8 +3,7 @@ module Prouterd
     # In-process Prometheus-style counter/gauge registry. Renders to text
     # format on `/metrics`. Thread-safe via a single mutex.
     #
-    # Spec §24.2 lists the desired metrics; this is the minimal set that
-    # answers "what's the daemon doing right now":
+    # The minimal set that answers "what's the daemon doing right now":
     #   * runs_total{process,status}            counter
     #   * step_total{block,status}              counter
     #   * webhooks_received_total{iface,code}   counter

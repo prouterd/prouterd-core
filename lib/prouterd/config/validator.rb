@@ -288,10 +288,10 @@ module Prouterd
       end
 
       def check_block_type(process, block)
-        # Spec §7.1/§7.4/§7.5: every block must have an execution_type set.
-        # Old DSL form (e.g. `image` directly in block) auto-infers to
-        # "docker" in the parser; an absent type means the user didn't
-        # declare any runner-typed fields at all.
+        # Every block must have an execution_type set. The legacy DSL
+        # form (e.g. `image` directly in block) auto-infers to "docker"
+        # in the parser; an absent type means the user didn't declare
+        # any runner-typed fields at all.
         unless block.execution_type
           @result.error(
             "block '#{process.name}/#{block.name}' missing 'type' section " \

@@ -3,8 +3,8 @@ module Prouterd
     # Strips secret values from arbitrary text before it lands in run_logs,
     # error_summary, or any other persisted/displayed surface.
     #
-    # Spec §23.1/§23.2: secret VALUES must never appear in show commands or
-    # logs. The orchestrator builds a Redactor per run from the resolved
+    # Secret VALUES must never appear in show commands or logs. The
+    # orchestrator builds a Redactor per run from the resolved
     # values of every secret declared in the document — even secrets the
     # block in question doesn't reference, since a misbehaving block could
     # still leak a peer-block's secret if the env var name matches.

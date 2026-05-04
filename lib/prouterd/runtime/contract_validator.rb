@@ -8,7 +8,7 @@ module Prouterd
     # passes the value through, fails the run, retries, or warns —
     # depending on `on violation <fail|retry|warn>`.
     #
-    # Supported constraints (spec §14):
+    # Supported constraints:
     #   * presence: `require` vs `optional`
     #   * type:     integer / number / string / boolean / array / object
     #   * range:    min / max (numerics)

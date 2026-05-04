@@ -4,7 +4,7 @@ module Prouterd
   module API
     # Handles `POST /i/<interface_name>` requests.
     #
-    # Flow per spec §22.3:
+    # Flow:
     #   1. Resolve the interface from the running config; reject if missing,
     #      not webhook, or shutdown.
     #   2. Authenticate (bearer) if the interface declares `auth`.
@@ -37,7 +37,7 @@ module Prouterd
         return json_error(404, "interface '#{interface_name}' is not a webhook") unless interface.webhook?
         return json_error(503, "interface '#{interface_name}' is shutdown") if interface.shutdown
 
-        # Method enforcement (spec §8.6 webhook interfaces declare `method`).
+        # Method enforcement: webhook interfaces declare a `method`.
         # Default to POST when not declared so existing fixtures keep working.
         expected_method = (interface.method || "POST").to_s.upcase
         actual_method = request.request_method.to_s.upcase

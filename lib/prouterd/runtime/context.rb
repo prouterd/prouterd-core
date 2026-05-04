@@ -1,8 +1,8 @@
 module Prouterd
   module Runtime
-    # Run-scoped data that flows between blocks. Spec §9: each block reads a
-    # slice of the context (block.input is a dotted path), produces output,
-    # and the orchestrator writes the output back to context at block.output.
+    # Run-scoped data that flows between blocks. Each block reads a slice
+    # of the context (block.input is a dotted path), produces output, and
+    # the orchestrator writes the output back to context at block.output.
     #
     # Paths are dot-separated (`event.body`, `lead.scored.score`). All
     # intermediate hops MUST be Hashes for set; for get, missing hops simply

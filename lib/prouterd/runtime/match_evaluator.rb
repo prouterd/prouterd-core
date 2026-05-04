@@ -2,8 +2,8 @@ module Prouterd
   module Runtime
     # Evaluates AST::Match conditions against a runtime Context.
     #
-    # Multiple matches inside a single Route AND together (spec §8.12). The
-    # operator semantics come from spec §8.11. nil-handling rules:
+    # Multiple matches inside a single Route AND together. nil-handling
+    # rules:
     #
     #   exists       — true iff context has a non-nil value at path
     #   eq / neq     — work for any value (including nil)

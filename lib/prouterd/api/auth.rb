@@ -4,9 +4,9 @@ module Prouterd
   module API
     # Bearer-token authentication for webhook interfaces.
     #
-    # Spec §10.5/§23: secret values arrive resolved (typically via
-    # EnvSecretResolver). Comparison uses Rack::Utils.secure_compare so a
-    # timing-channel attacker can't recover the token byte-by-byte.
+    # Secret values arrive resolved (typically via EnvSecretResolver).
+    # Comparison uses Rack::Utils.secure_compare so a timing-channel
+    # attacker can't recover the token byte-by-byte.
     module Auth
       module_function
 

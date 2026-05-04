@@ -7,8 +7,8 @@ module Prouterd
     # external consumers — the web console, monitoring agents, custom
     # dashboards, anything that wants live state without polling.
     #
-    # Wire protocol (subscribe / unsubscribe / event frames) follows the
-    # shape from spec §14. Wire-format topic naming on the WS side:
+    # Wire protocol: subscribe / unsubscribe / event frames. Topic names
+    # on the WS side:
     #
     #   "runs"          every run.created / run.updated, all processes
     #   "run:<uid>"     run + step events for that specific run

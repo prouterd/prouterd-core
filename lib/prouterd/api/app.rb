@@ -6,7 +6,7 @@ module Prouterd
   module API
     # Rack app for the prouterd daemon.
     #
-    # Routes (spec §22):
+    # Routes:
     #
     #   GET  /v1/status                  health + commit pointers      (open)
     #   GET  /metrics                    Prometheus text format        (open)

@@ -580,7 +580,7 @@ module Prouterd
         s = session.active_config.secrets.find { |x| x.name == rest.first }
         raise CommandError, "no such secret '#{rest.first}'" unless s
 
-        # Spec §23.1/§23.2: never display secret VALUES.
+        # Never display secret VALUES.
         out.puts "secret #{s.name}"
         out.puts "  source: #{s.source_type} #{s.source_value}"
       end

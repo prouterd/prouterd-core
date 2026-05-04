@@ -2,8 +2,8 @@ require "json"
 
 module Prouterd
   module API
-    # Handlers for the /v1/* endpoints from spec §22.2. Each method matches
-    # a route from `App#dispatch_v1` and returns a Rack response triple.
+    # Handlers for the /v1/* endpoints. Each method matches a route from
+    # `App#dispatch_v1` and returns a Rack response triple.
     #
     # Endpoints that mutate state (config apply, run replay/cancel, trigger)
     # require the admin bearer when PROUTERD_ADMIN_TOKEN is configured.
@@ -119,8 +119,8 @@ module Prouterd
         json(200, data: document.policies.map { |p| policy_summary(p) })
       end
 
-      # Spec §22.6 / spec §37.1: secret values must never be exposed via the
-      # API. We return the declared name, source type, and source ref (e.g.
+      # Secret values must never be exposed via the API. We return the
+      # declared name, source type, and source ref (e.g.
       # an env var NAME, never its value), plus a "present"/"missing" status
       # for env-backed secrets so operators can verify configuration without
       # the value crossing the wire.

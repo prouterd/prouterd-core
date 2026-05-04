@@ -17,7 +17,7 @@ module Prouterd
     # purely based on block.execution_type, so all downstream code (logs,
     # artifacts, retries, replay, redaction) is identical.
     #
-    # Spec §18: shell blocks are LESS isolated than Docker. The block runs
+    # Shell blocks are LESS isolated than Docker. The block runs
     # under the daemon's user, sees the daemon's filesystem (modulo `cwd`),
     # and shares the daemon's network. Operators are expected to use shell
     # blocks for trusted code on the same host as the daemon — not for

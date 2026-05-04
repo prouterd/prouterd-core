@@ -11,7 +11,7 @@ module Prouterd
     # across commands; if the same session_id reconnects, it resumes the
     # same Session.
     #
-    # Wire protocol (compatible with spec §14):
+    # Wire protocol:
     #
     #   client → server:
     #     { id: "...", type: "command.exec", payload: { command: "..." } }

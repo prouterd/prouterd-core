@@ -127,7 +127,7 @@ module Prouterd
         emit(level + 1, "retry #{block.retry_policy_name}") if block.retry_policy_name
         emit(level + 1, "contract #{block.contract_name}") if block.contract_name
         block.secret_names.each { |name| emit(level + 1, "secret #{name}") }
-        # enable/disable per spec §3 shorthand (block-level only).
+        # enable/disable shorthand for shutdown (block-level only).
         emit(level + 1, block.shutdown ? "disable" : "enable")
         emit(level, "exit")
       end
@@ -193,8 +193,8 @@ module Prouterd
       def render_contract(contract)
         emit(0, "contract #{contract.name}")
         contract.requirements.each do |req|
-          # Emit one line per Requirement, packing all attributes inline.
-          # Spec §14: contracts are read top-to-bottom, grep-friendly.
+          # Emit one line per Requirement, packing all attributes inline
+          # so the canonical form stays grep-friendly.
           keyword = req.required ? "require" : "optional"
           parts = ["#{keyword} #{req.path}"]
           parts << "type #{req.type}" if req.type

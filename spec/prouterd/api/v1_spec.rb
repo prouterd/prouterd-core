@@ -332,7 +332,7 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
       expect(clearbit["used_by"]).to     include("block enrich")
       expect(clearbit["status"]).to      satisfy { |s| %w[present missing].include?(s) }
 
-      # Spec §37.1: no `value` key, ever.
+      # No `value` key, ever — secret values must not cross the wire.
       expect(data).to all(satisfy { |s| !s.key?("value") })
     end
   end

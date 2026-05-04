@@ -1,9 +1,6 @@
 module Prouterd
   module Storage
-    # Run statuses (spec §11.1)
     RUN_STATUSES = %w[queued running success failed canceled waiting].freeze
-
-    # Step statuses (spec §11.2)
     STEP_STATUSES = %w[pending queued running success failed retrying skipped canceled timeout].freeze
 
     Run = Struct.new(

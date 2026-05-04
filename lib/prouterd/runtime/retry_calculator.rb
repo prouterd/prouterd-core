@@ -2,11 +2,11 @@ module Prouterd
   module Runtime
     # Computes inter-attempt delays for retry policies.
     #
-    # `attempts` in spec §13.2 is the TOTAL number of tries — `attempts 3`
-    # means 1 initial + 2 retries. RetryCalculator therefore yields delays
+    # `attempts` is the TOTAL number of tries — `attempts 3` means
+    # 1 initial + 2 retries. RetryCalculator therefore yields delays
     # only between attempts (length = attempts - 1).
     #
-    # Backoff types (spec §13.3):
+    # Backoff types:
     #   fixed       — constant initial_delay each time
     #   exponential — initial * 2^(attempt-1), capped at max_delay
     #   linear      — initial * (attempt-1), capped at max_delay

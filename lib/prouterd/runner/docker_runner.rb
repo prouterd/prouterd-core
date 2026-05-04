@@ -11,7 +11,7 @@ module Prouterd
   module Runner
     # Runs a single block as a Docker container.
     #
-    # Contract honored here (spec §10):
+    # Contract honored here:
     #
     #   * /prouter/input.json   pre-populated by the runner before container start
     #   * /prouter/output.json  read by the runner after container exit (REQUIRED)

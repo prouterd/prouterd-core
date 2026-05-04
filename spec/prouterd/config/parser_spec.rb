@@ -5,6 +5,22 @@ RSpec.describe Prouterd::Config::Parser do
     described_class.parse(Prouterd::Config::Lexer.tokenize(src))
   end
 
+  # Many block-side tests need an outbound interface to reference via
+  # `interface docker <name>`. Helper prepends a minimal one so test
+  # sources can focus on the block body / route shape under test.
+  IFACES = <<~PRC.freeze
+    interface docker img1
+     image alpine:1
+    exit
+    interface docker img2
+     image alpine:2
+    exit
+  PRC
+
+  def parse_with_ifaces(src)
+    parse(IFACES + src)
+  end
+
   describe "router" do
     it "parses a router section with version and hostname" do
       doc = parse(<<~SRC)
@@ -171,17 +187,17 @@ RSpec.describe Prouterd::Config::Parser do
 
   describe "process and blocks" do
     it "parses process with blocks and short-form routes" do
-      doc = parse(<<~SRC)
+      doc = parse_with_ifaces(<<~SRC)
         process pipeline
          description "demo"
          queue default
          no shutdown
 
          block a
-          image alpine:1
+          interface docker img1
          exit
          block b
-          image alpine:2
+          interface docker img2
          exit
 
          route a b
@@ -200,13 +216,13 @@ RSpec.describe Prouterd::Config::Parser do
     end
 
     it "parses long-form route with match condition" do
-      doc = parse(<<~SRC)
+      doc = parse_with_ifaces(<<~SRC)
         process pipeline
          block a
-          image x
+          interface docker img1
          exit
          block b
-          image y
+          interface docker img2
          exit
          route a b
           match lead.score gt 70
@@ -221,39 +237,34 @@ RSpec.describe Prouterd::Config::Parser do
       expect(m.values).to eq([70])
     end
 
-    it "parses block with secrets, retry policy, network and command" do
-      doc = parse(<<~SRC)
+    it "parses block with secrets, retry policy and command" do
+      doc = parse_with_ifaces(<<~SRC)
         process p
          block enrich
-          image registry.local/blocks/enrich:v3
+          interface docker img1
           command "/bin/run --mode=safe"
           timeout 120s
           retry policy retry_standard
           secret CLEARBIT_API_KEY
           secret OTHER_KEY
-          input lead.raw
-          output lead.enriched
-          network off
          exit
         exit
       SRC
       block = doc.processes.first.blocks.first
-      expect(block.image).to eq("registry.local/blocks/enrich:v3")
-      expect(block.command).to eq("/bin/run --mode=safe")
+      expect(block.interface_ref.type).to eq("docker")
+      expect(block.interface_ref.name).to eq("img1")
+      expect(block.type_fields["command"]).to eq("/bin/run --mode=safe")
       expect(block.timeout_ms).to eq(120_000)
       expect(block.retry_policy_name).to eq("retry_standard")
       expect(block.secret_names).to eq(%w[CLEARBIT_API_KEY OTHER_KEY])
-      expect(block.input).to eq("lead.raw")
-      expect(block.output).to eq("lead.enriched")
-      expect(block.network).to eq("off")
     end
 
     it "rejects duplicate secret in same block" do
       expect do
-        parse(<<~SRC)
+        parse_with_ifaces(<<~SRC)
           process p
            block b
-            image x
+            interface docker img1
             secret K
             secret K
            exit
@@ -268,10 +279,10 @@ RSpec.describe Prouterd::Config::Parser do
       doc = parse(<<~SRC)
         process p
          block a
-          image x
+          interface docker img1
          exit
          block b
-          image y
+          interface docker img2
          exit
          route a b
           match lead.region in "US","EU","KZ"
@@ -287,10 +298,10 @@ RSpec.describe Prouterd::Config::Parser do
       doc = parse(<<~SRC)
         process p
          block a
-          image x
+          interface docker img1
          exit
          block b
-          image y
+          interface docker img2
          exit
          route a b
           match lead.email exists
@@ -304,13 +315,13 @@ RSpec.describe Prouterd::Config::Parser do
 
     it "rejects unknown operator" do
       expect do
-        parse(<<~SRC)
+        parse_with_ifaces(<<~SRC)
           process p
            block a
-            image x
+            interface docker img1
            exit
            block b
-            image y
+            interface docker img2
            exit
            route a b
             match foo unknown 5
@@ -353,7 +364,8 @@ RSpec.describe Prouterd::Config::Parser do
       expect(doc.secrets.map(&:name)).to eq(%w[WEBHOOK_TOKEN CLEARBIT_API_KEY])
       expect(doc.policies.map(&:name)).to eq(["retry_standard"])
       expect(doc.queues.map(&:name)).to eq(["default"])
-      expect(doc.interfaces.map(&:name)).to eq(["leads_in"])
+      expect(doc.interfaces.map(&:name))
+        .to contain_exactly("leads_in", "extractor", "enricher", "scorer", "notifier")
       expect(doc.processes.length).to eq(1)
       pipeline = doc.processes.first
       expect(pipeline.blocks.map(&:name)).to eq(%w[extract enrich score notify_sales])
@@ -364,18 +376,18 @@ RSpec.describe Prouterd::Config::Parser do
     it "parses minimal.prc cleanly" do
       doc = parse(read_fixture("minimal.prc"))
       expect(doc.router.name).to eq("demo")
-      expect(doc.processes.first.blocks.first.command).to eq("echo hello")
+      expect(doc.processes.first.blocks.first.type_fields["command"]).to eq("echo hello")
     end
   end
 
   describe "artifacts" do
     def parse_block(body)
-      doc = parse(<<~SRC)
+      doc = parse_with_ifaces(<<~SRC)
         router x
         exit
         process p
          block b
-          image alpine:latest
+          interface docker img1
         #{body.lines.map { |l| "  #{l}" }.join}
          exit
         exit
@@ -409,17 +421,17 @@ RSpec.describe Prouterd::Config::Parser do
     end
 
     it "parses implicit `input from <block>.<relpath>` and derives local_name from basename" do
-      doc = parse(<<~SRC)
+      doc = parse_with_ifaces(<<~SRC)
         router x
         exit
         process p
          block train
-          image t:1
+          interface docker img1
           produces model.pkl
           produces metrics.json
          exit
          block deploy
-          image d:1
+          interface docker img2
           input from train.model.pkl
           input from train.metrics.json
          exit
@@ -433,16 +445,16 @@ RSpec.describe Prouterd::Config::Parser do
     end
 
     it "derives local_name from the basename of a subdirectory path" do
-      doc = parse(<<~SRC)
+      doc = parse_with_ifaces(<<~SRC)
         router x
         exit
         process p
          block t
-          image t:1
+          interface docker img1
           produces sub/file.json
          exit
          block d
-          image d:1
+          interface docker img2
           input from t.sub/file.json
          exit
          route t d
@@ -453,10 +465,9 @@ RSpec.describe Prouterd::Config::Parser do
       expect(ai.from_artifact).to eq("sub/file.json")
     end
 
-    it "still accepts the existing single-arg input form (context path)" do
-      block = parse_block("input event.body\n")
-      expect(block.input).to eq("event.body")
-      expect(block.artifact_inputs).to be_empty
+    it "rejects bare `input <ctx.path>` (context flow now via templating in call-fields)" do
+      expect { parse_block("input event.body\n") }
+        .to raise_error(Prouterd::Config::ParseError, /supports only `input from/)
     end
 
     it "rejects malformed artifact reference" do

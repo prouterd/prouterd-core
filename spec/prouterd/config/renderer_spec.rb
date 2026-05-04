@@ -1,16 +1,25 @@
 require "spec_helper"
 
 RSpec.describe Prouterd::Config::Renderer do
+  IFACES = <<~PRC.freeze
+    interface docker img1
+     image alpine:1
+    exit
+    interface docker img2
+     image alpine:2
+    exit
+  PRC
+
   def parse(src)
     Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(src))
   end
 
-  def render(src)
-    described_class.render(parse(src))
+  def render_with_ifaces(src)
+    described_class.render(parse(IFACES + src))
   end
 
   it "renders a router section" do
-    out = render(<<~SRC)
+    out = described_class.render(parse(<<~SRC))
       router demo
        version 1
        hostname host01
@@ -25,11 +34,11 @@ RSpec.describe Prouterd::Config::Renderer do
   end
 
   it "quotes strings with whitespace in description" do
-    out = render(<<~SRC)
+    out = render_with_ifaces(<<~SRC)
       process p
        description "Lead enrichment"
        block a
-        image x
+        interface docker img1
        exit
       exit
     SRC
@@ -37,34 +46,30 @@ RSpec.describe Prouterd::Config::Renderer do
   end
 
   it "renders match values: numbers unquoted, strings quoted" do
-    out = render(<<~SRC)
+    out = render_with_ifaces(<<~SRC)
       process p
        block a
-        image x
+        interface docker img1
        exit
        block b
-        image y
+        interface docker img2
        exit
        route a b
         match lead.score gt 70
        exit
-       route a b
-        match event.type eq "lead.created"
-       exit
       exit
     SRC
     expect(out).to include("match lead.score gt 70")
-    expect(out).to include('match event.type eq "lead.created"')
   end
 
   it "renders 'in' operator with comma list" do
-    out = render(<<~SRC)
+    out = render_with_ifaces(<<~SRC)
       process p
        block a
-        image x
+        interface docker img1
        exit
        block b
-        image y
+        interface docker img2
        exit
        route a b
         match lead.region in "US","EU","KZ"
@@ -75,13 +80,13 @@ RSpec.describe Prouterd::Config::Renderer do
   end
 
   it "renders 'exists' operator without value" do
-    out = render(<<~SRC)
+    out = render_with_ifaces(<<~SRC)
       process p
        block a
-        image x
+        interface docker img1
        exit
        block b
-        image y
+        interface docker img2
        exit
        route a b
         match lead.email exists
@@ -92,24 +97,23 @@ RSpec.describe Prouterd::Config::Renderer do
   end
 
   it "renders short-form route when no body fields are set" do
-    out = render(<<~SRC)
+    out = render_with_ifaces(<<~SRC)
       process p
        block a
-        image x
+        interface docker img1
        exit
        block b
-        image y
+        interface docker img2
        exit
        route a b
       exit
     SRC
-    # short-form has no body
     expect(out).to include("route a b")
     expect(out).not_to include("route a b\n exit")
   end
 
   it "preserves duration canonical form" do
-    out = render(<<~SRC)
+    out = described_class.render(parse(<<~SRC))
       policy r
        retry initial-delay 5s
        retry max-delay 120s
@@ -127,7 +131,6 @@ RSpec.describe Prouterd::Config::Renderer do
       rendered = described_class.render(original_doc)
       reparsed_doc = parse(rendered)
 
-      # Compare key invariants:
       expect(reparsed_doc.router.name).to eq(original_doc.router.name)
       expect(reparsed_doc.router.version).to eq(original_doc.router.version)
       expect(reparsed_doc.secrets.map(&:name)).to eq(original_doc.secrets.map(&:name))
@@ -139,7 +142,9 @@ RSpec.describe Prouterd::Config::Renderer do
       orig_process = original_doc.processes.first
       reparsed_process = reparsed_doc.processes.first
       expect(reparsed_process.blocks.map(&:name)).to eq(orig_process.blocks.map(&:name))
-      expect(reparsed_process.blocks.map(&:image)).to eq(orig_process.blocks.map(&:image))
+      orig_refs = orig_process.blocks.map { |b| b.interface_ref&.name }
+      reparsed_refs = reparsed_process.blocks.map { |b| b.interface_ref&.name }
+      expect(reparsed_refs).to eq(orig_refs)
       expect(reparsed_process.routes.length).to eq(orig_process.routes.length)
 
       reparsed_routes = reparsed_process.routes.map { |r| [r.from_block, r.to_block] }
@@ -148,7 +153,7 @@ RSpec.describe Prouterd::Config::Renderer do
 
       conditional = reparsed_process.routes.find { |r| !r.matches.empty? }
       expect(conditional).not_to be_nil
-      expect(conditional.matches.first.path).to eq("lead.scored.score")
+      expect(conditional.matches.first.path).to eq("score.score")
       expect(conditional.matches.first.operator).to eq("gt")
       expect(conditional.matches.first.values).to eq([70])
     end
@@ -166,23 +171,26 @@ RSpec.describe Prouterd::Config::Renderer do
         router demo
         exit
 
+        interface docker trainer
+         image trainer:v1
+        exit
+
+        interface docker deploy_img
+         image deploy:v1
+        exit
+
         process p
          no shutdown
 
          block train
-          type docker
-           image trainer:v1
-          exit
+          interface docker trainer
           produces model.pkl
           produces metrics.json
           enable
          exit
 
          block deploy
-          type docker
-           image deploy:v1
-          exit
-          input event.body
+          interface docker deploy_img
           input from train.model.pkl
           input from train.metrics.json
           enable

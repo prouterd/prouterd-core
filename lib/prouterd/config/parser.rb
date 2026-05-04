@@ -303,6 +303,14 @@ module Prouterd
           secret_name = expect_env_name(line.tokens[3], "secret name")
           node.type_fields[field.storage_key] =
             AST::Auth.new(scheme: scheme, secret_name: secret_name, line: line.number)
+        when :command
+          expect_min_tokens(line, 2, "#{field.dsl_keyword} <args...>")
+          node.type_fields[field.storage_key] = line.tokens[1..].map(&:value).join(" ")
+        when :env_pair
+          expect_token_count(line, 3, "#{field.dsl_keyword} <KEY> <VALUE>")
+          key = expect_word(line.tokens[1], "#{field.dsl_keyword} key")
+          value = expect_word_or_string(line.tokens[2], "#{field.dsl_keyword} value")
+          (node.type_fields[field.storage_key] ||= {})[key] = value
         else
           raise ParseError.new(
             "interface plugin '#{plugin.type_name}' field '#{field.name}' has unknown kind #{field.kind.inspect}",

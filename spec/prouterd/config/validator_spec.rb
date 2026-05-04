@@ -1,10 +1,26 @@
 require "spec_helper"
 
 RSpec.describe Prouterd::Config::Validator do
+  IFACES = <<~PRC.freeze
+    interface docker img1
+     image alpine:1
+    exit
+    interface docker img2
+     image alpine:2
+    exit
+    interface docker img3
+     image alpine:3
+    exit
+  PRC
+
   def validate(src)
     lines = Prouterd::Config::Lexer.tokenize(src)
     doc = Prouterd::Config::Parser.parse(lines)
     [doc, described_class.validate(doc)]
+  end
+
+  def validate_with_ifaces(src)
+    validate(IFACES + src)
   end
 
   it "accepts the canonical sales_ops fixture" do
@@ -43,13 +59,13 @@ RSpec.describe Prouterd::Config::Validator do
   end
 
   it "detects unknown queue reference" do
-    _, result = validate(<<~SRC)
+    _, result = validate_with_ifaces(<<~SRC)
       router x
       exit
       process p
        queue ghost
        block a
-        image x
+        interface docker img1
        exit
       exit
     SRC
@@ -57,12 +73,12 @@ RSpec.describe Prouterd::Config::Validator do
   end
 
   it "detects unknown retry policy reference" do
-    _, result = validate(<<~SRC)
+    _, result = validate_with_ifaces(<<~SRC)
       router x
       exit
       process p
        block a
-        image x
+        interface docker img1
         retry policy nonexistent
        exit
       exit
@@ -71,15 +87,15 @@ RSpec.describe Prouterd::Config::Validator do
   end
 
   it "detects cycles in process graph" do
-    _, result = validate(<<~SRC)
+    _, result = validate_with_ifaces(<<~SRC)
       router x
       exit
       process p
        block a
-        image x
+        interface docker img1
        exit
        block b
-        image y
+        interface docker img2
        exit
        route a b
        route b a
@@ -89,18 +105,18 @@ RSpec.describe Prouterd::Config::Validator do
   end
 
   it "detects multiple incoming routes" do
-    _, result = validate(<<~SRC)
+    _, result = validate_with_ifaces(<<~SRC)
       router x
       exit
       process p
        block a
-        image x
+        interface docker img1
        exit
        block b
-        image y
+        interface docker img2
        exit
        block c
-        image z
+        interface docker img3
        exit
        route a c
        route b c
@@ -110,12 +126,12 @@ RSpec.describe Prouterd::Config::Validator do
   end
 
   it "detects self-loop routes" do
-    _, result = validate(<<~SRC)
+    _, result = validate_with_ifaces(<<~SRC)
       router x
       exit
       process p
        block a
-        image x
+        interface docker img1
        exit
        route a a
       exit
@@ -123,7 +139,7 @@ RSpec.describe Prouterd::Config::Validator do
     expect(result.errors.map(&:message).join("\n")).to match(/self-loop/)
   end
 
-  it "detects missing block type (block declares neither image nor exec)" do
+  it "detects missing `interface` directive on a block" do
     _, result = validate(<<~SRC)
       router x
       exit
@@ -132,44 +148,45 @@ RSpec.describe Prouterd::Config::Validator do
        exit
       exit
     SRC
-    expect(result.errors.map(&:message).join("\n")).to match(/missing 'type' section/)
+    expect(result.errors.map(&:message).join("\n")).to match(/missing `interface <type> <name>`/)
   end
 
-  it "detects missing image when block has type docker" do
+  it "detects undeclared interface reference" do
     _, result = validate(<<~SRC)
       router x
       exit
       process p
        block a
-        type docker
-        exit
+        interface docker ghost
        exit
       exit
     SRC
-    expect(result.errors.map(&:message).join("\n")).to match(/\(type docker\) missing 'image'/)
+    expect(result.errors.map(&:message).join("\n")).to match(/unknown interface 'ghost'/)
   end
 
-  it "detects missing exec when block has type shell" do
+  it "detects mismatched interface type at block reference" do
     _, result = validate(<<~SRC)
       router x
       exit
+      interface docker img1
+       image alpine:1
+      exit
       process p
        block a
-        type shell
-        exit
+        interface http img1
        exit
       exit
     SRC
-    expect(result.errors.map(&:message).join("\n")).to match(/\(type shell\) missing 'exec'/)
+    expect(result.errors.map(&:message).join("\n")).to match(/declared as type 'docker'/)
   end
 
   it "detects unknown block in route" do
-    _, result = validate(<<~SRC)
+    _, result = validate_with_ifaces(<<~SRC)
       router x
       exit
       process p
        block a
-        image x
+        interface docker img1
        exit
        route a ghost
       exit
@@ -178,12 +195,12 @@ RSpec.describe Prouterd::Config::Validator do
   end
 
   it "detects unknown interface in global route" do
-    _, result = validate(<<~SRC)
+    _, result = validate_with_ifaces(<<~SRC)
       router x
       exit
       process p
        block a
-        image x
+        interface docker img1
        exit
       exit
       route interface ghost process p
@@ -193,22 +210,18 @@ RSpec.describe Prouterd::Config::Validator do
   end
 
   it "treats blocks with no incoming routes as parallel entry points (no warning)" do
-    # Multiple entry blocks are valid in MVP — they run in parallel. The
-    # unreachable-warning code path is reserved for future graph topologies
-    # where unreachable subgraphs become possible (e.g. once join semantics
-    # are added).
-    _, result = validate(<<~SRC)
+    _, result = validate_with_ifaces(<<~SRC)
       router x
       exit
       process p
        block a
-        image x
+        interface docker img1
        exit
        block lonely
-        image y
+        interface docker img2
        exit
        block z
-        image z
+        interface docker img3
        exit
        route a z
       exit
@@ -218,17 +231,17 @@ RSpec.describe Prouterd::Config::Validator do
   end
 
   it "detects duplicate processes" do
-    _, result = validate(<<~SRC)
+    _, result = validate_with_ifaces(<<~SRC)
       router x
       exit
       process p
        block a
-        image x
+        interface docker img1
        exit
       exit
       process p
        block b
-        image y
+        interface docker img2
        exit
       exit
     SRC
@@ -237,7 +250,7 @@ RSpec.describe Prouterd::Config::Validator do
 
   describe "artifact flow" do
     def validate_pipeline(body)
-      validate(<<~SRC)
+      validate_with_ifaces(<<~SRC)
         router x
         exit
         process p
@@ -249,11 +262,11 @@ RSpec.describe Prouterd::Config::Validator do
     it "accepts well-formed produces/consume pair" do
       _, result = validate_pipeline(<<~BLOCKS)
         block train
-         image t:1
+         interface docker img1
          produces model.pkl
         exit
         block deploy
-         image d:1
+         interface docker img2
          input from train.model.pkl
         exit
         route train deploy
@@ -264,7 +277,7 @@ RSpec.describe Prouterd::Config::Validator do
     it "errors when the upstream block does not exist" do
       _, result = validate_pipeline(<<~BLOCKS)
         block deploy
-         image d:1
+         interface docker img1
          input from ghost.model.pkl
         exit
       BLOCKS
@@ -275,10 +288,10 @@ RSpec.describe Prouterd::Config::Validator do
     it "errors when the upstream block does not declare the artifact" do
       _, result = validate_pipeline(<<~BLOCKS)
         block train
-         image t:1
+         interface docker img1
         exit
         block deploy
-         image d:1
+         interface docker img2
          input from train.model.pkl
         exit
         route train deploy
@@ -290,12 +303,12 @@ RSpec.describe Prouterd::Config::Validator do
     it "errors when two inputs derive the same local name (basename collision)" do
       _, result = validate_pipeline(<<~BLOCKS)
         block train
-         image t:1
+         interface docker img1
          produces model.pkl
          produces model.json
         exit
         block deploy
-         image d:1
+         interface docker img2
          input from train.model.pkl
          input from train.model.json
         exit
@@ -308,14 +321,14 @@ RSpec.describe Prouterd::Config::Validator do
     it "errors when the upstream is not reachable in the route graph" do
       _, result = validate_pipeline(<<~BLOCKS)
         block train
-         image t:1
+         interface docker img1
          produces model.pkl
         exit
         block other
-         image o:1
+         interface docker img2
         exit
         block deploy
-         image d:1
+         interface docker img3
          input from train.model.pkl
         exit
         route other deploy

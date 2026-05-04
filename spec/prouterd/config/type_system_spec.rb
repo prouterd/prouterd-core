@@ -1,6 +1,11 @@
 require "spec_helper"
 
-RSpec.describe "Phase 12 block type system" do
+# What was Phase 12's "block type system" — `type docker { image; ... }`
+# subsection inside `block` — is replaced by the unified interface model:
+# every block declares `interface <type> <name>` referencing an outbound
+# interface (docker/shell/http/llm/...). These tests exercise that flow
+# end-to-end: parser → validator → renderer.
+RSpec.describe "Block + interface composition" do
   def parse(prc)
     Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(prc))
   end
@@ -11,105 +16,112 @@ RSpec.describe "Phase 12 block type system" do
   end
 
   describe "parser" do
-    it "parses a `type docker` sub-section with all options" do
+    it "parses an outbound docker interface and a block referencing it" do
       doc = parse(<<~PRC)
         router x
         exit
+        interface docker my_image
+         image alpine:1
+         pull always
+         network off
+         user nobody
+         memory 512m
+         cpu 1
+        exit
         process p
          block b
-          type docker
-           image alpine:1
-           command "sh -c true"
-           pull always
-           network off
-           user nobody
-           memory 512m
-           cpu 1
-          exit
-          input event.body
-          output result
+          interface docker my_image
+          command "sh -c true"
           timeout 30s
           enable
          exit
         exit
       PRC
+      iface = doc.interfaces.first
+      expect(iface.type).to eq("docker")
+      expect(iface.type_fields["image"]).to eq("alpine:1")
+      expect(iface.type_fields["pull"]).to eq("always")
+      expect(iface.type_fields["network"]).to eq("off")
+      expect(iface.type_fields["user"]).to eq("nobody")
+      expect(iface.type_fields["memory"]).to eq("512m")
+      expect(iface.type_fields["cpu"]).to eq("1")
+
       block = doc.processes.first.blocks.first
-      expect(block.execution_type).to eq("docker")
-      expect(block.image).to eq("alpine:1")
-      expect(block.command).to eq("sh -c true")
-      expect(block.pull).to eq("always")
-      expect(block.network).to eq("off")
-      expect(block.user).to eq("nobody")
-      expect(block.memory).to eq("512m")
-      expect(block.cpu).to eq("1")
+      expect(block.interface_ref.type).to eq("docker")
+      expect(block.interface_ref.name).to eq("my_image")
+      expect(block.type_fields["command"]).to eq("sh -c true")
       expect(block.timeout_ms).to eq(30_000)
       expect(block.shutdown).to be(false)
     end
 
-    it "parses a `type shell` sub-section" do
+    it "parses an outbound shell interface and a block referencing it" do
       doc = parse(<<~PRC)
         router x
         exit
+        interface shell host
+         cwd ./blocks/b
+         shell /bin/bash
+         env DEBUG 1
+        exit
         process p
          block b
-          type shell
-           exec "ruby app.rb --flag"
-           cwd ./blocks/b
-           shell /bin/bash
-           env DEBUG 1
-          exit
-          input event
-          output result
+          interface shell host
+          exec "ruby app.rb --flag"
           timeout 10s
           enable
          exit
         exit
       PRC
+      iface = doc.interfaces.first
+      expect(iface.type).to eq("shell")
+      expect(iface.type_fields["cwd"]).to eq("./blocks/b")
+      expect(iface.type_fields["shell"]).to eq("/bin/bash")
+      expect(iface.type_fields["env"]).to eq("DEBUG" => "1")
+
       block = doc.processes.first.blocks.first
-      expect(block.execution_type).to eq("shell")
-      expect(block.shell?).to be(true)
-      expect(block.shell_exec).to eq("ruby app.rb --flag")
-      expect(block.shell_cwd).to eq("./blocks/b")
-      expect(block.shell_path).to eq("/bin/bash")
-      expect(block.shell_env).to eq("DEBUG" => "1")
+      expect(block.interface_ref.type).to eq("shell")
+      expect(block.type_fields["exec"]).to eq("ruby app.rb --flag")
     end
 
-    it "rejects unknown type" do
+    it "rejects an unknown interface type at the block reference" do
       expect do
         parse(<<~PRC)
           router x
           exit
           process p
            block b
-            type kubernetes
-             image x
-            exit
+            interface kubernetes ghost
            exit
           exit
         PRC
-      end.to raise_error(Prouterd::Config::ParseError, /invalid block type 'kubernetes'/)
+      end.to raise_error(Prouterd::Config::ParseError, /invalid interface type 'kubernetes'/)
     end
 
-    it "still accepts legacy inline form (image directly in block) and infers type docker" do
-      doc = parse(<<~PRC)
-        router x
-        exit
-        process p
-         block b
-          image alpine:1
-          input e
-          output r
-         exit
-        exit
-      PRC
-      block = doc.processes.first.blocks.first
-      expect(block.execution_type).to eq("docker") # auto-inferred
-      expect(block.image).to eq("alpine:1")
+    it "rejects per-call directives that are not in the interface plugin's call_fields" do
+      # `prompt` is an LLM call_field; on a docker block it's a typo.
+      expect do
+        parse(<<~PRC)
+          router x
+          exit
+          interface docker img1
+           image alpine:1
+          exit
+          process p
+           block b
+            interface docker img1
+            prompt "hi"
+           exit
+          exit
+        PRC
+      end.to raise_error(Prouterd::Config::ParseError, /unknown directive 'prompt' in block/)
     end
 
     it "accepts `retry <name>` shorthand and `retry policy <name>` long form" do
       doc = parse(<<~PRC)
         router x
+        exit
+        interface docker img1
+         image x
         exit
         policy r
          retry attempts 3
@@ -117,12 +129,8 @@ RSpec.describe "Phase 12 block type system" do
         exit
         process p
          block b
-          type docker
-           image x
-          exit
+          interface docker img1
           retry r
-          input e
-          output o
          exit
         exit
       PRC
@@ -133,13 +141,12 @@ RSpec.describe "Phase 12 block type system" do
       doc = parse(<<~PRC)
         router x
         exit
+        interface docker img1
+         image x
+        exit
         process p
          block b
-          type docker
-           image x
-          exit
-          input e
-          output o
+          interface docker img1
           disable
          exit
         exit
@@ -149,82 +156,56 @@ RSpec.describe "Phase 12 block type system" do
   end
 
   describe "validator" do
-    it "rejects type docker without image" do
+    it "rejects an interface declaration without its required fields" do
       _, r = validate(<<~PRC)
         router x
         exit
-        process p
-         block b
-          type docker
-          exit
-          input e
-          output o
-         exit
+        interface docker img1
         exit
       PRC
-      expect(r.errors.map(&:message).join).to match(/\(type docker\) missing 'image'/)
+      expect(r.errors.map(&:message).join).to match(/\(docker\) missing 'image'/)
     end
 
-    it "rejects type shell without exec" do
+    it "rejects a block missing its `interface` directive" do
       _, r = validate(<<~PRC)
         router x
         exit
         process p
          block b
-          type shell
-          exit
-          input e
-          output o
          exit
         exit
       PRC
-      expect(r.errors.map(&:message).join).to match(/\(type shell\) missing 'exec'/)
-    end
-
-    it "rejects block with no type at all" do
-      _, r = validate(<<~PRC)
-        router x
-        exit
-        process p
-         block b
-          input e
-          output o
-         exit
-        exit
-      PRC
-      expect(r.errors.map(&:message).join).to match(/missing 'type' section/)
+      expect(r.errors.map(&:message).join).to match(/missing `interface <type> <name>`/)
     end
   end
 
   describe "renderer" do
-    it "emits canonical type sub-section form" do
-      original = parse(<<~PRC)
+    it "roundtrips block + interface composition via parse → render → parse" do
+      src = <<~PRC
         router x
+        exit
+        interface shell host
+         shell /bin/bash
+         cwd ./b
         exit
         process p
          block b
-          type shell
-           exec "ruby app.rb"
-           cwd ./b
-          exit
-          input e
-          output r
+          interface shell host
+          exec "ruby app.rb"
           timeout 10s
           enable
          exit
         exit
       PRC
-      rendered = Prouterd::Config::Renderer.render(original)
-      expect(rendered).to include("type shell")
+      rendered = Prouterd::Config::Renderer.render(parse(src))
+      expect(rendered).to include("interface shell host")
+      expect(rendered).to include("interface shell host") # in block body too
       expect(rendered).to include('exec "ruby app.rb"')
-      expect(rendered).to include("cwd ./b")
       expect(rendered).to include("enable")
-      # roundtrip
       reparsed = parse(rendered)
       block = reparsed.processes.first.blocks.first
-      expect(block.execution_type).to eq("shell")
-      expect(block.shell_exec).to eq("ruby app.rb")
-      expect(block.shell_cwd).to eq("./b")
+      expect(block.interface_ref.type).to eq("shell")
+      expect(block.type_fields["exec"]).to eq("ruby app.rb")
     end
   end
 end

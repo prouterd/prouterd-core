@@ -43,6 +43,7 @@ module Prouterd
       class Policy
         attr_accessor :name, :retry_attempts, :retry_backoff, :retry_initial_delay_ms,
                       :retry_max_delay_ms, :timeout_ms, :line
+        attr_reader :retry_when_matches
 
         BACKOFF_TYPES = %w[fixed linear exponential].freeze
 
@@ -54,6 +55,10 @@ module Prouterd
           @retry_initial_delay_ms = nil
           @retry_max_delay_ms = nil
           @timeout_ms = nil
+          # Optional `retry when <path> <op> <value>` conditions. Multiple
+          # entries OR together — any one matching means the failure is
+          # retryable. No entries means "retry on any failure".
+          @retry_when_matches = []
         end
       end
 

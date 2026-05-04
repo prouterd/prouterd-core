@@ -172,6 +172,11 @@ module Prouterd
         when "max-delay"
           expect_token_count(line, 3, "retry max-delay <duration>")
           node.retry_max_delay_ms = expect_duration(line.tokens[2], "retry max-delay")
+        when "when"
+          # `retry when <path> <op> <value>` — gates retries on the failure
+          # result. Reuses the route-match parser by skipping the leading
+          # `retry` token and treating `when` as if it were `match`.
+          node.retry_when_matches << parse_match_at(line, 1)
         else
           raise ParseError.new("unknown retry field '#{field}'", line: line.number)
         end
@@ -828,24 +833,36 @@ module Prouterd
       # ----- match expressions -----
 
       def parse_match(line)
-        expect_min_tokens(line, 3, "match <path> <op> [value...]")
-        path = expect_context_path(line.tokens[1], "match path")
-        operator = expect_word(line.tokens[2], "match operator")
+        parse_match_at(line, 0)
+      end
+
+      # Parse a match expression starting at `head_offset` tokens past the
+      # leading keyword. `match <path> <op> <val>` uses head_offset = 0;
+      # `retry when <path> <op> <val>` uses head_offset = 1 (skipping the
+      # `retry` head so `when` lands at tokens[head_offset]).
+      def parse_match_at(line, head_offset)
+        path_idx = head_offset + 1
+        op_idx   = head_offset + 2
+        val_idx  = head_offset + 3
+
+        expect_min_tokens(line, val_idx, "match <path> <op> [value...]")
+        path = expect_context_path(line.tokens[path_idx], "match path")
+        operator = expect_word(line.tokens[op_idx], "match operator")
         unless AST::Match::OPERATORS.include?(operator)
           raise ParseError.new("invalid match operator '#{operator}' (allowed: #{AST::Match::OPERATORS.join(', ')})", line: line.number)
         end
 
         if AST::Match::UNARY_OPERATORS.include?(operator)
-          expect_token_count(line, 3, "match <path> #{operator}")
+          expect_token_count(line, val_idx, "match <path> #{operator}")
           values = []
         elsif AST::Match::MULTI_VALUE_OPERATORS.include?(operator)
-          expect_min_tokens(line, 4, "match <path> #{operator} <value1>,<value2>,...")
-          raw = line.tokens[3..].map(&:value).join(" ")
+          expect_min_tokens(line, val_idx + 1, "match <path> #{operator} <value1>,<value2>,...")
+          raw = line.tokens[val_idx..].map(&:value).join(" ")
           values = split_csv_values(raw, line)
           raise ParseError.new("'in' operator requires at least one value", line: line.number) if values.empty?
         else
-          expect_token_count(line, 4, "match <path> #{operator} <value>")
-          values = [scalar_value(line.tokens[3])]
+          expect_token_count(line, val_idx + 1, "match <path> #{operator} <value>")
+          values = [scalar_value(line.tokens[val_idx])]
         end
 
         AST::Match.new(path: path, operator: operator, values: values, line: line.number)

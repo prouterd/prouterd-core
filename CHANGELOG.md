@@ -511,10 +511,53 @@ failures.
 
 Worked example in [examples/09_llm.prc](examples/09_llm.prc).
 
+### Phase 25: Smart retries — `retry when`, `{{previous}}`, `{{iteration}}`
+
+The retry policy gains a condition: `retry when <path> <op> <value>`,
+reusing the same operators as route matches (`eq`, `neq`, `in`, `gt`,
+`gte`, `lt`, `lte`, `exists`). Multiple `retry when` clauses OR
+together — any one matching is enough to retry. Zero clauses preserve
+the original behaviour ("retry on any failure").
+
+```
+policy transient_only
+ retry attempts 3
+ retry backoff exponential
+ retry initial-delay 500ms
+ retry when error_type in "timeout","http_status","http_error","llm_error"
+exit
+```
+
+The condition is evaluated against a synthetic context built from the
+failure result: `error_type`, `error_message`, `exit_code`. If no
+clause matches, the orchestrator logs a one-line system message and
+treats the failure as terminal — no more attempts even if `attempts`
+isn't exhausted.
+
+Two new templating variables become available inside call-fields:
+
+- `{{iteration}}` — 1-indexed attempt number, set on every attempt
+- `{{previous}}` — on attempts 2+, a hash of the prior attempt's
+  `attempt`, `error_type`, `error_message`, `exit_code`, `stdout`,
+  `stderr`. Useful for "retry with feedback" patterns where the
+  prompt embeds the prior error.
+
+Both flow through a per-attempt overlay context (`OverlayContext`)
+that wraps `Runtime::Context` for templating only. Parallel block
+attempts at the same DAG level cannot see each other's iteration /
+previous values — the overlay is per-call, not run-shared.
+
+7 new specs cover: retry-when matches and skips, `in` with multiple
+error types, iteration starting at 1, previous shape on retry,
+overlay isolation between blocks, parser/renderer roundtrip.
+
+Worked example: [examples/11_retry_when.prc](examples/11_retry_when.prc).
+Suite at 584 examples, 0 failures.
+
 ## Status
 
-- 24 phases shipped, one git commit per phase
-- 576 RSpec specs, 0 failures
+- 25 phases shipped, one git commit per phase
+- 584 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - All v0.1 acceptance criteria + production hardening + IPC +
   contracts + router-CLI compatibility + binary split + typed artifacts

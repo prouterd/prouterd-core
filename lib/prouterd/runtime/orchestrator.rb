@@ -252,6 +252,7 @@ module Prouterd
         policy = lookup_policy(document, block.retry_policy_name)
         attempt = 1
         result = nil
+        previous_summary = nil
 
         loop do
           if attempt > 1
@@ -265,14 +266,84 @@ module Prouterd
             end
           end
 
-          result = execute_single_attempt(run, process, block, attempt, context, document, db_mutex, ctx_mutex, redactor)
+          overlay = { "iteration" => attempt }
+          overlay["previous"] = previous_summary if previous_summary
+
+          result = execute_single_attempt(
+            run, process, block, attempt, context, document,
+            db_mutex, ctx_mutex, redactor, template_overlay: overlay
+          )
           break if result.success?
           break unless RetryCalculator.more_attempts?(policy, attempt)
+          break unless retry_when_passes?(policy, result, db_mutex, run, block)
 
+          previous_summary = build_previous_summary(result, attempt)
           attempt += 1
         end
 
         result
+      end
+
+      # When a policy declares one or more `retry when` conditions, the failure
+      # result must satisfy at least one for retry to proceed. No conditions
+      # means "retry on any failure" (existing behaviour).
+      def retry_when_passes?(policy, result, db_mutex, run, block)
+        return true if policy.nil? || policy.retry_when_matches.empty?
+
+        synthetic = {
+          "error_type"    => result.error_type,
+          "error_message" => result.error_message,
+          "exit_code"     => result.exit_code
+        }
+        passes = policy.retry_when_matches.any? { |m| MatchEvaluator.evaluate(m, OverlayContext.new({}, synthetic)) }
+        unless passes
+          db_mutex.synchronize do
+            @runs.append_log(
+              run_id: run.id, stream: "system",
+              content: "block '#{block.name}' failed with error_type=#{result.error_type.inspect} — no retry-when condition matched, treating as terminal"
+            )
+          end
+        end
+        passes
+      end
+
+      def build_previous_summary(result, attempt)
+        {
+          "attempt"       => attempt,
+          "error_type"    => result.error_type,
+          "error_message" => result.error_message,
+          "exit_code"     => result.exit_code,
+          "stdout"        => result.stdout.to_s,
+          "stderr"        => result.stderr.to_s
+        }
+      end
+
+      # Lightweight context wrapper for templating overlays. Falls through to
+      # the underlying Runtime::Context for paths the overlay does not
+      # provide. Used to expose `iteration` and `previous.*` to call-field
+      # templates without polluting the run-shared Context (which would race
+      # across parallel block attempts).
+      class OverlayContext
+        def initialize(base, overlay)
+          @base = base
+          @overlay = overlay
+        end
+
+        def get(path)
+          head, *rest = path.to_s.split(".")
+          if @overlay.key?(head)
+            return @overlay[head] if rest.empty?
+
+            rest.reduce(@overlay[head]) do |acc, k|
+              break nil unless acc.is_a?(Hash)
+              acc[k]
+            end
+          elsif @base.respond_to?(:get)
+            @base.get(path)
+          else
+            nil
+          end
+        end
       end
 
       def lookup_policy(document, policy_name)
@@ -316,7 +387,7 @@ module Prouterd
       # One attempt of one block. DB writes go through db_mutex; Context get
       # for input + set for output go through ctx_mutex. Runner.run() runs
       # OUTSIDE both — that's where the actual concurrency happens.
-      def execute_single_attempt(run, process, block, attempt, context, document, db_mutex, ctx_mutex, redactor)
+      def execute_single_attempt(run, process, block, attempt, context, document, db_mutex, ctx_mutex, redactor, template_overlay: nil)
         # Resolve `interface <type> <name>` reference to the AST::Interface
         # declared at top level. Validator already ensured this exists and
         # is outbound; defensive lookup here is just for runtime safety.
@@ -343,12 +414,15 @@ module Prouterd
         end
 
         # Build per-run context payload — full context flows in, no slice.
-        # Templating in call-fields reads paths directly from this payload.
+        # Templating in call-fields reads paths directly from this payload,
+        # plus an optional per-attempt overlay (iteration, previous) that
+        # only this block-attempt sees.
         input_payload = nil
         templated_call_fields = nil
+        scope = template_overlay ? OverlayContext.new(context, template_overlay) : context
         ctx_mutex.synchronize do
           input_payload = build_input_payload(run, block, context)
-          templated_call_fields = templated_fields(block.type_fields, context)
+          templated_call_fields = templated_fields(block.type_fields, scope)
         end
 
         step = nil

@@ -534,6 +534,13 @@ module Prouterd
         out.puts "  backoff:       #{p.retry_backoff || '-'}"
         out.puts "  initial-delay: #{p.retry_initial_delay_ms ? Util::DurationParser.render(p.retry_initial_delay_ms) : '-'}"
         out.puts "  max-delay:     #{p.retry_max_delay_ms ? Util::DurationParser.render(p.retry_max_delay_ms) : '-'}"
+        unless p.retry_when_matches.empty?
+          out.puts "  retry-when:"
+          p.retry_when_matches.each do |m|
+            values = m.values.empty? ? "" : " #{m.values.join(',')}"
+            out.puts "    #{m.path} #{m.operator}#{values}"
+          end
+        end
         out.puts "  timeout:       #{p.timeout_ms ? Util::DurationParser.render(p.timeout_ms) : '-'}"
       end
 

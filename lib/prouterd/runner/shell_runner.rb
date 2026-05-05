@@ -146,11 +146,19 @@ module Prouterd
         if exit_code != 0
           return ["non_zero_exit", "shell exited with code #{exit_code}", nil]
         end
+        # Shell blocks frequently exist for side effects only (echo, notify,
+        # tail a log). Forcing every block to synthesize JSON into
+        # /prouter/output.json to satisfy the contract is the kind of
+        # ceremony that produces sed-pipeline horror in examples. So:
+        # exit 0 + no output.json = success with output_json={}. Downstream
+        # blocks that need richer data still write the file; ones that
+        # don't, don't. (DockerRunner stays strict — the container
+        # contract is its whole point.)
         unless File.exist?(path)
-          return ["missing_output", "shell did not write #{OUTPUT_FILENAME}", nil]
+          return [nil, nil, {}]
         end
         raw = File.read(path)
-        return ["invalid_output", "#{OUTPUT_FILENAME} is empty", nil] if raw.empty?
+        return [nil, nil, {}] if raw.empty?
 
         begin
           [nil, nil, JSON.parse(raw)]

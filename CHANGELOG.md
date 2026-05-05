@@ -711,9 +711,46 @@ Phase 26 already proves the pg path.
 
 Suite at 608 examples, 0 failures.
 
+### Phase 29: ShellRunner relaxes the output.json contract; hello-world readable again
+
+A shell block with `exec "true"` previously failed with
+`error_type:"missing_output"` — every shell block had to synthesize
+JSON into `/prouter/output.json` to be considered successful. Combined
+with DSL-level quote escaping, this produced things like:
+
+```
+exec "sh -c 'NAME=$(cat $PROUTER_INPUT_PATH | sed -n \"s/.*\\\"name\\\":\\\"\\([^\\\"]*\\)\\\".*/\\1/p\"); echo \"hello, $NAME!\" >&2; echo \"{\\\"greeted\\\":\\\"$NAME\\\"}\" > $PROUTER_OUTPUT_PATH'"
+```
+
+…in the canonical hello-world. That's parsing JSON via sed inside four
+levels of quote escaping inside a templating engine that fixed exactly
+this problem two phases ago.
+
+**Fix:**
+- ShellRunner: exit 0 + missing/empty `output.json` = success with
+  `output_json = {}`. Side-effect-only blocks (echo, notify, tail) no
+  longer need ceremony to be valid. DockerRunner stays strict — the
+  container contract is its whole point.
+- `output.json` malformed JSON still surfaces as `invalid_output`.
+- examples/01_hello_world.prc rewritten:
+  ```
+  block greet
+   interface shell host
+   exec "echo hello, {{event.name}}!"
+  exit
+  ```
+  One line. Reads input via `{{event.name}}` templating. No output
+  synthesis. No docker. Verified end-to-end:
+  `[greet/stdout] hello, world!`.
+
+Existing `shell_runner_spec` test that asserted the strict missing-
+output behaviour was rewritten to assert the new lenient one.
+
+Suite at 608 examples, 0 failures.
+
 ## Status
 
-- 28 phases shipped, one git commit per phase
+- 29 phases shipped, one git commit per phase
 - 608 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - All v0.1 acceptance criteria + production hardening + IPC +

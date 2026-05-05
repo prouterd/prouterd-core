@@ -30,9 +30,14 @@ RSpec.describe Prouterd::Runner::ShellRunner do
     expect(result.stderr).to include("ERR")
   end
 
-  it "returns missing_output when the command does not write the file" do
+  it "treats exit-0 with no output.json as success with empty output_json" do
+    # Shell blocks frequently exist for side effects (echo, notify, tail).
+    # Forcing them all to synthesize JSON into /prouter/output.json is
+    # exactly the kind of ceremony Phase 23/29 was meant to remove.
     result = runner.run(request(command: "true"))
-    expect(result.error_type).to eq("missing_output")
+    expect(result.error_type).to be_nil
+    expect(result.exit_code).to eq(0)
+    expect(result.output_json).to eq({})
   end
 
   it "returns invalid_output when the command writes garbage" do

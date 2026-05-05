@@ -114,6 +114,7 @@ module Prouterd
         emit(0, "process #{process.name}")
         emit(1, "description #{quote_if_needed(process.description)}") if process.description
         emit(1, "queue #{process.queue_name}") if process.queue_name
+        emit(1, "timeout #{Util::DurationParser.render(process.timeout_ms)}") if process.timeout_ms
         emit(1, process.shutdown ? "shutdown" : "no shutdown")
 
         process.blocks.each do |block|

@@ -17,7 +17,11 @@ module Prouterd
       ABANDONED_REASON = "orchestrator restart — run was in-flight when the previous process exited".freeze
       DEFAULT_LOCK_TIMEOUT = 60
 
-      Result = Struct.new(:runs_swept, :steps_swept, keyword_init: true)
+      Result = Struct.new(:runs_swept, :steps_swept, :containers_killed, keyword_init: true) do
+        def initialize(runs_swept: 0, steps_swept: 0, containers_killed: 0)
+          super
+        end
+      end
 
       def self.sweep(db, logger: NullLogger.new, lock_timeout: nil)
         new(db, logger: logger, lock_timeout: lock_timeout).sweep
@@ -34,18 +38,22 @@ module Prouterd
         # can pick them up. Then mark orphaned running runs/steps as failed
         # — those are runs that ran without a job (legacy paths) or whose
         # job is already gone (completed but the run never got finalized,
-        # which shouldn't happen but we defend against it anyway).
+        # which shouldn't happen but we defend against it anyway). Last,
+        # kill any docker containers tagged with a `prouterd.run_uid`
+        # that's no longer associated with a live run — those are
+        # leaks from a daemon crash mid-block.
         jobs = sweep_jobs
         steps = sweep_steps
         runs  = sweep_runs
+        containers = sweep_orphan_containers
 
-        if (runs + steps + jobs).positive?
+        if (runs + steps + jobs + containers).positive?
           @logger.info("recovery: swept abandoned state on boot",
                        requeued_jobs: jobs, failed_runs: runs, failed_steps: steps,
-                       lock_timeout_s: @lock_timeout)
+                       containers_killed: containers, lock_timeout_s: @lock_timeout)
         end
 
-        Result.new(runs_swept: runs, steps_swept: steps)
+        Result.new(runs_swept: runs, steps_swept: steps, containers_killed: containers)
       end
 
       private
@@ -145,6 +153,50 @@ module Prouterd
           )
         end
         ids.length
+      end
+
+      # Phase 35a: kill docker containers tagged with a prouterd.run_uid
+      # that's no longer associated with a live run. Live = the run row
+      # exists with status queued/running, or there's a queued/locked job
+      # for it. Anything else is a leak from a previous daemon crash.
+      #
+      # Guarded by `Runner::DockerRunner.docker_available?` — installs
+      # without docker-api silently return 0.
+      def sweep_orphan_containers
+        return 0 unless Runner::DockerRunner.docker_available?
+
+        live_uids = live_run_uids
+        kill_count = 0
+        Docker::Container.all(all: true,
+                              filters: JSON.dump(label: ["prouterd.run_uid"])).each do |container|
+          uid = container.info.dig("Labels", "prouterd.run_uid") ||
+                container.json.dig("Config", "Labels", "prouterd.run_uid")
+          next if uid.nil? || uid.empty?
+          next if live_uids.include?(uid)
+
+          Runner::DockerStop.force_stop(container)
+          kill_count += 1
+        end
+        kill_count
+      rescue StandardError => e
+        @logger.warn("recovery: orphan-container sweep failed",
+                     error: e.class.name, message: e.message)
+        0
+      end
+
+      def live_run_uids
+        rows = @db.execute(<<~SQL)
+          SELECT r.uid FROM runs r
+          WHERE r.status IN ('queued', 'running')
+             OR EXISTS (
+               SELECT 1 FROM jobs j
+               WHERE j.run_id = r.id AND j.status IN ('queued', 'locked')
+             )
+        SQL
+        rows.map(&:first).to_set
+      rescue SQLite3::SQLException
+        # jobs table missing on a pre-Phase-11 DB — fall back to runs only
+        @db.execute("SELECT uid FROM runs WHERE status IN ('queued', 'running')").map(&:first).to_set
       end
     end
   end

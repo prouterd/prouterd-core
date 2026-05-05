@@ -5,6 +5,7 @@ require "timeout"
 require "digest"
 require "shellwords"
 require "time"
+require_relative "docker_stop"
 
 module Prouterd
   module Runner
@@ -268,21 +269,10 @@ module Prouterd
         Timeout.timeout(seconds) { container.wait }
       end
 
-      # Two-stage stop: SIGTERM first with a short grace window so the
-      # process can flush logs / write output.json / clean up partial
-      # state, then SIGKILL if it didn't exit. Override the grace via
-      # PROUTERD_CONTAINER_STOP_TIMEOUT (seconds, default 10).
-      DEFAULT_STOP_TIMEOUT = 10
-
+      # Two-stage stop is shared with Recovery's orphan-container kill
+      # and v1.rb's cancel handler — extracted into Runner::DockerStop.
       def force_stop(container)
-        timeout = (ENV["PROUTERD_CONTAINER_STOP_TIMEOUT"] || DEFAULT_STOP_TIMEOUT).to_i
-        container.stop("t" => timeout)
-      rescue Docker::Error::DockerError, StandardError
-        begin
-          container.kill
-        rescue Docker::Error::DockerError, StandardError
-          # nothing more we can do; the container may already be gone.
-        end
+        Runner::DockerStop.force_stop(container)
       end
 
       # Per-stream cap to keep a misbehaving block from OOM-ing the daemon.

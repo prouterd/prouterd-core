@@ -9,5 +9,6 @@ require_relative "runner/call_runner"
 module Prouterd
   module Runner
     autoload :DockerRunner, File.expand_path("runner/docker_runner", __dir__)
+    autoload :DockerStop,   File.expand_path("runner/docker_stop",   __dir__)
   end
 end

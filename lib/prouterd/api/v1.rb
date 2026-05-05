@@ -327,15 +327,10 @@ module Prouterd
         # references so a partial install can't NameError this endpoint.
         killed = []
         if @in_flight && Runner::DockerRunner.docker_available?
-          stop_timeout = (ENV["PROUTERD_CONTAINER_STOP_TIMEOUT"] || 10).to_i
           @in_flight.container_ids_for(run.uid).each do |cid|
             begin
               container = Docker::Container.get(cid)
-              begin
-                container.stop("t" => stop_timeout)
-              rescue Docker::Error::DockerError, StandardError
-                container.kill rescue nil
-              end
+              Runner::DockerStop.force_stop(container)
               killed << cid
             rescue StandardError => e
               @logger.warn("v1: cancel container failed",

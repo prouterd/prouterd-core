@@ -39,6 +39,23 @@ module Prouterd
         end
         out
       end
+
+      # Phase 35c: recursively scrub secret values out of structured
+      # output. Used by the orchestrator before storing a block's
+      # `output_json` into the shared Context (otherwise a block that
+      # echoes `{{secret.X}}` back into its output would leak the value
+      # downstream via `{{block.field}}` templating + /prouter/input.json).
+      # Walks Hash and Array containers; redacts every leaf String;
+      # everything else (numbers, booleans, nil) passes through.
+      def redact_json(value)
+        case value
+        when nil then nil
+        when String then redact(value)
+        when Hash then value.transform_values { |v| redact_json(v) }
+        when Array then value.map { |v| redact_json(v) }
+        else value
+        end
+      end
     end
   end
 end

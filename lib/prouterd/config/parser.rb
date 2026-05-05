@@ -366,6 +366,9 @@ module Prouterd
         when "queue"
           expect_token_count(line, 2, "queue <name>")
           node.queue_name = expect_identifier(line.tokens[1], "queue name")
+        when "timeout"
+          expect_token_count(line, 2, "timeout <duration>")
+          node.timeout_ms = expect_duration(line.tokens[1], "timeout")
         when "shutdown"
           expect_token_count(line, 1, "shutdown")
           node.shutdown = true

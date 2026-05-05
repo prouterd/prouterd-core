@@ -107,7 +107,7 @@ module Prouterd
       end
 
       class Process
-        attr_accessor :name, :description, :queue_name, :shutdown, :line
+        attr_accessor :name, :description, :queue_name, :shutdown, :timeout_ms, :line
         attr_reader :blocks, :routes
 
         def initialize(name:, line:)
@@ -116,6 +116,7 @@ module Prouterd
           @description = nil
           @queue_name = nil
           @shutdown = false
+          @timeout_ms = nil
           @blocks = []
           @routes = []
         end

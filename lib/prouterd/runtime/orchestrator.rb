@@ -121,7 +121,8 @@ module Prouterd
       end
 
       def execute_inner(run, process, document, seed_context: nil, start_blocks: nil)
-        running = @runs.update_run(run.id, status: "running", started_at: Time.now.utc.iso8601(3))
+        run_started_at = Time.now.utc
+        running = @runs.update_run(run.id, status: "running", started_at: run_started_at.iso8601(3))
         @events.publish(:run_updated, run: running) if running
 
         context = if seed_context
@@ -152,6 +153,16 @@ module Prouterd
           if fresh && fresh.status == "canceled"
             failure_reason = nil
             return finalize_canceled(run)
+          end
+
+          # Phase 35b: wall-clock timeout. cap = process.timeout || queue.timeout
+          # || PROUTERD_RUN_DEFAULT_TIMEOUT_MS || 6h. Over-cap → kill in-flight
+          # containers, finalize failed with error_type "run_timeout".
+          if (overshoot = run_timeout_overshoot(process, document, run_started_at))
+            log_system_safe(run, "run exceeded #{overshoot}ms wall-clock timeout", db_mutex)
+            kill_in_flight_containers(run)
+            return finalize_run(run, status: "failed",
+                                     error: "run_timeout: exceeded #{overshoot}ms wall-clock timeout")
           end
 
           # Filter out shutdown / already-executed before kicking off threads.
@@ -497,6 +508,14 @@ module Prouterd
           result = enforce_output_contract(block, document, result, run, step, db_mutex, redactor)
         end
 
+        # Phase 35c: scrub secret values out of output_json BEFORE we
+        # persist the step row OR seed the shared run Context. Without
+        # this, a block that echoed `{{secret.X}}` back into its output
+        # would leak the resolved value to every downstream block via
+        # context-templating + /prouter/input.json, AND to the persisted
+        # run_steps.output_json column.
+        scrubbed_output = result.output_json ? redactor.redact_json(result.output_json) : nil
+
         finished_step = nil
         db_mutex.synchronize do
           persist_logs(run, step, result, redactor)
@@ -509,13 +528,13 @@ module Prouterd
             exit_code: result.exit_code,
             error_type: result.error_type,
             error_message: redactor.redact(result.error_message),
-            output_json: result.output_json ? JSON.dump(result.output_json) : nil
+            output_json: scrubbed_output ? JSON.dump(scrubbed_output) : nil
           )
         end
         @events.publish(:step_updated, step: finished_step, run_id: run.id, run_uid: run.uid) if finished_step
 
         if result.success?
-          ctx_mutex.synchronize { update_context_with_output(block, context, result) }
+          ctx_mutex.synchronize { update_context_with_output(block, context, scrubbed_output) }
         end
 
         result
@@ -739,12 +758,16 @@ module Prouterd
         end
       end
 
-      def update_context_with_output(block, context, result)
-        return unless result.success? && result.output_json
+      # Caller passes ALREADY-REDACTED output_json (Phase 35c). The shared
+      # Context flows into every downstream block's call-fields via
+      # templating and into /prouter/input.json — secrets must never get
+      # there.
+      def update_context_with_output(block, context, scrubbed_output_json)
+        return unless scrubbed_output_json
 
         # Auto-key by block name. Downstream blocks reference via templating:
         # `{{<block_name>.field}}`.
-        context.set(block.name, result.output_json)
+        context.set(block.name, scrubbed_output_json)
       end
 
       def update_run_context(run, context)
@@ -761,6 +784,39 @@ module Prouterd
         )
         @events.publish(:run_updated, run: finalized) if finalized
         finalized
+      end
+
+      DEFAULT_RUN_TIMEOUT_MS = 6 * 60 * 60 * 1000 # 6 hours
+
+      # Returns elapsed_ms when over the cap, nil otherwise. cap is
+      # process.timeout_ms ?? queue.timeout_ms ?? env override ?? 6h.
+      # Uses the local started-at captured at execute_inner entry, not
+      # the DB row, so we don't have to refetch on every level.
+      def run_timeout_overshoot(process, document, run_started_at)
+        cap = process.timeout_ms
+        if cap.nil? && process.queue_name
+          queue = document.queues.find { |q| q.name == process.queue_name }
+          cap = queue&.timeout_ms
+        end
+        cap ||= (ENV["PROUTERD_RUN_DEFAULT_TIMEOUT_MS"] || DEFAULT_RUN_TIMEOUT_MS).to_i
+        return nil if cap <= 0
+
+        elapsed_ms = ((Time.now.utc - run_started_at) * 1000).to_i
+        elapsed_ms > cap ? elapsed_ms : nil
+      end
+
+      # SIGTERM-then-SIGKILL every container the in-flight registry has
+      # attached to this run. Used by Phase 35b run-timeout enforcement.
+      def kill_in_flight_containers(run)
+        return unless @in_flight && Runner::DockerRunner.docker_available?
+
+        @in_flight.container_ids_for(run.uid).each do |cid|
+          container = Docker::Container.get(cid)
+          Runner::DockerStop.force_stop(container)
+        rescue StandardError
+          # best-effort; orphan-container sweep on next boot will catch
+          # anything we miss.
+        end
       end
 
       def finalize_canceled(run)

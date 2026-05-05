@@ -1026,10 +1026,60 @@ plugin.
 
 5 new specs across 34a-34c. 649 specs / 0 failures.
 
+### Phase 35: runtime safety — orphan kill, run timeout, secret context redact
+
+**35a — orphan container kill at boot.** When a daemon crashes
+mid-block, the docker container keeps running on the host. Recovery
+swept run-rows but ignored containers. Now:
+- `Runner::DockerStop` extracted as a shared module — DockerRunner's
+  internal force_stop, `/v1/runs/:uid/cancel`, and Recovery all call
+  the same two-stage SIGTERM-then-SIGKILL.
+- `Recovery#sweep_orphan_containers` lists `Docker::Container.all`
+  filtered by `label=prouterd.run_uid`, intersects against live run
+  uids (queued/running runs OR runs with queued/locked jobs), kills
+  the rest. Guarded by `DockerRunner.docker_available?` — installs
+  without docker-api silently no-op.
+- `Recovery::Result` extended with `containers_killed:` for
+  structured-log reporting.
+
+**35b — run-level wall-clock timeout.** Each block had a `timeout`,
+queue had a `timeout`, but a long DAG × retries × slowly-dying block
+could hang a run indefinitely. Now:
+- New `process timeout <duration>` directive (parsed via
+  `expect_duration`, rendered between `queue` and `shutdown`).
+- Orchestrator's between-level loop computes
+  `cap = process.timeout_ms || queue.timeout_ms ||
+   PROUTERD_RUN_DEFAULT_TIMEOUT_MS || 6h`. Over-cap → kills in-flight
+  containers via `Runner::DockerStop`, finalizes run as failed with
+  `error_summary: "run_timeout: exceeded Nms wall-clock timeout"`.
+- `kill_in_flight_containers` is the per-run analog of the orphan
+  sweep, used both by the timeout enforcement and by the cancel
+  handler (also refactored to call `DockerStop.force_stop` directly).
+
+**35c — strict secret redaction in Context. BREAKING.** When a block
+returned an `output_json` containing a secret value (e.g. because its
+call-field templated `{{secret.X}}` and the block echoed it back),
+the resolved value flowed unredacted into `Context[block.name]`,
+into the persisted `run_steps.output_json` column, and into every
+downstream block's `/prouter/input.json`. Now:
+- New `Redactor#redact_json(value)` — recursive Hash/Array walk that
+  applies the per-secret string scrubber at every leaf.
+- Orchestrator's `execute_single_attempt` redacts `result.output_json`
+  before persisting the step row AND before calling
+  `update_context_with_output`. Same `[********]` mask as logs.
+- Chained-auth pipelines that previously consumed a peer block's
+  secret via `{{block.token}}` will now receive `[********]`. The
+  fix: declare the secret on the consuming block too — every block
+  resolves secrets independently from env / file via the secret
+  resolver, no need to thread through Context.
+
+5 new specs (orphan-container kill + 2 process-timeout + redact-context).
+654 specs / 0 failures.
+
 ## Status
 
-- 34 phases shipped, one git commit per phase
-- 649 RSpec specs, 0 failures
+- 35 phases shipped, one git commit per phase
+- 654 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

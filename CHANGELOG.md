@@ -807,10 +807,72 @@ word-scan stop), 5 ShellRunner (stdout-Hash, stdout-Array, log-text
 fallback, scalar-JSON fallback, file-overrides-stdout). Suite at 617
 examples, 0 failures.
 
+### Phase 31: DockerRunner stdout-as-JSON; finish off the escape-pyramid fix
+
+Phase 30 left a known regression I didn't catch in CI: backtick raw
+strings stripped DSL-level escaping from docker echo-JSON blocks, but
+the shell INSIDE `'...'` then ate the JSON quotes and produced
+`{score:85}` (invalid JSON) instead of `{"score":85}`. Examples
+04/05/06/07/08 had `command \`sh -c '... echo {"score":85} > out.json'\``
+and would have crashed at runtime with `error_type:"invalid_output"`
+the first time anyone ran them through real Docker. The rspec suite
+didn't exercise the docker dispatch path under real shell, so it
+shipped green.
+
+Two fixes in one phase:
+
+1. **DockerRunner gains stdout-as-JSON**, mirroring ShellRunner from
+   Phase 29/30. Priority order:
+     1. `/prouter/output.json` exists and parses → use it
+     2. file is empty → `output_json = {}`
+     3. file is missing AND stdout parses as a Hash/Array → use stdout
+     4. otherwise (log text, JSON scalar, empty stdout) → `{}`
+   Malformed JSON in an *explicit* file still surfaces as
+   `invalid_output` — a deliberate write is a deliberate write. The
+   `missing_output` error type is gone (matches shell's lenient
+   contract). Container-side `> /prouter/output.json` redirect is now
+   optional, not required.
+
+2. **Examples 04–08 rewritten** for the stdout-as-JSON path:
+     - drop `> /prouter/output.json` from every block that just echoes
+       a JSON literal — the runner picks up stdout
+     - move the JSON literal into shell single-quotes:
+       `echo '{"score":85}'`
+     - flip the outer shell quoting from `'...'` to `"..."` so the
+       inner single-quote is legal:
+       `sh -c "echo extracted >&2; echo '{\"raw\":true}'"`
+
+   Single-statement blocks lose `sh -c` entirely:
+   ```
+   block scorer
+    interface docker alpine
+    command `echo '{"score":85,"label":"A"}'`
+   exit
+   ```
+
+   Examples 10_tg_github also moved to backtick form (was the last
+   place with `\"` sprinkled at DSL level).
+
+Result: across 12 example files, **zero `\\\\` and zero DSL-level `\"`**.
+The remaining 6 lines of single `\"` in 04/05/06/07/08 are
+shell-internal — they're the inner `\"` inside an outer `"..."` so
+single-quoted JSON literals can survive the outer wrap. That's a
+shell-syntax cost, not a DSL cost; double-shell-quote nesting can't
+go below one escape level no matter what the DSL does.
+
+10 new specs in `docker_runner_classify_outcome_spec.rb` cover every
+branch of the new precedence (file present + parses, file present +
+empty, file present + invalid, file missing + stdout Hash, file
+missing + stdout Array, file missing + log text, file missing + JSON
+scalar, file missing + empty stdout, file overrides stdout, non-zero
+exit beats everything).
+
+Suite at 627 examples, 0 failures.
+
 ## Status
 
-- 30 phases shipped, one git commit per phase
-- 617 RSpec specs, 0 failures
+- 31 phases shipped, one git commit per phase
+- 627 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

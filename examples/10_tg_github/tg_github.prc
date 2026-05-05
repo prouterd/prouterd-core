@@ -91,7 +91,7 @@ process pr_notify
 
  block send
   interface shell ruby_blocks
-  exec "sh -c 'TEXT=$(jq -r .input.text \"$PROUTER_INPUT_PATH\") && curl -fsS -X POST \"https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage\" --data-urlencode \"chat_id=${TG_CHAT_ID}\" --data-urlencode \"parse_mode=Markdown\" --data-urlencode \"text=$TEXT\" -o \"$PROUTER_OUTPUT_PATH\"'"
+  exec `sh -c 'TEXT=$(jq -r .input.text "$PROUTER_INPUT_PATH") && curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" --data-urlencode "chat_id=${TG_CHAT_ID}" --data-urlencode "parse_mode=Markdown" --data-urlencode "text=$TEXT" -o "$PROUTER_OUTPUT_PATH"'`
   secret TG_BOT_TOKEN
   secret TG_CHAT_ID
   retry retry_tg
@@ -118,7 +118,7 @@ process issue_notify
 
  block send
   interface shell ruby_blocks
-  exec "sh -c 'TEXT=$(jq -r .input.text \"$PROUTER_INPUT_PATH\") && curl -fsS -X POST \"https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage\" --data-urlencode \"chat_id=${TG_CHAT_ID}\" --data-urlencode \"parse_mode=Markdown\" --data-urlencode \"text=$TEXT\" -o \"$PROUTER_OUTPUT_PATH\"'"
+  exec `sh -c 'TEXT=$(jq -r .input.text "$PROUTER_INPUT_PATH") && curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" --data-urlencode "chat_id=${TG_CHAT_ID}" --data-urlencode "parse_mode=Markdown" --data-urlencode "text=$TEXT" -o "$PROUTER_OUTPUT_PATH"'`
   secret TG_BOT_TOKEN
   secret TG_CHAT_ID
   retry retry_tg

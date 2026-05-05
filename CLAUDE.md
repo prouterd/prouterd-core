@@ -264,18 +264,23 @@ Block call-field command strings in `.prc` go through:
 5. ShellRunner uses `Shellwords.split` to break into argv; DockerRunner
    does the same and passes through to the container's `sh -c`.
 
-For shell blocks: writing `/prouter/output.json` is **optional**. If
-`exit_code == 0` and the file is missing, ShellRunner trims stdout and
-JSON-parses it; Hash/Array becomes `output_json`, anything else falls
-through to `{}`. So a one-liner producer block is just:
+For both shell AND docker blocks: writing `/prouter/output.json` is
+**optional**. If `exit_code == 0` and the file is missing, the runner
+trims stdout and JSON-parses it; Hash/Array becomes `output_json`,
+anything else falls through to `{}`. An explicit (parseable) file
+always overrides stdout. Malformed JSON in an explicit file still
+surfaces as `invalid_output`. So a one-liner producer block is just:
 
 ```
-exec `echo '{"score":85}'`
+command `echo '{"score":85}'`
 ```
 
-…and downstream blocks read `{{scorer.score}}` via templating. Docker
-keeps the strict `output.json` contract — the container's filesystem
-IS the contract surface there, by design.
+…and downstream blocks read `{{scorer.score}}` via templating, no
+matter which runner picked the block up. The shell-internal `\"` you
+sometimes see inside multi-statement blocks
+(`sh -c "...; echo '{\"raw\":true}'"`) is not DSL escaping — it's the
+shell's own syntax for putting `'...'` inside `"..."`, and it can't
+be removed without breaking POSIX shell quoting rules.
 
 ### SQLite `:memory:` and WAL
 

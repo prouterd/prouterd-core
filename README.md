@@ -464,14 +464,18 @@ declared on the block.
 
 Output rules:
 
-- **docker**: strict — `exit_code == 0` AND `output.json` exists AND
-  parses as valid JSON AND every `produces <relpath>` was written.
-  The container's filesystem IS the contract surface.
-- **shell**: lenient — `exit_code == 0` is enough. If `output.json`
-  doesn't exist, the runner trims stdout and parses it as JSON; if
-  that yields a Hash or Array, it becomes `output_json`. Pure log
-  text falls through to `{}`. The block can still write the file
-  explicitly to override.
+Both docker and shell follow the same precedence — `exit_code == 0`,
+then look for output in this order: `output.json` (parses as JSON),
+empty `output.json` → `{}`, missing `output.json` + stdout parses as
+JSON Hash/Array → use stdout, otherwise `{}`. Malformed JSON in an
+explicit `output.json` is still an error (`invalid_output`); a
+non-zero exit always wins. Every declared `produces <relpath>` must
+be written.
+
+Net effect: a block that just emits a JSON literal can drop the
+`> /prouter/output.json` ceremony — `command \`echo '{"score":85}'\``
+is enough. Side-effect-only blocks (echo, notify, tail) succeed with
+`output_json={}` whether they redirect or not.
 
 For HTTP / LLM / Postgres callers there is no filesystem; output
 shape is plugin-specific (see "Outbound interfaces" above).

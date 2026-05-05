@@ -47,7 +47,7 @@ process mixed
  ! container's filesystem is the contract surface).
  block finalize
   interface docker alpine
-  command `sh -c 'echo done-via-docker >&2; echo {"ok":true} > /prouter/output.json'`
+  command `sh -c "echo done-via-docker >&2; echo '{\"ok\":true}'"`
   timeout 30s
   enable
  exit

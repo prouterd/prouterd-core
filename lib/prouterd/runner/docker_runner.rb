@@ -95,7 +95,7 @@ module Prouterd
 
         output_json = nil
         if error_type.nil?
-          error_type, error_message, output_json = classify_outcome(work_dir, exit_code)
+          error_type, error_message, output_json = classify_outcome(work_dir, exit_code, stdout)
         end
 
         artifacts = collect_artifacts(work_dir)
@@ -351,25 +351,49 @@ module Prouterd
         false
       end
 
-      def classify_outcome(work_dir, exit_code)
+      # Output discovery, in priority order:
+      #
+      #   1. /prouter/output.json exists and parses → use that.
+      #      An explicit file is the strongest signal of intent.
+      #   2. /prouter/output.json exists but is empty → output_json={}.
+      #   3. /prouter/output.json missing, stdout parses as a JSON
+      #      Hash/Array → use that. Lets blocks emit JSON via stdout
+      #      without `> /prouter/output.json` ceremony, mirroring
+      #      ShellRunner. The single-block scorer becomes
+      #      `command \`echo '{"score":85}'\`` with zero escapes.
+      #   4. Otherwise (missing file, plain log stdout, JSON scalar) →
+      #      output_json={}. Side-effect-only blocks stay valid.
+      #
+      # Malformed JSON in an explicit output.json still surfaces as
+      # invalid_output — the file was a deliberate write.
+      def classify_outcome(work_dir, exit_code, stdout_str)
         output_path = File.join(work_dir, OUTPUT_FILENAME)
         if exit_code != 0
           return ["non_zero_exit", "block exited with code #{exit_code}", nil]
         end
-        unless File.exist?(output_path)
-          return ["missing_output", "block did not write /prouter/#{OUTPUT_FILENAME}", nil]
+
+        if File.exist?(output_path)
+          raw = File.read(output_path)
+          return [nil, nil, {}] if raw.empty?
+
+          begin
+            return [nil, nil, JSON.parse(raw)]
+          rescue JSON::ParserError => e
+            return ["invalid_output", "output.json is not valid JSON: #{e.message}", nil]
+          end
         end
 
-        raw = File.read(output_path)
-        if raw.empty?
-          return ["invalid_output", "/prouter/#{OUTPUT_FILENAME} is empty", nil]
+        trimmed = stdout_str.to_s.strip
+        unless trimmed.empty?
+          begin
+            parsed = JSON.parse(trimmed)
+            return [nil, nil, parsed] if parsed.is_a?(Hash) || parsed.is_a?(Array)
+          rescue JSON::ParserError
+            # not JSON — pure log output, fall through
+          end
         end
-        begin
-          json = JSON.parse(raw)
-          [nil, nil, json]
-        rescue JSON::ParserError => e
-          ["invalid_output", "output.json is not valid JSON: #{e.message}", nil]
-        end
+
+        [nil, nil, {}]
       end
 
       def collect_artifacts(work_dir)

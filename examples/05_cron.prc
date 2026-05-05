@@ -30,7 +30,7 @@ process tick
  no shutdown
  block log_tick
   interface docker alpine
-  command `sh -c 'echo TICK at $(date -u +%FT%TZ) >&2; echo {"ok":true} > /prouter/output.json'`
+  command `sh -c "echo TICK at $(date -u +%FT%TZ) >&2; echo '{\"ok\":true}'"`
   timeout 30s
   enable
  exit

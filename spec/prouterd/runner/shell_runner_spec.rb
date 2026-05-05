@@ -40,6 +40,36 @@ RSpec.describe Prouterd::Runner::ShellRunner do
     expect(result.output_json).to eq({})
   end
 
+  it "parses stdout as JSON when output.json is absent (Hash)" do
+    result = runner.run(request(command: %q[sh -c "echo '{\"score\":85}'"]))
+    expect(result.error_type).to be_nil
+    expect(result.output_json).to eq("score" => 85)
+  end
+
+  it "parses stdout as JSON when output.json is absent (Array)" do
+    result = runner.run(request(command: %q[sh -c "echo '[1,2,3]'"]))
+    expect(result.output_json).to eq([1, 2, 3])
+  end
+
+  it "leaves output_json={} when stdout is plain log text" do
+    result = runner.run(request(command: %q[sh -c 'echo just a log line']))
+    expect(result.error_type).to be_nil
+    expect(result.output_json).to eq({})
+  end
+
+  it "leaves output_json={} when stdout is a non-Hash/Array JSON scalar" do
+    # JSON.parse("42") returns 42 — that's a scalar, not a useful block
+    # output. Treat as "no JSON output" rather than overriding the file.
+    result = runner.run(request(command: %q[sh -c 'echo 42']))
+    expect(result.output_json).to eq({})
+  end
+
+  it "output.json overrides stdout when both are present" do
+    cmd = %q[sh -c 'echo {\"from\":\"stdout\"}; echo {\"from\":\"file\"} > $PROUTER_OUTPUT_PATH']
+    result = runner.run(request(command: cmd))
+    expect(result.output_json).to eq("from" => "file")
+  end
+
   it "returns invalid_output when the command writes garbage" do
     result = runner.run(request(command: %q[sh -c 'echo not-json > $PROUTER_OUTPUT_PATH']))
     expect(result.error_type).to eq("invalid_output")

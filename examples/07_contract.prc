@@ -49,7 +49,7 @@ process scoring
 
  block score
   interface docker alpine
-  command "sh -c 'echo \"{\\\"score\\\":85,\\\"label\\\":\\\"A\\\"}\" > /prouter/output.json'"
+  command `sh -c 'echo {"score":85,"label":"A"} > /prouter/output.json'`
   contract scored_v1
   timeout 30s
   enable
@@ -57,7 +57,7 @@ process scoring
 
  block notify
   interface docker alpine
-  command "sh -c 'echo notified-with={{score.score}}-{{score.label}} >&2; echo \"{\\\"notified\\\":true}\" > /prouter/output.json'"
+  command `sh -c 'echo notified-with={{score.score}}-{{score.label}} >&2; echo {"notified":true} > /prouter/output.json'`
   timeout 30s
   enable
  exit

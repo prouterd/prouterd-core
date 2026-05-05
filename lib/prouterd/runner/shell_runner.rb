@@ -71,7 +71,7 @@ module Prouterd
 
         output_json = nil
         if error_type.nil?
-          error_type, error_message, output_json = classify_outcome(work_dir, exit_code)
+          error_type, error_message, output_json = classify_outcome(work_dir, exit_code, stdout_str)
         end
 
         artifacts = collect_artifacts(work_dir)
@@ -141,30 +141,40 @@ module Prouterd
         end
       end
 
-      def classify_outcome(work_dir, exit_code)
+      def classify_outcome(work_dir, exit_code, stdout_str)
         path = File.join(work_dir, OUTPUT_FILENAME)
         if exit_code != 0
           return ["non_zero_exit", "shell exited with code #{exit_code}", nil]
         end
-        # Shell blocks frequently exist for side effects only (echo, notify,
-        # tail a log). Forcing every block to synthesize JSON into
-        # /prouter/output.json to satisfy the contract is the kind of
-        # ceremony that produces sed-pipeline horror in examples. So:
-        # exit 0 + no output.json = success with output_json={}. Downstream
-        # blocks that need richer data still write the file; ones that
-        # don't, don't. (DockerRunner stays strict — the container
-        # contract is its whole point.)
-        unless File.exist?(path)
-          return [nil, nil, {}]
-        end
-        raw = File.read(path)
-        return [nil, nil, {}] if raw.empty?
 
-        begin
-          [nil, nil, JSON.parse(raw)]
-        rescue JSON::ParserError => e
-          ["invalid_output", "output.json is not valid JSON: #{e.message}", nil]
+        # If the block explicitly wrote /prouter/output.json, that always
+        # wins (mirrors the docker contract).
+        if File.exist?(path)
+          raw = File.read(path)
+          return [nil, nil, {}] if raw.empty?
+
+          begin
+            return [nil, nil, JSON.parse(raw)]
+          rescue JSON::ParserError => e
+            return ["invalid_output", "output.json is not valid JSON: #{e.message}", nil]
+          end
         end
+
+        # No output.json. If stdout is JSON-only, treat stdout as the
+        # block's output — `exec \`echo '{"score":85}'\`` becomes a clean
+        # one-liner. If stdout is empty or non-JSON (e.g. log lines), fall
+        # through to {} so the side-effect-only case stays valid.
+        trimmed = stdout_str.to_s.strip
+        unless trimmed.empty?
+          begin
+            parsed = JSON.parse(trimmed)
+            return [nil, nil, parsed] if parsed.is_a?(Hash) || parsed.is_a?(Array)
+          rescue JSON::ParserError
+            # not JSON — pure log output, fall through
+          end
+        end
+
+        [nil, nil, {}]
       end
 
       def collect_artifacts(work_dir)

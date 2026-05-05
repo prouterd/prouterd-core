@@ -20,8 +20,7 @@ interface manual cli
  no shutdown
 exit
 
-interface docker alpine
- image alpine:latest
+interface shell host
 exit
 
 interface llm claude
@@ -42,9 +41,11 @@ process triage
   enable
  exit
 
+ ! `{{summarize.text}}` reads the previous block's output via templating
+ ! — no JSON parsing in shell, no sed pipelines, no docker.
  block notify
-  interface docker alpine
-  command "sh -c 'echo \"summary: $(cat $PROUTER_INPUT_PATH | sed -n \"s/.*\\\"summarize\\\":.*\\\"text\\\":\\\"\\([^\\\"]*\\)\\\".*/\\1/p\")\" >&2; echo \"{\\\"sent\\\":true}\" > /prouter/output.json'"
+  interface shell host
+  exec "echo summary: {{summarize.text}}"
   timeout 10s
   enable
  exit

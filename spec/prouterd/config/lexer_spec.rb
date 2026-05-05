@@ -56,6 +56,33 @@ RSpec.describe Prouterd::Config::Lexer do
     expect { tokenize('description "oops') }.to raise_error(Prouterd::Config::LexError, /unterminated string/)
   end
 
+  describe "backtick raw strings" do
+    it "tokenizes a backtick-delimited raw string with NO escape processing" do
+      lines = tokenize('exec `echo {"score":85}`')
+      tokens = lines.first.tokens
+      expect(tokens.length).to eq(2)
+      expect(tokens[1].type).to eq(:string)
+      # Backslashes / double quotes / braces all literal — no \" needed.
+      expect(tokens[1].value).to eq('echo {"score":85}')
+    end
+
+    it "preserves embedded backslashes literally" do
+      lines = tokenize('exec `printf %s\\n hi`')
+      expect(lines.first.tokens[1].value).to eq('printf %s\\n hi')
+    end
+
+    it "raises LexError on unterminated raw string" do
+      expect { tokenize('exec `echo no-close') }
+        .to raise_error(Prouterd::Config::LexError, /unterminated raw string/)
+    end
+
+    it "stops bare-word scan at a backtick" do
+      lines = tokenize("foo`bar`")
+      tokens = lines.first.tokens
+      expect(tokens.map(&:value)).to eq(%w[foo bar])
+    end
+  end
+
   it "treats # and ! as comments only at token boundary" do
     lines = tokenize("image foo!bar")
     tokens = lines.first.tokens

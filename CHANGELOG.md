@@ -748,10 +748,69 @@ output behaviour was rewritten to assert the new lenient one.
 
 Suite at 608 examples, 0 failures.
 
+### Phase 30: Backtick raw strings + stdout-as-JSON kill the \\\\\\" pyramid
+
+The Phase 29 hello-world fix exposed a deeper problem: every example
+that needed to emit a JSON literal through shell ended up looking like
+
+```
+command "sh -c 'echo \"{\\\"score\\\":85}\" > /prouter/output.json'"
+```
+
+— DSL escaping `"` as `\"`, then shell escaping `"` as `\"`, then JSON
+needing literal `"`, multiplied through the layers. Operators couldn't
+read it, let alone write it.
+
+Two orthogonal changes:
+
+**Backtick raw strings in the DSL.** The lexer now accepts `` `...` `` as
+a raw string token: NO escape processing, every byte between the
+backticks taken literally. Embedded `` ` `` is not allowed (use the
+double-quoted form for that one case). This matches Python's `r"..."`,
+Markdown's fenced code, and the half-dozen other DSLs that figured out
+quoting nesting is unsolvable in one universe of escapes.
+
+**ShellRunner parses stdout as JSON when output.json is absent.** If a
+shell block exits 0 and the optional `/prouter/output.json` file
+doesn't exist, the runner trims stdout and tries `JSON.parse`; if it
+yields a Hash or Array, that becomes `output_json`. Pure log output
+falls through to `{}` (the existing Phase 29 default). The block can
+still write the file explicitly to override (file always wins over
+stdout). DockerRunner stays strict — the container contract is its
+whole point.
+
+Combined, the canonical scorer block goes from
+
+```
+command "sh -c 'echo \"{\\\"score\\\":85}\" > /prouter/output.json'"
+```
+
+to
+
+```
+exec `echo '{"score":85}'`
+```
+
+…and the rest of the pipeline reads it via `{{scorer.score}}`. End of
+story.
+
+The renderer was taught to emit backtick form when it would noticeably
+reduce escaping (string contains `"` or `\`, doesn't contain `` ` ``),
+so parse → render → parse stays idempotent on the new form too.
+
+Updated examples 02–09 + 12 + the LLM-notify pipeline; **zero `\\\\\\"`
+left in the example tree**. examples/09_llm.prc dropped its sed-pipeline
+JSON parser entirely — `{{summarize.text}}` does the same job, declaratively.
+
+9 new specs: 4 lexer (backtick raw, escape literality, unterminated,
+word-scan stop), 5 ShellRunner (stdout-Hash, stdout-Array, log-text
+fallback, scalar-JSON fallback, file-overrides-stdout). Suite at 617
+examples, 0 failures.
+
 ## Status
 
-- 29 phases shipped, one git commit per phase
-- 608 RSpec specs, 0 failures
+- 30 phases shipped, one git commit per phase
+- 617 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - All v0.1 acceptance criteria + production hardening + IPC +
   contracts + router-CLI compatibility + binary split + typed artifacts

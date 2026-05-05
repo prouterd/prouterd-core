@@ -268,7 +268,18 @@ module Prouterd
       end
 
       def quote_string(text)
-        %("#{escape_string(text)}")
+        # Emit backtick-raw form when it would noticeably reduce escaping.
+        # Heuristic: the string contains a `"` or a `\`, AND it contains
+        # no backtick (which we can't represent in a backtick raw string).
+        # That covers shell commands and JSON literals — exactly the
+        # places where double-quoted form forces \\\" pyramids.
+        if text.include?("`") || text.empty?
+          %("#{escape_string(text)}")
+        elsif text.include?('"') || text.include?("\\")
+          "`#{text}`"
+        else
+          %("#{escape_string(text)}")
+        end
       end
 
       def escape_string(text)

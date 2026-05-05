@@ -2,10 +2,22 @@ module Prouterd
   module Config
     # Tokenizes a .prc source string into an array of Line objects.
     #
-    # The DSL is line-oriented: each non-blank, non-comment source line yields
-    # one Line containing one or more Tokens. Tokens are either bare words or
-    # double-quoted strings. Comments start with `!` or `#` at a token boundary
-    # and run to end of line. Indentation is cosmetic and ignored.
+    # The DSL is line-oriented: each non-blank, non-comment source line
+    # yields one Line containing one or more Tokens. Tokens are one of:
+    #
+    #   * bare word                — `process`, `42`, `/leads`
+    #   * double-quoted string     — `"alpine:1"`, `"a \"quoted\" b"` (with
+    #                                \n / \t / \r / \\ / \" escapes)
+    #   * backtick raw string      — `` `echo '{"score":85}'` `` — NO escape
+    #                                processing inside; everything between the
+    #                                opening and closing backtick is taken
+    #                                literally. Useful for shell commands and
+    #                                JSON literals where DSL-level backslash
+    #                                escaping would force triple- or
+    #                                quadruple-escaping inside double quotes.
+    #
+    # Comments start with `!` or `#` at a token boundary and run to end of
+    # line. Indentation is cosmetic and ignored.
     class Lexer
       WHITESPACE = [" ", "\t"].freeze
       COMMENT_CHARS = ["!", "#"].freeze
@@ -50,6 +62,9 @@ module Prouterd
           if ch == '"'
             token, pos = read_string(content, pos, len, line_no)
             tokens << token
+          elsif ch == '`'
+            token, pos = read_raw_string(content, pos, len, line_no)
+            tokens << token
           else
             token, pos = read_word(content, pos, len, line_no)
             tokens << token
@@ -57,6 +72,28 @@ module Prouterd
         end
 
         tokens
+      end
+
+      # Backtick-delimited raw string. NO escape processing — every byte
+      # between the opening `` ` `` and the closing `` ` `` is taken
+      # literally. Newlines inside aren't allowed (line-oriented DSL); an
+      # unterminated raw string raises LexError just like a string literal.
+      def read_raw_string(content, pos, len, line_no)
+        start_col = pos + 1
+        pos += 1
+        value = String.new(encoding: Encoding::UTF_8)
+
+        while pos < len
+          ch = content[pos]
+          if ch == '`'
+            pos += 1
+            return [Token.new(:string, value, line_no, start_col), pos]
+          end
+          value << ch
+          pos += 1
+        end
+
+        raise LexError.new("unterminated raw string literal (missing closing `)", line: line_no, column: start_col)
       end
 
       def read_string(content, pos, len, line_no)
@@ -88,7 +125,7 @@ module Prouterd
 
         while pos < len
           ch = content[pos]
-          break if WHITESPACE.include?(ch) || ch == '"'
+          break if WHITESPACE.include?(ch) || ch == '"' || ch == '`'
           value << ch
           pos += 1
         end

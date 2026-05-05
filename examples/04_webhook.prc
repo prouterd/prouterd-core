@@ -38,7 +38,7 @@ process pipeline
  no shutdown
  block extract
   interface docker alpine
-  command "sh -c 'echo extracted >&2; echo \"{\\\"raw\\\":true}\" > /prouter/output.json'"
+  command `sh -c 'echo extracted >&2; echo {"raw":true} > /prouter/output.json'`
   timeout 30s
   enable
  exit

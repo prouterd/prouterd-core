@@ -39,7 +39,7 @@ process inference
  ! Producer: writes two named files into /prouter/artifacts/.
  block train
   interface docker alpine
-  command "sh -c 'echo MODEL > /prouter/artifacts/model.pkl && echo {\\\"acc\\\":0.92} > /prouter/artifacts/metrics.json && echo {\\\"trained\\\":true} > /prouter/output.json'"
+  command `sh -c 'echo MODEL > /prouter/artifacts/model.pkl && echo {"acc":0.92} > /prouter/artifacts/metrics.json && echo {"trained":true} > /prouter/output.json'`
   produces model.pkl
   produces metrics.json
   timeout 60s
@@ -49,7 +49,7 @@ process inference
  ! Consumer: reads the named artifacts.
  block deploy
   interface docker alpine
-  command "sh -c 'cat $PROUTER_INPUT_MODEL && cat $PROUTER_INPUT_METRICS && echo {\\\"deployed\\\":true} > /prouter/output.json'"
+  command `sh -c 'cat $PROUTER_INPUT_MODEL && cat $PROUTER_INPUT_METRICS && echo {"deployed":true} > /prouter/output.json'`
   input from train.model.pkl
   input from train.metrics.json
   timeout 30s

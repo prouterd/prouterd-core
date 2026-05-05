@@ -140,7 +140,7 @@ process triage_pipeline
   retry policy transient_only
   method POST
   path "/issue/{{event.issue.key}}/comment"
-  body-json "{\"body\":{{summarize.text}}}"
+  body-json `{"body":{{summarize.text}}}`
   timeout 10s
   enable
  exit

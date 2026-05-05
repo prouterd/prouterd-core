@@ -32,18 +32,22 @@ process mixed
  queue default
  no shutdown
 
- ! Step 1: shell block — runs as a local process
+ ! Step 1: shell block — runs as a local process. Stdout-as-JSON means
+ ! we don't even have to redirect to $PROUTER_OUTPUT_PATH; the runner
+ ! parses single-line JSON stdout into output_json automatically.
  block prepare
   interface shell host
-  exec "sh -c 'echo \"{\\\"prepared\\\":true,\\\"by\\\":\\\"shell\\\"}\" > $PROUTER_OUTPUT_PATH'"
+  exec `echo '{"prepared":true,"by":"shell"}'`
   timeout 10s
   enable
  exit
 
- ! Step 2: docker block — runs as a container
+ ! Step 2: docker block — runs as a container. Docker keeps the strict
+ ! /prouter/output.json contract, so we still write the file (the
+ ! container's filesystem is the contract surface).
  block finalize
   interface docker alpine
-  command "sh -c 'echo done-via-docker >&2; echo \"{\\\"ok\\\":true}\" > /prouter/output.json'"
+  command `sh -c 'echo done-via-docker >&2; echo {"ok":true} > /prouter/output.json'`
   timeout 30s
   enable
  exit

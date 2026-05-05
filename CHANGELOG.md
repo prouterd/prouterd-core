@@ -664,10 +664,57 @@ works as documented.
 
 Suite at 605 examples, 0 failures.
 
+### Phase 28: Heavy interface deps become opt-in
+
+Phase 26 made `pg` lazy because not every install needs postgres. The
+same reasoning applies to `docker-api` (a heavy native gem; many
+operators don't run a Docker daemon at all) and `fugit` (only
+`interface cron` uses it). Phase 28 generalises the pattern so the
+**default install gives you `interface shell` + `interface http` +
+`interface llm`** — all three sit on Ruby stdlib (`Open3`, `Net::HTTP`).
+Container, SQL, and cron support are explicit `gem install` away.
+
+```
+gem install docker-api   # interface docker     (DockerRunner)
+gem install pg           # interface postgres   (PostgresCaller)
+gem install fugit        # interface cron       (Scheduler)
+```
+
+What changed:
+
+- **DockerRunner** lazy-loads `docker-api` on first dispatch via
+  `DockerRunner.docker_available?`. Without the gem it returns
+  `error_type:"missing_dependency"` with the install command, instead
+  of `LoadError`-ing at require time.
+- **api/v1.rb** cancel-attached path is guarded with the same check
+  so a daemon started without docker-api can't `NameError` on
+  `Docker::Container.get`.
+- **Scheduler** lazy-loads `fugit` via `Scheduler.fugit_available?`.
+  Without the gem it logs once ("'fugit' gem not installed; cron
+  interfaces disabled") and returns nil from `parse_cron` — the daemon
+  keeps running, webhook + manual interfaces are unaffected.
+- **gemspec** now lists only `sqlite3`, `puma`, `rack`,
+  `faye-websocket` as hard runtime deps. `docker-api`, `pg`, and
+  `fugit` move to `add_development_dependency` so CI keeps testing
+  against them. The `add_dependency` line for each is replaced with a
+  table of optional features in the gemspec comment block.
+- **examples/01_hello_world.prc** rewritten to use `interface shell`
+  so the default install actually runs the canonical hello-world
+  without docker.
+
+Three new specs prove the missing-dep paths:
+`spec/prouterd/runner/docker_runner_missing_dep_spec.rb` (unit + e2e
+through CallRunner) and
+`spec/prouterd/runtime/scheduler_missing_fugit_spec.rb` (warns once,
+disables firing). PostgresCaller's existing missing-pg coverage from
+Phase 26 already proves the pg path.
+
+Suite at 608 examples, 0 failures.
+
 ## Status
 
-- 27 phases shipped, one git commit per phase
-- 605 RSpec specs, 0 failures
+- 28 phases shipped, one git commit per phase
+- 608 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - All v0.1 acceptance criteria + production hardening + IPC +
   contracts + router-CLI compatibility + binary split + typed artifacts

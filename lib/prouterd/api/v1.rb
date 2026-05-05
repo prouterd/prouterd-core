@@ -309,8 +309,13 @@ module Prouterd
         # send SIGTERM with a short grace window, then SIGKILL. The
         # orchestrator's between-level poll picks up the status flip and
         # aborts further scheduling.
+        #
+        # docker-api is an OPTIONAL dependency. If a daemon was started
+        # without it installed, no containers can be in-flight to begin with,
+        # so the loop below is naturally empty. We still guard the Docker::*
+        # references so a partial install can't NameError this endpoint.
         killed = []
-        if @in_flight
+        if @in_flight && Runner::DockerRunner.docker_available?
           stop_timeout = (ENV["PROUTERD_CONTAINER_STOP_TIMEOUT"] || 10).to_i
           @in_flight.container_ids_for(run.uid).each do |cid|
             begin

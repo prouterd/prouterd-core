@@ -1,4 +1,3 @@
-require "docker"
 require "json"
 require "fileutils"
 require "tmpdir"
@@ -10,6 +9,12 @@ require "time"
 module Prouterd
   module Runner
     # Runs a single block as a Docker container.
+    #
+    # The `docker-api` gem is an OPTIONAL dependency — installs that don't
+    # use `interface docker` don't need it. When a block tries to dispatch
+    # through DockerRunner without docker-api installed, the runner returns
+    # a clean error_type:"missing_dependency" result instead of crashing
+    # at parse time.
     #
     # Contract honored here:
     #
@@ -28,11 +33,34 @@ module Prouterd
       ARTIFACTS_DIRNAME = "artifacts".freeze
       INPUTS_DIRNAME = "inputs".freeze
 
+      # Lazy-loaded once per process. Returns true iff `docker-api` is
+      # installed and importable. Called from `run` so the gem is only
+      # touched on the first dispatch through DockerRunner.
+      def self.docker_available?
+        return @docker_available unless @docker_available.nil?
+
+        @docker_available = begin
+          require "docker"
+          true
+        rescue LoadError
+          false
+        end
+      end
+
       def initialize(in_flight: nil)
         @in_flight = in_flight
       end
 
       def run(request)
+        unless self.class.docker_available?
+          return ExecutionResult.new(
+            exit_code: nil, stdout: "", stderr: "",
+            output_json: nil, artifacts: [],
+            error_type: "missing_dependency",
+            error_message: "interface docker requires the 'docker-api' gem (gem install docker-api)",
+            duration_ms: 0, started_at: nil, finished_at: nil
+          )
+        end
         work_dir = Dir.mktmpdir(WORK_DIR_PREFIX)
         prepare_work_dir(work_dir, request.input_json)
         stage_inputs(work_dir, request.staged_inputs)

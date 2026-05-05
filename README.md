@@ -61,16 +61,27 @@ persistent setup.
 
 ### Option B — local Ruby
 
-Requires Ruby ≥ 3.2 and `libsqlite3-dev`. A Docker daemon is required
-ONLY if you actually use `interface docker` blocks — pipelines built
-from `interface shell` blocks (host-side processes) need nothing but
-Ruby.
+Requires Ruby ≥ 3.2 and `libsqlite3-dev`. The base install is
+deliberately small — only `interface shell` (host processes), `interface
+http`, and `interface llm` work out of the box (the latter two ride on
+Ruby's stdlib `Net::HTTP`). Heavier outbound interfaces are opt-in:
+
+| Feature                           | Install                |
+| --------------------------------- | ---------------------- |
+| `interface docker` (containers)   | `gem install docker-api` |
+| `interface postgres` (SQL)        | `gem install pg`       |
+| `interface cron` (cron schedules) | `gem install fugit`    |
+
+If a config references a feature whose gem isn't installed, the run
+fails with `error_type: "missing_dependency"` and a one-line message
+telling you which gem to install — no `LoadError` at parse time, no
+crashed daemon. Cron interfaces simply don't fire and the scheduler
+logs a single warning.
 
 ```bash
 git clone <this-repo>
 cd prouterd
 bundle install
-docker pull alpine:latest
 
 # 1. Validate a sample pipeline
 bundle exec ruby exe/prouter check examples/01_hello_world.prc

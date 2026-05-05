@@ -1,9 +1,14 @@
-require "fugit"
 require "time"
 
 module Prouterd
   module Runtime
     # Cron scheduler that fires triggers for `interface cron` declarations.
+    #
+    # The `fugit` gem is an OPTIONAL dependency — installs that don't use
+    # `interface cron` don't need it. When fugit is not installed, the
+    # scheduler logs once at warmup, treats every cron interface as
+    # un-parseable, and otherwise no-ops; the daemon as a whole keeps
+    # running.
     #
     # Runs as a background thread inside `prouter serve`. Once per tick
     # (TICK_SECONDS, default 1s) it:
@@ -21,6 +26,17 @@ module Prouterd
     # missed; sophisticated catch-up logic is intentionally out of scope
     # for v0.1 and a simple skip-during-outage matches that.
     class Scheduler
+      def self.fugit_available?
+        return @fugit_available unless @fugit_available.nil?
+
+        @fugit_available = begin
+          require "fugit"
+          true
+        rescue LoadError
+          false
+        end
+      end
+
       TICK_SECONDS = 1.0
 
       def self.run(store:, runner:, jobs:, logger: NullLogger.new, in_flight: nil, metrics: nil)
@@ -98,6 +114,14 @@ module Prouterd
       def parse_cron(iface)
         schedule = iface.type_fields["schedule"]
         return nil unless schedule
+
+        unless self.class.fugit_available?
+          unless @fugit_warned
+            @logger.warn("scheduler: 'fugit' gem not installed; cron interfaces disabled (gem install fugit)")
+            @fugit_warned = true
+          end
+          return nil
+        end
 
         # Fugit accepts a trailing timezone in the cron expression itself:
         # "0 9 * * * Europe/Berlin". We append the interface's `timezone`

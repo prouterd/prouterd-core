@@ -902,10 +902,68 @@ the additions are pure-add to the response envelope.
 
 630 specs / 0 failures.
 
+### Phase 33: Extract HttpClient + CallerTiming, drop boilerplate from outbound callers
+
+HttpCaller, LlmCaller, and PostgresCaller all duplicated the same
+two boilerplate cores:
+
+1. **Net::HTTP transport** (HttpCaller + LlmCaller) — `Net::HTTP.start`
+   with the same SSL/timeout knobs, the same `Net::OpenTimeout /
+   Net::ReadTimeout / StandardError` rescue ladder, the same
+   best-effort `JSON.parse(body)`, identical method-to-class dispatch
+   table.
+2. **Run timing** (all three) — `Time.now.utc` before and after the
+   real call, then the same 10-line `Runner::ExecutionResult.new(...)`
+   assembly with `duration_ms` / `started_at` / `finished_at`.
+
+Both extracted into shared modules:
+
+- **`Iface::HttpClient`** — single Net::HTTP wrapper. `request(method:,
+  uri:, headers:, body:, timeout_ms:)` returns a `Response` struct
+  with `status`, `body_text`, `body_json` (parsed iff parseable). Wire
+  failures raise typed exceptions (`HttpClient::TimeoutError`,
+  `HttpClient::RequestError`) so each caller maps to its own
+  user-facing `error_type` label — http "timeout"/"http_error",
+  llm "timeout"/"llm_error", etc.
+
+- **`Iface::CallerTiming`** mixin — caller writes a private
+  `perform_run(request)` returning a Hash; the mixin's `run(request)`
+  wraps it in `Time.now.utc` measurement and packages the result as
+  the `Runner::ExecutionResult` CallRunner expects. Caller no longer
+  carries the timestamp-format / duration-math boilerplate.
+
+Each caller is now focused on what's actually unique to its iface
+type:
+
+- **HttpCaller** (109 lines, was 160) — URL building, auth header
+  attachment, 2xx-vs-non-2xx result classification.
+- **LlmCaller** (213 lines, was 246) — per-provider request body
+  shape (anthropic vs openai), per-provider header conventions
+  (`x-api-key` vs `Authorization: Bearer`), response shape
+  normalization to `{text, model, usage, stop_reason}`.
+- **PostgresCaller** (147 lines, was 162) — only the timing wrapper
+  changed; pg-specific transaction + SQLSTATE → error_type logic
+  stays put.
+
+LOC totals: 568 → 610 (+42). The refactor doesn't shrink absolute
+lines, it concentrates knowledge: every new HTTP-talking caller
+(slack, github, k8s, …) saves the ~70 lines of Net::HTTP +
+ExecutionResult boilerplate. Phase 26's lazy-require pattern is still
+free per caller.
+
+13 new specs cover both modules: HttpClient (success path, header
+forwarding, body_json fallback, timeout vs request-error mapping,
+unsupported method, timeout_seconds floor + nil default — 10 specs),
+CallerTiming (success, error preserved, duration measured, artifacts
+default vs passthrough — 5 specs).
+
+643 specs / 0 failures. Pure refactor — every existing caller spec
+passes unchanged, end-to-end orchestrator integration unchanged.
+
 ## Status
 
-- 32 phases shipped, one git commit per phase
-- 630 RSpec specs, 0 failures
+- 33 phases shipped, one git commit per phase
+- 643 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

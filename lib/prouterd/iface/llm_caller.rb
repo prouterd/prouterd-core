@@ -1,14 +1,14 @@
-require "net/http"
 require "uri"
 require "json"
+require_relative "http_client"
+require_relative "caller_timing"
 
 module Prouterd
   module Iface
     # Caller for `interface llm`. Invoked by `Runner::CallRunner` when a
     # block references an outbound llm interface.
     #
-    # Reads from `request.type_fields` (orchestrator merged the iface body
-    # and the templated per-call fields):
+    # Reads from `request.type_fields`:
     #   * provider    — "anthropic" | "openai"
     #   * model       — model identifier (e.g. "claude-haiku-4-5-20251001")
     #   * auth        — AST::Auth; resolved API key looked up from request.env
@@ -23,12 +23,19 @@ module Prouterd
     #     "usage" => { "input_tokens" => N, "output_tokens" => M },
     #     "stop_reason" => "..." }
     #
+    # Net::HTTP / timeouts / JSON parse live in `Iface::HttpClient`. This
+    # class only carries the LLM-specific shape work: per-provider request
+    # body construction, header conventions (anthropic = x-api-key,
+    # openai = Authorization: Bearer), response shape normalization.
+    #
     # Note: the full provider response is intentionally NOT echoed back into
     # `output_json`. Some providers include the prompt or other context in
     # error responses, and that body would otherwise flow into the run
     # context for downstream blocks. Callers that need the raw response
     # should inspect step logs (which are redacted).
     class LlmCaller
+      include CallerTiming
+
       DEFAULT_MAX_TOKENS = 1024
 
       DEFAULT_BASE_URL = {
@@ -37,24 +44,6 @@ module Prouterd
       }.freeze
 
       ANTHROPIC_VERSION = "2023-06-01".freeze
-
-      def run(request)
-        started_at = Time.now.utc
-        result = perform_run(request)
-        finished_at = Time.now.utc
-        Runner::ExecutionResult.new(
-          exit_code:     result[:exit_code],
-          stdout:        result[:stdout].to_s,
-          stderr:        result[:stderr].to_s,
-          output_json:   result[:output_json],
-          artifacts:     [],
-          error_type:    result[:error_type],
-          error_message: result[:error_message],
-          duration_ms:   ((finished_at - started_at) * 1000).to_i,
-          started_at:    started_at.iso8601(3),
-          finished_at:   finished_at.iso8601(3)
-        )
-      end
 
       private
 
@@ -87,17 +76,12 @@ module Prouterd
                                        return error("invalid_provider", "unknown provider '#{provider}'")
                                      end
 
-        response = perform(uri, request_body, headers, request.timeout_ms)
-        body = response.body.to_s
+        response = HttpClient.request(method: "POST", uri: uri,
+                                      headers: headers, body: request_body,
+                                      timeout_ms: request.timeout_ms || 60_000)
 
-        parsed = nil
-        begin
-          parsed = JSON.parse(body) unless body.empty?
-        rescue JSON::ParserError
-          # leave parsed nil
-        end
-
-        if response.code.to_i.between?(200, 299) && parsed
+        parsed = response.body_json
+        if response.status.between?(200, 299) && parsed
           {
             exit_code:   0,
             output_json: shape_output(provider, parsed, model),
@@ -107,18 +91,20 @@ module Prouterd
           }
         else
           {
-            exit_code:     response.code.to_i,
+            exit_code:     response.status,
             output_json:   nil,
-            stdout:        parsed ? JSON.dump(parsed) : body,
+            stdout:        parsed ? JSON.dump(parsed) : response.body_text,
             stderr:        "",
             error_type:    "llm_error",
-            error_message: "HTTP #{response.code}: #{provider_error_message(parsed) || first_line(body)}"
+            error_message: "HTTP #{response.status}: #{provider_error_message(parsed) || first_line(response.body_text)}"
           }
         end
-      rescue Net::OpenTimeout, Net::ReadTimeout => e
+      rescue HttpClient::TimeoutError => e
         error("timeout", "LLM timeout: #{e.message}")
-      rescue StandardError => e
-        error("llm_error", "#{e.class}: #{e.message}")
+      rescue HttpClient::RequestError => e
+        error("llm_error", e.message)
+      rescue ArgumentError => e
+        error("llm_error", e.message)
       end
 
       def build_anthropic(base, model, prompt, system_msg, max_tokens, temperature, token)
@@ -198,19 +184,6 @@ module Prouterd
         (request.env || {})[auth.secret_name]
       end
 
-      def perform(uri, body, headers, timeout_ms)
-        request = Net::HTTP::Post.new(uri.request_uri)
-        request.body = body
-        headers.each { |k, v| request[k] = v }
-
-        Net::HTTP.start(uri.hostname, uri.port,
-                        use_ssl: uri.scheme == "https",
-                        open_timeout: timeout_seconds(timeout_ms),
-                        read_timeout: timeout_seconds(timeout_ms)) do |http|
-          http.request(request)
-        end
-      end
-
       def parse_int(value, default)
         return default if value.nil? || (value.respond_to?(:empty?) && value.empty?)
 
@@ -225,12 +198,6 @@ module Prouterd
         Float(value.to_s)
       rescue ArgumentError, TypeError
         nil
-      end
-
-      def timeout_seconds(timeout_ms)
-        return 60 unless timeout_ms
-
-        [(timeout_ms.to_f / 1000.0), 1].max
       end
 
       def first_line(s)

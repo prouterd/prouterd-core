@@ -1,4 +1,5 @@
 require "json"
+require_relative "caller_timing"
 
 module Prouterd
   module Iface
@@ -27,29 +28,13 @@ module Prouterd
     # interface don't pay the dep cost. Missing pg returns
     # error_type:"missing_dependency".
     class PostgresCaller
+      include CallerTiming
+
       def self.pg_available?
         require "pg"
         true
       rescue LoadError
         false
-      end
-
-      def run(request)
-        started_at = Time.now.utc
-        result = perform_run(request)
-        finished_at = Time.now.utc
-        Runner::ExecutionResult.new(
-          exit_code:     result[:exit_code],
-          stdout:        result[:stdout].to_s,
-          stderr:        result[:stderr].to_s,
-          output_json:   result[:output_json],
-          artifacts:     [],
-          error_type:    result[:error_type],
-          error_message: result[:error_message],
-          duration_ms:   ((finished_at - started_at) * 1000).to_i,
-          started_at:    started_at.iso8601(3),
-          finished_at:   finished_at.iso8601(3)
-        )
       end
 
       private

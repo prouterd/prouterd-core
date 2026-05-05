@@ -6,6 +6,8 @@ require_relative "iface/registry"
 # — only the runtime path that actually invokes the caller does.
 module Prouterd
   module Iface
+    autoload :HttpClient,     File.expand_path("iface/http_client",     __dir__)
+    autoload :CallerTiming,   File.expand_path("iface/caller_timing",   __dir__)
     autoload :HttpCaller,     File.expand_path("iface/http_caller",     __dir__)
     autoload :LlmCaller,      File.expand_path("iface/llm_caller",      __dir__)
     autoload :PostgresCaller, File.expand_path("iface/postgres_caller", __dir__)

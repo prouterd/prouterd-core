@@ -85,8 +85,47 @@ module Prouterd
         @accepting = false
       end
 
+      # Re-enable mutating endpoints. Called by the periodic storage probe
+      # once writes are working again.
+      def resume_accepting
+        @accepting = true
+      end
+
       def accepting?
         @accepting
+      end
+
+      # Background storage-health probe. The daemon entry point starts
+      # this thread; tests / CLI processes don't. Runs forever, checking
+      # `@store.db.healthy?` every PROUTERD_STORAGE_PROBE_SECONDS (default
+      # 30). When `@accepting` is currently false and the probe says
+      # writes work — flip back. When accepting=true and probe says no —
+      # flip off pre-emptively (handler-level rescue covers the case
+      # where a request hits a still-broken DB before the probe noticed).
+      def start_storage_probe
+        return if @storage_probe_thread
+
+        interval = (ENV["PROUTERD_STORAGE_PROBE_SECONDS"] || 30).to_i
+        @storage_probe_thread = Thread.new do
+          loop do
+            sleep interval
+            healthy = @store.db.healthy?
+            if healthy && !@accepting
+              @accepting = true
+              @logger.info("storage: writes recovered, accepting requests")
+            elsif !healthy && @accepting
+              @accepting = false
+              @logger.warn("storage: writes failing, rejecting state-changing requests")
+            end
+          rescue StandardError => e
+            @logger.error("storage probe error", error: e.class.name, message: e.message)
+          end
+        end
+      end
+
+      def stop_storage_probe
+        @storage_probe_thread&.kill
+        @storage_probe_thread = nil
       end
 
       def call(env)
@@ -126,6 +165,14 @@ module Prouterd
         end
 
         not_found
+      rescue Storage::DiskUnavailableError => e
+        # Storage is unwritable — flip into "shutting down" mode so the
+        # next request is rejected with 503 instantly. Scheduler's storage
+        # probe re-enables accepting once writes recover.
+        @accepting = false
+        @logger.error("storage unavailable",
+                      error: e.class.name, message: e.message)
+        json_response(503, error: "storage unavailable", error_type: "storage_unavailable")
       rescue StandardError => e
         @logger.error("API error",
                       error: e.class.name, message: e.message,

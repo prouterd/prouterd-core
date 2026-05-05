@@ -325,9 +325,6 @@ containers and assert on persisted state.
 These came up in design and were declined for v0.1. Don't add them
 speculatively; wait for a real driver:
 
-- **Postgres adapter.** `Storage::DB` is a thin wrapper, but only the
-  SQLite implementation exists. SQL itself is portable; transaction
-  semantics, `last_insert_row_id`, and `RETURNING` would need adapting.
 - **KubernetesCaller / S3 ArtifactStore.** Iface plugin system is
   pluggable; add a new plugin file with the caller class — no edits
   to parser/validator/renderer/show.

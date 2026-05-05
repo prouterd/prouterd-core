@@ -88,6 +88,7 @@ module Prouterd
           in_flight: in_flight, metrics: metrics,
           admin_token: admin_token, jobs: jobs, rate_limiter: rate_limiter
         )
+        app.start_storage_probe
 
         begin
           Prouterd::API::Server.run(
@@ -96,6 +97,7 @@ module Prouterd
             ssl_cert: ENV["PROUTERD_SSL_CERT"], ssl_key: ENV["PROUTERD_SSL_KEY"]
           )
         ensure
+          app.stop_storage_probe
           scheduler.stop
           worker_pool.stop
           logger.info("daemon: stopped")

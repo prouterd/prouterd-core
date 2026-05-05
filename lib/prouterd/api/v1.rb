@@ -151,13 +151,18 @@ module Prouterd
 
         event = parse_json_body(request) || {}
         orchestrator = build_orchestrator
-        run = orchestrator.enqueue(
-          document, name,
-          input_event: event,
-          interface_name: nil,
-          commit_id: @store.running_commit&.id
-        )
-        dispatch_run(run)
+        run = nil
+        # Phase 34a: enqueue + dispatch_run wrapped in one transaction
+        # so a disk-full mid-pair doesn't strand a queued run row.
+        @store.db.transaction do
+          run = orchestrator.enqueue(
+            document, name,
+            input_event: event,
+            interface_name: nil,
+            commit_id: @store.running_commit&.id
+          )
+          dispatch_run(run)
+        end
         @metrics&.increment(:webhooks_received_total, interface: "(api-trigger)", code: 202)
 
         json(202, data: { run_id: run.uid, status: "queued" })
@@ -259,6 +264,8 @@ module Prouterd
         document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
         orchestrator = build_orchestrator
 
+        # Phase 34a: replay's run insert + job dispatch wrapped together.
+        new_run = nil
         if from_block
           repo = Storage::Repositories::Runs.new(@store.db)
           target_step = repo.list_steps(original.id).find { |s| s.block_name == from_block }
@@ -266,24 +273,28 @@ module Prouterd
           payload = JSON.parse(target_step.input_json || "{}")
           seed = payload["context"] || {}
 
-          new_run = orchestrator.enqueue(
-            document, original.process_name,
-            input_event: payload["context"]&.dig("event") ||
-                         (original.input_event_json ? JSON.parse(original.input_event_json) : {}),
-            interface_name: original.interface_name,
-            commit_id: original.process_config_commit_id,
-            replay_of_run_id: original.id
-          )
-          dispatch_run(new_run, from_block: from_block, seed_context: seed)
+          @store.db.transaction do
+            new_run = orchestrator.enqueue(
+              document, original.process_name,
+              input_event: payload["context"]&.dig("event") ||
+                           (original.input_event_json ? JSON.parse(original.input_event_json) : {}),
+              interface_name: original.interface_name,
+              commit_id: original.process_config_commit_id,
+              replay_of_run_id: original.id
+            )
+            dispatch_run(new_run, from_block: from_block, seed_context: seed)
+          end
         else
-          new_run = orchestrator.enqueue(
-            document, original.process_name,
-            input_event: original.input_event_json ? JSON.parse(original.input_event_json) : {},
-            interface_name: original.interface_name,
-            commit_id: original.process_config_commit_id,
-            replay_of_run_id: original.id
-          )
-          dispatch_run(new_run)
+          @store.db.transaction do
+            new_run = orchestrator.enqueue(
+              document, original.process_name,
+              input_event: original.input_event_json ? JSON.parse(original.input_event_json) : {},
+              interface_name: original.interface_name,
+              commit_id: original.process_config_commit_id,
+              replay_of_run_id: original.id
+            )
+            dispatch_run(new_run)
+          end
         end
 
         json(202, data: { run_id: new_run.uid, status: "queued", replay_of: uid, from: from_block })

@@ -226,7 +226,8 @@ HTTP + `/v1/events` WS.
 Out of scope for v0.1 (the plugin interfaces are ready — write a plugin
 file and a caller class, no core edits): KubernetesCaller, S3
 ArtifactStore, Vault / AWS Secrets Manager, RBAC / mTLS / OIDC,
-Postgres-as-storage-backend, idempotency keys.
+idempotency keys. Storage is SQLite, by design — single binary, no
+external DB dependency.
 
 See [CHANGELOG.md](CHANGELOG.md) for the per-version breakdown
 (32 phases shipped).

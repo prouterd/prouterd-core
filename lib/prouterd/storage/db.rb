@@ -7,18 +7,36 @@ module Prouterd
   module Storage
     class StorageError < StandardError; end
 
+    # Disk is full / read-only / SQLite I/O failed. The daemon flips
+    # itself into "stop accepting" mode on this so /i/* and /v1/*-mutate
+    # endpoints return 503 rather than partial-write the DB. The
+    # scheduler periodically re-probes and flips back when writes work.
+    class DiskUnavailableError < StorageError; end
+
     # Thin wrapper around SQLite3::Database that:
     #   * ensures the parent directory exists (and creates it for relative paths
     #     like `var/prouterd.db`)
     #   * enables foreign keys and WAL journaling
     #   * runs pending migrations on open
     #   * exposes a `.transaction` helper that's no-op-safe to nest
+    #   * translates disk-full / I/O exceptions into DiskUnavailableError
     #
     # All higher-level repositories receive a DB instance — never sqlite3
     # directly — so swapping in another backend later means re-implementing
     # this class, not every query site.
     class DB
       DEFAULT_PATH = File.join("var", "prouterd.db").freeze
+
+      # SQLite3 exception classes that mean "the storage layer is not
+      # currently writable". On any of these, callers should fail the
+      # request fast rather than retry blindly. ENOSPC is the host
+      # filesystem; the SQLite3 ones surface from libsqlite3 itself.
+      DISK_UNAVAILABLE_EXCEPTIONS = [
+        Errno::ENOSPC,
+        SQLite3::IOException,
+        SQLite3::FullException,
+        SQLite3::ReadOnlyException
+      ].freeze
 
       attr_reader :path
 
@@ -43,10 +61,35 @@ module Prouterd
 
       def execute(sql, params = [])
         @sqlite.execute(sql, normalize_params(params))
+      rescue *DISK_UNAVAILABLE_EXCEPTIONS => e
+        raise DiskUnavailableError, "storage write failed (#{e.class}): #{e.message}"
       end
 
       def execute_batch(sql)
         @sqlite.execute_batch(sql)
+      rescue *DISK_UNAVAILABLE_EXCEPTIONS => e
+        raise DiskUnavailableError, "storage write failed (#{e.class}): #{e.message}"
+      end
+
+      # Cheap probe used by the daemon's accepting-state monitor. Issues
+      # a SELECT 1 and a write attempt inside an immediate transaction
+      # that's rolled back — exercises both reader and writer paths
+      # without leaving any rows behind. Returns true on success, false
+      # if the storage is genuinely unwritable (disk full, read-only,
+      # I/O error). A SQLite BUSY result counts as healthy — there ARE
+      # writers, the storage works, this probe is just losing the
+      # contention race.
+      def healthy?
+        @sqlite.execute("SELECT 1")
+        @sqlite.execute("BEGIN IMMEDIATE")
+        @sqlite.execute("ROLLBACK")
+        true
+      rescue *DISK_UNAVAILABLE_EXCEPTIONS
+        @sqlite.execute("ROLLBACK") rescue nil
+        false
+      rescue SQLite3::BusyException
+        @sqlite.execute("ROLLBACK") rescue nil
+        true
       end
 
       def query_row(sql, params = [])

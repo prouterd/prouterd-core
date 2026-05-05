@@ -77,15 +77,22 @@ module Prouterd
         orchestrator = Runtime::Orchestrator.new(
           db: @store.db, runner: @runner, in_flight: @in_flight
         )
-        run = orchestrator.enqueue(
-          document,
-          process.name,
-          input_event: event,
-          interface_name: interface_name,
-          commit_id: @store.running_commit&.id
-        )
 
-        @jobs.enqueue(run_id: run.id, kind: "execute")
+        # Phase 34a: run row insert + job-queue insert must land or roll
+        # back together. Without the wrapping transaction a disk-full
+        # mid-pair would leave a `queued` run with no matching job —
+        # invisible to workers, eternal on dashboards.
+        run = nil
+        @store.db.transaction do
+          run = orchestrator.enqueue(
+            document,
+            process.name,
+            input_event: event,
+            interface_name: interface_name,
+            commit_id: @store.running_commit&.id
+          )
+          @jobs.enqueue(run_id: run.id, kind: "execute")
+        end
         @metrics&.increment(:webhooks_received_total, interface: interface_name, code: 202)
 
         body = JSON.dump(

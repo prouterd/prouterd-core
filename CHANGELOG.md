@@ -960,10 +960,76 @@ default vs passthrough — 5 specs).
 643 specs / 0 failures. Pure refactor — every existing caller spec
 passes unchanged, end-to-end orchestrator integration unchanged.
 
+### Phase 34: storage / disk / migration safety
+
+Pre-launch audit found four storage-layer gaps. Phase 34 closes
+them all without changing happy-path behaviour.
+
+**34a — disk-full degrade-gracefully.** Every SQLite write went
+through `DB#execute` raw — `Errno::ENOSPC` / `SQLite3::IOException`
+/ `SQLite3::FullException` / `SQLite3::ReadOnlyException` propagated
+unchanged and crashed the request handler. Worse: webhook ingestion
+and `/v1/processes/:name/trigger` did TWO separate writes
+(`enqueue` + `jobs.enqueue`) NOT in one transaction — a disk-full
+between them left an orphaned `queued` run row that no worker could
+pick up.
+
+Changes:
+- `Storage::DiskUnavailableError < Storage::StorageError`.
+  `DB#execute` / `#execute_batch` translate the four exception
+  classes above into it.
+- `DB#healthy?` — quick `SELECT 1` + `BEGIN IMMEDIATE / ROLLBACK`
+  write probe. SQLite `BUSY` counts as healthy.
+- `App` rescues `DiskUnavailableError` from any handler: flips
+  `@accepting = false`, returns 503 with body
+  `{error: "storage unavailable", error_type: "storage_unavailable"}`.
+- New `App#start_storage_probe` background thread (started by daemon
+  entry). Polls `db.healthy?` every `PROUTERD_STORAGE_PROBE_SECONDS`
+  (default 30); flips accepting back on when storage recovers.
+- Webhook handler + `/v1/processes/:name/trigger` +
+  `/v1/runs/:uid/replay` wrap their `orchestrator.enqueue` + jobs
+  dispatch pair in `@store.db.transaction do … end`. Disk-full
+  between the two writes now rolls both back atomically.
+
+**34b — migration race.** Two daemons in a rolling deploy could
+both enter the migration sweep within milliseconds of each other,
+and existing migrations weren't idempotent (`CREATE TABLE jobs`
+without `IF NOT EXISTS`) — recovering from a half-applied migration
+was impossible.
+
+Changes:
+- `Migrations.run` wraps the entire sweep in `BEGIN EXCLUSIVE` with a
+  30-second retry-with-backoff (`SQLite3::BusyException`). Two
+  concurrent daemons serialise.
+- `schema_migrations` gets `started_at` + `committed_at` columns
+  (idempotent `ALTER` guarded by `PRAGMA table_info`). Pre-existing
+  rows backfill `committed_at = applied_at`.
+- Each migration writes `started_at` first, runs `up`, sets
+  `committed_at` last — all inside the transaction.
+- Sweep start: `DELETE FROM schema_migrations WHERE started_at
+  IS NOT NULL AND committed_at IS NULL` — purges half-applied state
+  from a prior crash so the migration re-applies. Safe because…
+- All three existing migration bodies now use `CREATE TABLE IF NOT
+  EXISTS` and `CREATE INDEX IF NOT EXISTS`. Re-running is a no-op.
+
+**34c — ConfigStore atomicity regression spec.** Already atomic
+since v0.1 (commit wraps both writes in `@db.transaction`). Added
+`spec/prouterd/control_plane/config_store_atomicity_spec.rb` —
+stubs `set_pointer` to raise mid-transaction, asserts no commit
+row leaks. Future refactor that splits the writes will fail loud.
+
+**34d — Postgres-as-storage-backend doc purge.** SQLite only, by
+design. Removed the "Postgres adapter" out-of-scope bullet from
+CLAUDE.md, the matching line from the README's "Out of scope"
+list. All `interface postgres` mentions stay — separate iface
+plugin.
+
+5 new specs across 34a-34c. 649 specs / 0 failures.
+
 ## Status
 
-- 33 phases shipped, one git commit per phase
-- 643 RSpec specs, 0 failures
+- 34 phases shipped, one git commit per phase
+- 649 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

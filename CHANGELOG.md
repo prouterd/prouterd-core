@@ -869,10 +869,43 @@ exit beats everything).
 
 Suite at 627 examples, 0 failures.
 
+### Phase 32: /v1 API surfaces new model — secret_names, retry_when, plugin-driven interfaces
+
+The unification + retry-when phases (23-25) added DSL-level fields
+that never made it into the JSON envelope `prouterd-web` consumes.
+Web rendered "image / input / output" columns as `—` for every
+block because those keys had been replaced with `interface` /
+`call_fields`, and there was no way to display Phase 22's
+plugin-driven interface fields (http base-url, llm provider, postgres
+dsn, …) — `interface_summary` hardcoded webhook + cron paths only.
+
+Three additions to `/v1`:
+
+1. **`process_detail.blocks[i]`** now carries `secret_names: [...]`.
+   Web can show which secrets a block injects without scraping the
+   rendered config.
+
+2. **`policy_summary`** carries `retry_when: [{path, operator,
+   values}, ...]` — Phase 25's smart-retry conditions become
+   visible to operators.
+
+3. **`interface_summary`** is now plugin-driven. Iterates
+   `Iface::Registry.lookup(i.type).fields`, dumps every populated
+   field under a `fields: {...}` sub-hash, and exposes
+   `direction: "inbound"|"outbound"`. http / llm / postgres /
+   docker / shell all render correctly without core knowing each
+   type. `auth bearer secret X` flattens to `"bearer X"` (resolved
+   token never leaves the daemon).
+
+3 new specs cover the new shapes. Existing v1 spec still passes —
+the additions are pure-add to the response envelope.
+
+630 specs / 0 failures.
+
 ## Status
 
-- 31 phases shipped, one git commit per phase
-- 627 RSpec specs, 0 failures
+- 32 phases shipped, one git commit per phase
+- 630 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

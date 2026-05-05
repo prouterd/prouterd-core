@@ -414,6 +414,7 @@ module Prouterd
               timeout_ms: b.timeout_ms,
               retry_policy: b.retry_policy_name,
               contract: b.contract_name,
+              secret_names: Array(b.secret_names),
               shutdown: b.shutdown
             }
           end,
@@ -428,15 +429,27 @@ module Prouterd
       end
 
       def interface_summary(i)
-        {
-          name:     i.name,
-          type:     i.type,
-          shutdown: i.shutdown,
-          path:     i.type_fields["path"],
-          method:   i.type_fields["method"],
-          schedule: i.type_fields["schedule"],
-          timezone: i.type_fields["timezone"]
-        }.compact
+        # Plugin-driven: iterate the iface plugin's declared `field` schema
+        # so http / llm / postgres / docker / shell expose their type-
+        # specific config in /v1 without core having to special-case each
+        # type. Auth-bearer fields render as a compact "{scheme} {name}"
+        # string (the resolved token never leaves the daemon).
+        plugin = Prouterd::Iface::Registry.lookup(i.type)
+        body = {}
+        if plugin
+          plugin.fields.each do |field|
+            value = i.type_fields[field.storage_key]
+            next if value.nil?
+            next if value.respond_to?(:empty?) && value.empty?
+
+            body[field.storage_key] = case field.kind
+                                      when :auth_bearer then "#{value.scheme} #{value.secret_name}"
+                                      else value
+                                      end
+          end
+        end
+
+        { name: i.name, type: i.type, direction: plugin&.direction&.to_s, shutdown: i.shutdown, fields: body }.compact
       end
 
       def queue_summary(q)
@@ -450,6 +463,7 @@ module Prouterd
           retry_backoff:          p.retry_backoff,
           retry_initial_delay_ms: p.retry_initial_delay_ms,
           retry_max_delay_ms:     p.retry_max_delay_ms,
+          retry_when:             p.retry_when_matches.map { |m| match_summary(m) },
           timeout_ms:             p.timeout_ms
         }
       end

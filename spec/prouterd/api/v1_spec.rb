@@ -278,6 +278,18 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
       expect(data.map { |d| d.values_at("name", "type") })
         .to contain_exactly(["cli", "manual"], ["img1", "docker"])
     end
+
+    it "exposes plugin-declared fields under `fields` and the direction" do
+      get "/v1/interfaces"
+      data = JSON.parse(last_response.body)["data"]
+
+      docker_iface = data.find { |d| d["type"] == "docker" }
+      expect(docker_iface["direction"]).to eq("outbound")
+      expect(docker_iface["fields"]).to include("image" => "alpine:1")
+
+      manual_iface = data.find { |d| d["type"] == "manual" }
+      expect(manual_iface["direction"]).to eq("inbound")
+    end
   end
 
   describe "GET /v1/queues" do
@@ -294,6 +306,43 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
       get "/v1/policies"
       expect(last_response.status).to eq(200)
       expect(JSON.parse(last_response.body)["data"]).to eq([])
+    end
+
+    it "exposes retry_when match conditions when declared" do
+      doc_with_policy = parse(<<~PRC)
+        router demo
+        exit
+        policy r3
+         retry attempts 3
+         retry backoff fixed
+         retry initial-delay 1s
+         retry when error_type in "timeout","http_status"
+         retry when error_type eq "llm_error"
+        exit
+        interface manual cli
+         no shutdown
+        exit
+        interface docker img1
+         image alpine:1
+        exit
+        process p
+         block a
+          interface docker img1
+         exit
+        exit
+        route interface cli process p
+        exit
+      PRC
+
+      store2 = Prouterd::ControlPlane::ConfigStore.new(db)
+      store2.commit(doc_with_policy)
+      get "/v1/policies"
+      data = JSON.parse(last_response.body)["data"]
+      policy = data.find { |p| p["name"] == "r3" }
+      expect(policy["retry_when"]).to eq([
+        { "path" => "error_type", "operator" => "in", "values" => %w[timeout http_status] },
+        { "path" => "error_type", "operator" => "eq", "values" => ["llm_error"] }
+      ])
     end
   end
 
@@ -349,6 +398,17 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
       expect(last_response.status).to eq(200)
       data = JSON.parse(last_response.body)["data"]
       expect(data["blocks"].first["name"]).to eq("extract")
+    end
+
+    it "exposes block.interface, call_fields, and secret_names" do
+      get "/v1/processes/pipeline"
+      block = JSON.parse(last_response.body)["data"]["blocks"].first
+      expect(block).to include(
+        "name"         => "extract",
+        "interface"    => { "type" => "docker", "name" => "img1" },
+        "secret_names" => []
+      )
+      expect(block).to have_key("call_fields")
     end
 
     it "404 unknown" do

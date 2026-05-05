@@ -320,9 +320,9 @@ module Prouterd
 
       # Lightweight context wrapper for templating overlays. Falls through to
       # the underlying Runtime::Context for paths the overlay does not
-      # provide. Used to expose `iteration` and `previous.*` to call-field
-      # templates without polluting the run-shared Context (which would race
-      # across parallel block attempts).
+      # provide. Used to expose `iteration`, `previous.*`, and `secret.*` to
+      # templating without polluting the run-shared Context (which would
+      # race across parallel block attempts).
       class OverlayContext
         def initialize(base, overlay)
           @base = base
@@ -335,13 +335,16 @@ module Prouterd
             return @overlay[head] if rest.empty?
 
             rest.reduce(@overlay[head]) do |acc, k|
-              break nil unless acc.is_a?(Hash)
-              acc[k]
+              if acc.is_a?(Hash)
+                acc[k]
+              elsif acc.is_a?(Array) && k =~ /\A\d+\z/
+                acc[k.to_i]
+              else
+                break nil
+              end
             end
           elsif @base.respond_to?(:get)
             @base.get(path)
-          else
-            nil
           end
         end
       end
@@ -414,15 +417,21 @@ module Prouterd
         end
 
         # Build per-run context payload — full context flows in, no slice.
-        # Templating in call-fields reads paths directly from this payload,
-        # plus an optional per-attempt overlay (iteration, previous) that
-        # only this block-attempt sees.
+        # Templating reads paths directly from this payload, plus a
+        # per-attempt overlay (iteration, previous, secret) only visible
+        # to this block-attempt. Both the interface body and the per-call
+        # block fields go through templating so `dsn "{{secret.PG_DSN}}"`
+        # on the interface and `path "/issue/{{event.key}}"` on the block
+        # both work.
+        overlay = (template_overlay || {}).merge("secret" => secret_overlay(document))
+        scope = OverlayContext.new(context, overlay)
         input_payload = nil
+        templated_iface_fields = nil
         templated_call_fields = nil
-        scope = template_overlay ? OverlayContext.new(context, template_overlay) : context
         ctx_mutex.synchronize do
           input_payload = build_input_payload(run, block, context)
-          templated_call_fields = templated_fields(block.type_fields, scope)
+          templated_iface_fields = templated_fields(iface.type_fields || {}, scope)
+          templated_call_fields  = templated_fields(block.type_fields, scope)
         end
 
         step = nil
@@ -447,16 +456,17 @@ module Prouterd
 
         staged_inputs = stage_artifact_inputs(run, block, db_mutex)
 
-        env = build_env(run, process, block, document)
+        env = build_env(run, process, block, iface, document)
         staged_inputs.each_key do |local_name|
           env["PROUTER_INPUT_#{local_name.upcase}"] = "/prouter/inputs/#{local_name}"
         end
 
-        # Merge interface-config + per-call args. iface fields are static
-        # config (base-url, image, cwd, ...). Block fields are templated
-        # per-call args (method, path, command, exec, ...). Caller reads
-        # whichever it needs from the merged Hash via request.field("X").
-        merged_fields = (iface.type_fields || {}).merge(templated_call_fields)
+        # Merge templated interface-config with per-call args. iface fields
+        # are connection-level (base-url, image, dsn, cwd, ...), block
+        # fields are call-specific (method, path, command, query, ...).
+        # Both have already been templated; the call fields win on key
+        # conflict so a block can override an interface default.
+        merged_fields = templated_iface_fields.merge(templated_call_fields)
         request = Runner::RunRequest.new(
           run_uid: run.uid,
           process_name: process.name,
@@ -631,7 +641,19 @@ module Prouterd
         end
       end
 
-      def build_env(run, process, block, document)
+      # Resolved-secret map keyed by secret name, exposed to templating as
+      # the `secret.*` namespace. Operators can write
+      # `dsn "{{secret.PG_DSN}}"` on an interface and the orchestrator
+      # substitutes the resolved value at call time. Unresolved or
+      # missing secrets render as the empty string (Templater convention).
+      # Memoized per run via @secret_overlay_cache.
+      def secret_overlay(document)
+        @secret_overlay_cache ||= document.secrets.each_with_object({}) do |secret, h|
+          h[secret.name] = @secret_resolver.resolve(secret).to_s
+        end
+      end
+
+      def build_env(run, process, block, iface, document)
         env = {
           "PROUTER_RUN_ID" => run.uid,
           "PROUTER_PROCESS_NAME" => process.name,
@@ -641,6 +663,8 @@ module Prouterd
           "PROUTER_OUTPUT_PATH" => "/prouter/output.json",
           "PROUTER_ARTIFACTS_DIR" => "/prouter/artifacts"
         }
+        # Block-declared secrets — surfaced as PROUTER env vars to docker /
+        # shell containers.
         block.secret_names.each do |secret_name|
           secret = document.secrets.find { |s| s.name == secret_name }
           unless secret
@@ -651,6 +675,16 @@ module Prouterd
           # forward an empty string so the container side can detect absence
           # without crashing on missing-key.
           env[secret_name] = value.to_s
+        end
+        # Interface-declared auth secret — outbound callers (HttpCaller,
+        # LlmCaller) read the resolved token from env[secret_name] when
+        # processing iface.type_fields["auth"].
+        iface_auth = iface && iface.type_fields["auth"]
+        if iface_auth
+          secret = document.secrets.find { |s| s.name == iface_auth.secret_name }
+          if secret
+            env[iface_auth.secret_name] ||= @secret_resolver.resolve(secret).to_s
+          end
         end
         env
       end

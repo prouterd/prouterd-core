@@ -7,13 +7,12 @@ module Prouterd
     # Caller for `interface llm`. Invoked by `Runner::CallRunner` when a
     # block references an outbound llm interface.
     #
-    # Reads from the resolved AST::Interface:
-    #   * provider — "anthropic" | "openai"
-    #   * model    — model identifier (e.g. "claude-haiku-4-5-20251001")
-    #   * auth     — AST::Auth with secret_name; resolved value is the API key
-    #   * base-url — optional override (defaults to the provider's public URL)
-    #
-    # Reads from per-call type_fields (already templated):
+    # Reads from `request.type_fields` (orchestrator merged the iface body
+    # and the templated per-call fields):
+    #   * provider    — "anthropic" | "openai"
+    #   * model       — model identifier (e.g. "claude-haiku-4-5-20251001")
+    #   * auth        — AST::Auth; resolved API key looked up from request.env
+    #   * base-url    — optional override (defaults to provider's public URL)
     #   * prompt      — required user prompt
     #   * system      — optional system prompt
     #   * max-tokens  — string, parsed as int (default "1024")
@@ -22,7 +21,13 @@ module Prouterd
     # Output JSON shape (provider-agnostic):
     #   { "text" => "...", "model" => "...",
     #     "usage" => { "input_tokens" => N, "output_tokens" => M },
-    #     "stop_reason" => "...", "raw" => <full provider response> }
+    #     "stop_reason" => "..." }
+    #
+    # Note: the full provider response is intentionally NOT echoed back into
+    # `output_json`. Some providers include the prompt or other context in
+    # error responses, and that body would otherwise flow into the run
+    # context for downstream blocks. Callers that need the raw response
+    # should inspect step logs (which are redacted).
     class LlmCaller
       DEFAULT_MAX_TOKENS = 1024
 
@@ -33,33 +38,42 @@ module Prouterd
 
       ANTHROPIC_VERSION = "2023-06-01".freeze
 
-      CallerResult = Struct.new(
-        :exit_code, :output_json, :stdout, :stderr,
-        :error_type, :error_message,
-        keyword_init: true
-      )
-
-      def initialize(secret_resolver: nil)
-        @secret_resolver = secret_resolver
+      def run(request)
+        started_at = Time.now.utc
+        result = perform_run(request)
+        finished_at = Time.now.utc
+        Runner::ExecutionResult.new(
+          exit_code:     result[:exit_code],
+          stdout:        result[:stdout].to_s,
+          stderr:        result[:stderr].to_s,
+          output_json:   result[:output_json],
+          artifacts:     [],
+          error_type:    result[:error_type],
+          error_message: result[:error_message],
+          duration_ms:   ((finished_at - started_at) * 1000).to_i,
+          started_at:    started_at.iso8601(3),
+          finished_at:   finished_at.iso8601(3)
+        )
       end
 
-      def call(iface:, call_fields:, secrets: {}, timeout_ms: nil)
-        provider = iface.type_fields["provider"].to_s
-        model    = iface.type_fields["model"].to_s
+      private
 
-        return error("invalid_interface", "interface '#{iface.name}' missing provider") if provider.empty?
-        return error("invalid_interface", "interface '#{iface.name}' missing model")    if model.empty?
+      def perform_run(request)
+        provider = request.field("provider").to_s
+        model    = request.field("model").to_s
+        return error("invalid_interface", "interface missing provider") if provider.empty?
+        return error("invalid_interface", "interface missing model")    if model.empty?
 
-        prompt  = call_fields["prompt"].to_s
+        prompt = request.field("prompt").to_s
         return error("invalid_call", "block missing 'prompt'") if prompt.empty?
 
-        system_msg  = call_fields["system"].to_s
-        max_tokens  = parse_int(call_fields["max-tokens"], DEFAULT_MAX_TOKENS)
-        temperature = parse_float(call_fields["temperature"])
+        system_msg  = request.field("system").to_s
+        max_tokens  = parse_int(request.field("max-tokens"), DEFAULT_MAX_TOKENS)
+        temperature = parse_float(request.field("temperature"))
 
-        auth_token = resolve_token(iface, secrets)
+        auth_token = resolve_token(request)
 
-        base_url = iface.type_fields["base-url"]
+        base_url = request.field("base-url")
         base_url = nil if base_url.respond_to?(:empty?) && base_url.empty?
         base_url ||= DEFAULT_BASE_URL[provider]
         return error("invalid_provider", "unknown provider '#{provider}'") unless base_url
@@ -73,42 +87,39 @@ module Prouterd
                                        return error("invalid_provider", "unknown provider '#{provider}'")
                                      end
 
-        response = perform(uri, request_body, headers, timeout_ms)
+        response = perform(uri, request_body, headers, request.timeout_ms)
         body = response.body.to_s
 
         parsed = nil
         begin
           parsed = JSON.parse(body) unless body.empty?
         rescue JSON::ParserError
-          # leave parsed nil; raw body becomes stdout
+          # leave parsed nil
         end
 
         if response.code.to_i.between?(200, 299) && parsed
-          CallerResult.new(
-            exit_code: 0,
+          {
+            exit_code:   0,
             output_json: shape_output(provider, parsed, model),
-            stdout: "",
-            stderr: "",
-            error_type: nil,
-            error_message: nil
-          )
+            stdout:      "",
+            stderr:      "",
+            error_type:  nil, error_message: nil
+          }
         else
-          CallerResult.new(
-            exit_code: response.code.to_i,
-            output_json: nil,
-            stdout: parsed ? JSON.dump(parsed) : body,
-            stderr: "",
-            error_type: "llm_error",
+          {
+            exit_code:     response.code.to_i,
+            output_json:   nil,
+            stdout:        parsed ? JSON.dump(parsed) : body,
+            stderr:        "",
+            error_type:    "llm_error",
             error_message: "HTTP #{response.code}: #{provider_error_message(parsed) || first_line(body)}"
-          )
+          }
         end
       rescue Net::OpenTimeout, Net::ReadTimeout => e
         error("timeout", "LLM timeout: #{e.message}")
       rescue StandardError => e
         error("llm_error", "#{e.class}: #{e.message}")
       end
-
-      private
 
       def build_anthropic(base, model, prompt, system_msg, max_tokens, temperature, token)
         body = {
@@ -155,8 +166,7 @@ module Prouterd
             "text"        => text,
             "model"       => parsed["model"] || model,
             "usage"       => { "input_tokens" => usage["input_tokens"], "output_tokens" => usage["output_tokens"] },
-            "stop_reason" => parsed["stop_reason"],
-            "raw"         => parsed
+            "stop_reason" => parsed["stop_reason"]
           }
         when "openai"
           choice = (parsed["choices"] || []).first || {}
@@ -166,8 +176,7 @@ module Prouterd
             "text"        => msg["content"].to_s,
             "model"       => parsed["model"] || model,
             "usage"       => { "input_tokens" => usage["prompt_tokens"], "output_tokens" => usage["completion_tokens"] },
-            "stop_reason" => choice["finish_reason"],
-            "raw"         => parsed
+            "stop_reason" => choice["finish_reason"]
           }
         end
       end
@@ -182,11 +191,11 @@ module Prouterd
         end
       end
 
-      def resolve_token(iface, secrets)
-        auth = iface.type_fields["auth"]
+      def resolve_token(request)
+        auth = request.field("auth")
         return nil unless auth
 
-        secrets[auth.secret_name]
+        (request.env || {})[auth.secret_name]
       end
 
       def perform(uri, body, headers, timeout_ms)
@@ -229,10 +238,8 @@ module Prouterd
       end
 
       def error(type, message)
-        CallerResult.new(
-          exit_code: nil, output_json: nil, stdout: "", stderr: message,
-          error_type: type, error_message: message
-        )
+        { exit_code: nil, output_json: nil, stdout: "", stderr: message,
+          error_type: type, error_message: message }
       end
     end
   end

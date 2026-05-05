@@ -604,10 +604,70 @@ workflow the unification phases were aimed at.
 
 Suite at 597 examples, 0 failures.
 
+### Phase 27: Fix outbound dispatch + iface-body templating
+
+Three bugs from Phases 23–26 made the new outbound interfaces look
+right on paper but fail end-to-end:
+
+1. **Dispatch contract mismatch.** `CallRunner#run` calls
+   `instance.run(request)` but the new HttpCaller / LlmCaller /
+   PostgresCaller exposed `call(iface:, call_fields:, secrets:,
+   timeout_ms:)`. Unit tests passed because they invoked `.call`
+   directly; nothing exercised the orchestrator path. **Fix:** all
+   three callers now expose `run(request) -> ExecutionResult`,
+   reading from `request.type_fields` (orchestrator-merged iface
+   body + templated call fields) and `request.env` (resolved auth
+   tokens). The Caller-internal `CallerResult` struct is gone — they
+   return the same `Runner::ExecutionResult` everything else uses.
+
+2. **Interface-body fields weren't templated.** `dsn "{{secret.PG_DSN}}"`
+   on `interface postgres` was stored verbatim and handed to
+   `PG.connect` as a literal string. The orchestrator only templated
+   `block.type_fields`. **Fix:** orchestrator now templates
+   `iface.type_fields` too, with the same overlay scope as call
+   fields. Both happen per-attempt (so `{{iteration}}` is consistent
+   across iface+call) and are merged with call-field winning on
+   conflict.
+
+3. **No `secret.*` resolver in templating.** Operators can now write
+   `dsn "{{secret.PG_DSN}}"` and the orchestrator looks the secret up
+   via the configured `secret_resolver`, exposes a `secret` namespace
+   on the per-attempt overlay, and substitutes the resolved value at
+   call time. The map is memoized per run.
+
+Plus two follow-on fixes:
+
+4. **Templater & Context array indexing.** `{{event.tags.0}}` now
+   indexes into Array values instead of silently returning empty
+   string. Both `Util::Templater.resolve` and `Runtime::Context#get`
+   accept numeric path components.
+
+5. **Iface auth secret in env.** `interface http jira { auth bearer
+   secret JIRA_TOKEN }` previously required the BLOCK to also declare
+   `secret JIRA_TOKEN` for the resolved value to reach env. Now
+   `build_env` resolves the iface's auth secret automatically so
+   HttpCaller / LlmCaller find the bearer token without any
+   redundant block-side declaration.
+
+Cleanups:
+- `secret_resolver:` kwarg dropped from caller initializers — was
+  always nil and never read.
+- `PostgresCaller#parse_params` rewritten to honour quoted values, so
+  `params '"Doe, John",42'` no longer splits inside the quoted comma.
+- New integration spec (`outbound_dispatch_spec.rb`) drives orchestrator
+  → CallRunner → caller end-to-end for http and postgres, exercising
+  templating + secret resolution + array indexing.
+
+The end-to-end Jira-debug example
+([examples/12_jira_debug/](examples/12_jira_debug/)) now actually
+works as documented.
+
+Suite at 605 examples, 0 failures.
+
 ## Status
 
-- 26 phases shipped, one git commit per phase
-- 597 RSpec specs, 0 failures
+- 27 phases shipped, one git commit per phase
+- 605 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - All v0.1 acceptance criteria + production hardening + IPC +
   contracts + router-CLI compatibility + binary split + typed artifacts

@@ -22,9 +22,13 @@ module Prouterd
         return @data if path.nil? || path.empty?
 
         path.to_s.split(".").reduce(@data) do |acc, key|
-          break nil unless acc.is_a?(Hash)
-
-          acc[key]
+          if acc.is_a?(Hash)
+            acc[key]
+          elsif acc.is_a?(Array) && key =~ /\A\d+\z/
+            acc[key.to_i]
+          else
+            break nil
+          end
         end
       end
 

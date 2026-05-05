@@ -57,5 +57,23 @@ RSpec.describe Prouterd::Util::Templater do
       expect(described_class.render("{{a}}-{{b}}-{{c}}", "a" => "x", "b" => "y", "c" => "z"))
         .to eq("x-y-z")
     end
+
+    describe "array indexing" do
+      it "indexes into an array via numeric path component" do
+        ctx = { "fetch" => { "fields" => { "components" => [{ "name" => "auth" }, { "name" => "ui" }] } } }
+        expect(described_class.render("{{fetch.fields.components.0.name}}", ctx)).to eq("auth")
+        expect(described_class.render("{{fetch.fields.components.1.name}}", ctx)).to eq("ui")
+      end
+
+      it "renders out-of-range indexes as the empty string" do
+        ctx = { "tags" => %w[a b] }
+        expect(described_class.render("[{{tags.5}}]", ctx)).to eq("[]")
+      end
+
+      it "supports array indexing through Runtime::Context" do
+        ctx = Prouterd::Runtime::Context.new("tags" => %w[urgent backend])
+        expect(described_class.render("{{tags.0}}", ctx)).to eq("urgent")
+      end
+    end
   end
 end

@@ -5,95 +5,93 @@ require "json"
 module Prouterd
   module Iface
     # Caller for `interface http`. Invoked by `Runner::CallRunner` when a
-    # block declares `type call ... use <name>` against an http interface.
+    # block declares `interface http <name>`.
     #
-    # Inputs from the resolved AST::Interface:
-    #   * `base-url`  — scheme + host + optional path prefix
-    #   * `auth`      — AST::Auth or nil; bearer token resolved by caller
-    #
-    # Inputs from the per-call type_fields (already templated):
+    # Reads from `request.type_fields` (orchestrator merged the iface body
+    # and the templated per-call fields):
+    #   * `base-url`  — required; scheme + host + optional path prefix
+    #   * `auth`      — AST::Auth or nil; bearer token name resolved from env
     #   * `method`    — "GET" / "POST" / "PUT" / "PATCH" / "DELETE" (default GET)
     #   * `path`      — appended to base-url. May start with /, may not.
-    #   * `query`     — "k=v&k=v" string (templated whole)
+    #   * `query`     — "k=v&k=v" string
     #   * `body-json` — raw string body. Sets Content-Type to application/json.
     #
-    # Returns CallerResult{exit_code, output_json, stdout, stderr,
-    # error_type, error_message}.
+    # The resolved bearer token is taken from `request.env[secret_name]`
+    # (the orchestrator already injected it there via build_env).
     class HttpCaller
       DEFAULT_METHOD = "GET".freeze
 
-      CallerResult = Struct.new(
-        :exit_code, :output_json, :stdout, :stderr,
-        :error_type, :error_message,
-        keyword_init: true
-      )
-
-      def initialize(secret_resolver: nil)
-        @secret_resolver = secret_resolver
+      def run(request)
+        started_at = Time.now.utc
+        result = perform_run(request)
+        finished_at = Time.now.utc
+        Runner::ExecutionResult.new(
+          exit_code:     result[:exit_code],
+          stdout:        result[:stdout].to_s,
+          stderr:        result[:stderr].to_s,
+          output_json:   result[:output_json],
+          artifacts:     [],
+          error_type:    result[:error_type],
+          error_message: result[:error_message],
+          duration_ms:   ((finished_at - started_at) * 1000).to_i,
+          started_at:    started_at.iso8601(3),
+          finished_at:   finished_at.iso8601(3)
+        )
       end
 
-      # iface — AST::Interface (the resolved outbound interface)
-      # call_fields — Hash<String, String> from block type_fields, templated
-      # secrets — Hash<String, String> resolved bearer tokens etc., keyed by
-      #           the secret NAME declared on the interface (e.g. "JIRA_TOKEN")
-      # timeout_ms — overall timeout, optional
-      def call(iface:, call_fields:, secrets: {}, timeout_ms: nil)
-        base_url = iface.type_fields["base-url"]
-        unless base_url && !base_url.empty?
-          return error("invalid_interface", "interface '#{iface.name}' has no base-url")
-        end
+      private
 
-        method = (call_fields["method"] || DEFAULT_METHOD).to_s.upcase
-        path = call_fields["path"].to_s
-        query = call_fields["query"].to_s
-        body_json = call_fields["body-json"]
+      def perform_run(request)
+        base_url = request.field("base-url").to_s
+        return error("invalid_interface", "interface missing base-url") if base_url.empty?
+
+        method = (request.field("method") || DEFAULT_METHOD).to_s.upcase
+        path   = request.field("path").to_s
+        query  = request.field("query").to_s
+        body   = request.field("body-json")
 
         url = build_url(base_url, path, query)
-
         uri = URI.parse(url)
         unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
           return error("invalid_url", "not an http(s) URL: #{url}")
         end
 
-        request = build_request(method, uri, body_json)
-        apply_auth(request, iface, secrets)
+        http_request = build_request(method, uri, body)
+        apply_auth(http_request, request.field("auth"), request.env || {})
 
-        response = perform(uri, request, timeout_ms)
-        body = response.body.to_s
+        response = perform(uri, http_request, request.timeout_ms)
+        body_text = response.body.to_s
 
         parsed_body = nil
         begin
-          parsed_body = JSON.parse(body) unless body.empty?
+          parsed_body = JSON.parse(body_text) unless body_text.empty?
         rescue JSON::ParserError
-          # leave parsed_body nil; output stays as raw text in stdout
+          # raw text falls into stdout below
         end
 
         if response.code.to_i.between?(200, 299)
-          CallerResult.new(
-            exit_code: 0,
-            output_json: parsed_body || { "status" => response.code.to_i, "body" => body },
-            stdout: parsed_body ? "" : body,
-            stderr: "",
-            error_type: nil,
-            error_message: nil
-          )
+          {
+            exit_code:   0,
+            output_json: parsed_body || { "status" => response.code.to_i, "body" => body_text },
+            stdout:      parsed_body ? "" : body_text,
+            stderr:      "",
+            error_type:  nil, error_message: nil
+          }
         else
-          CallerResult.new(
-            exit_code: response.code.to_i,
-            output_json: nil,
-            stdout: parsed_body ? JSON.dump(parsed_body) : body,
-            stderr: "",
-            error_type: "http_status",
-            error_message: "HTTP #{response.code}: #{first_line(body)}"
-          )
+          {
+            exit_code:     response.code.to_i,
+            output_json:   nil,
+            stdout:        parsed_body ? JSON.dump(parsed_body) : body_text,
+            stderr:        "",
+            error_type:    "http_status",
+            error_message: "HTTP #{response.code}: #{first_line(body_text)}"
+          }
         end
       rescue Net::OpenTimeout, Net::ReadTimeout => e
         error("timeout", "HTTP timeout: #{e.message}")
       rescue StandardError => e
         error("http_error", "#{e.class}: #{e.message}")
       end
-
-      private
 
       def build_url(base, path, query)
         url = base.dup
@@ -122,25 +120,24 @@ module Prouterd
         request
       end
 
-      def apply_auth(request, iface, secrets)
-        auth = iface.type_fields["auth"]
+      def apply_auth(http_request, auth, env)
         return unless auth
 
-        token = secrets[auth.secret_name]
+        token = env[auth.secret_name]
         return unless token && !token.empty?
 
         case auth.scheme
         when "bearer"
-          request["authorization"] = "Bearer #{token}"
+          http_request["authorization"] = "Bearer #{token}"
         end
       end
 
-      def perform(uri, request, timeout_ms)
+      def perform(uri, http_request, timeout_ms)
         Net::HTTP.start(uri.hostname, uri.port,
                         use_ssl: uri.scheme == "https",
                         open_timeout: timeout_seconds(timeout_ms),
                         read_timeout: timeout_seconds(timeout_ms)) do |http|
-          http.request(request)
+          http.request(http_request)
         end
       end
 
@@ -155,10 +152,8 @@ module Prouterd
       end
 
       def error(type, message)
-        CallerResult.new(
-          exit_code: nil, output_json: nil, stdout: "", stderr: message,
-          error_type: type, error_message: message
-        )
+        { exit_code: nil, output_json: nil, stdout: "", stderr: message,
+          error_type: type, error_message: message }
       end
     end
   end

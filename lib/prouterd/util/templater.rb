@@ -41,9 +41,13 @@ module Prouterd
         return context.get(path) if context.respond_to?(:get)
 
         path.split(".").reduce(context) do |acc, key|
-          break nil unless acc.is_a?(Hash)
-
-          acc[key] || acc[key.to_sym]
+          if acc.is_a?(Hash)
+            acc[key] || acc[key.to_sym]
+          elsif acc.is_a?(Array) && key =~ /\A\d+\z/
+            acc[key.to_i]
+          else
+            break nil
+          end
         end
       end
 

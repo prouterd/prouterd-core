@@ -45,7 +45,19 @@ It demonstrates, end-to-end:
   so we retry on transient failures but not on `invalid_call` /
   `invalid_interface`.
 
-## Required env vars
+## Required setup
+
+Install the optional gems for postgres + LLM:
+
+```
+gem install pg
+```
+
+(`http` and `llm` ride on `Net::HTTP`; `webhook` is core. No
+docker-api needed for this pipeline — every block is shell-free
+HTTP/SQL.)
+
+Env vars:
 
 | Variable        | What it is                                      |
 | --------------- | ----------------------------------------------- |

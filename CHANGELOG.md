@@ -812,9 +812,14 @@ examples, 0 failures.
 - 30 phases shipped, one git commit per phase
 - 617 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
+- Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
+  shell / http / llm / webhook / manual interfaces all work out of the
+  box. `interface docker` / `postgres` / `cron` are explicit
+  `gem install` away.
 - All v0.1 acceptance criteria + production hardening + IPC +
-  contracts + router-CLI compatibility + binary split + typed artifacts
-  + unified interface model
+  contracts + router-CLI compatibility + binary split + typed
+  artifacts + unified interface model + smart retries + opt-in heavy
+  dependencies + backtick raw strings.
 - End-to-end smoke-tested against real Docker + Puma + cron + shell exec
 - Distributable as a Docker image (`docker build . && docker run`)
 - Pluggable interfaces: third-party gems can register a new

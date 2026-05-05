@@ -249,25 +249,33 @@ non-success paths only — caught at smoke time.
 
 Block call-field command strings in `.prc` go through:
 
-1. Lexer (`\"` → `"`, `\\` → `\`)
+1. Lexer — two string forms:
+   - `"..."` double-quoted: `\"` → `"`, `\\` → `\`, `\n`/`\t`/`\r` escapes
+   - `` `...` `` backtick raw: every byte literal, no escape processing
 2. Stored verbatim in `block.type_fields["command"]`
 3. **Renderer must quote them** — otherwise apply→reload loses spaces
    and quotes. The renderer iterates the iface plugin's `call_fields`
-   and applies `quote_string` to `:command`-kind values.
-4. CallRunner runs the value through `Util::Templater` for `{{...}}`
+   and applies `quote_string`. `quote_string` automatically picks the
+   backtick form when the value contains `"` or `\` and no embedded
+   `` ` `` — exactly the case where double-quoted form would force
+   `\\\"` escape pyramids.
+4. Orchestrator runs the value through `Util::Templater` for `{{...}}`
    substitution, then hands the templated string to the caller.
-5. The caller (DockerCaller / ShellCaller) uses `Shellwords.split` to
-   break into argv. Inside the container/process, `sh -c` re-parses.
+5. ShellRunner uses `Shellwords.split` to break into argv; DockerRunner
+   does the same and passes through to the container's `sh -c`.
 
-Net effect: to write `{"score":85}` to output.json from a shell-quoted
-command, you need TWO levels of escaping in the DSL string:
+For shell blocks: writing `/prouter/output.json` is **optional**. If
+`exit_code == 0` and the file is missing, ShellRunner trims stdout and
+JSON-parses it; Hash/Array becomes `output_json`, anything else falls
+through to `{}`. So a one-liner producer block is just:
 
 ```
-command "sh -c 'echo \"{\\\"score\\\":85}\" > /prouter/output.json'"
+exec `echo '{"score":85}'`
 ```
 
-The `examples/` show this pattern. For real pipelines, just use a custom
-container image where the JSON construction is in code, not shell.
+…and downstream blocks read `{{scorer.score}}` via templating. Docker
+keeps the strict `output.json` contract — the container's filesystem
+IS the contract surface there, by design.
 
 ### SQLite `:memory:` and WAL
 
@@ -290,7 +298,7 @@ If you change how timezones are stored, update
 ## Testing
 
 ```bash
-bundle exec rspec                  # full suite (~460 specs)
+bundle exec rspec                  # full suite (~620 specs)
 bundle exec rspec spec/prouterd/runtime/   # one subsystem
 bundle exec rspec spec/prouterd/runtime/orchestrator_spec.rb:42  # one example
 ```

@@ -1,28 +1,36 @@
 # Examples
 
-Five runnable `.prc` files, each demonstrating one feature. Every
-example fits in one file and uses only `alpine:latest` so you only need
-Docker available — no custom images.
+Twelve runnable `.prc` files, each demonstrating one feature in
+isolation (or, for `10_tg_github` and `12_jira_debug`, a full
+real-world pipeline).
 
-| File                            | Demonstrates                              |
-|---------------------------------|-------------------------------------------|
-| `01_hello_world.prc`            | minimal pipeline (one block, no routes)   |
-| `02_conditional_routing.prc`    | `match` conditions on outgoing routes     |
-| `03_retries.prc`                | retry policy with exponential backoff     |
-| `04_webhook.prc`                | webhook interface + bearer auth           |
-| `05_cron.prc`                   | cron interface + scheduler                |
-| `06_shell_block.prc`            | mixed `type shell` + `type docker` blocks |
-| `07_contract.prc`               | output JSON contract + `on violation` policy |
-| `08_typed_artifacts.prc`        | named files passed between blocks (`produces` / `input … from …`) |
-| `10_tg_github/`                 | full real-world pipeline: GitHub webhook → match by event type → format → post to Telegram. `type shell` blocks (no Docker), 2 Ruby format scripts + an inline `curl` send block, secrets, retry policy. |
+The base install of `prouterd` covers `interface shell`, `interface
+http`, `interface llm`, `interface webhook`, `interface manual` —
+all on Ruby stdlib (`Open3`, `Net::HTTP`). `interface docker`,
+`interface postgres`, and `interface cron` are opt-in:
 
-Each file's top comment shows the exact commands to run it. Common setup:
-
-```bash
-docker pull alpine:latest
-DB=/tmp/prouterd-demo.db
-rm -f $DB
 ```
+gem install docker-api   # interface docker
+gem install pg           # interface postgres
+gem install fugit        # interface cron
+```
+
+| File                         | Demonstrates                                                          |
+| ---------------------------- | --------------------------------------------------------------------- |
+| `01_hello_world.prc`         | smallest pipeline; `interface shell`; `{{event.name}}` templating     |
+| `02_conditional_routing.prc` | `match` conditions on outgoing routes; backtick raw strings; stdout-as-JSON |
+| `03_retries.prc`             | retry policy with exponential backoff (always-fail demo)              |
+| `04_webhook.prc`             | webhook interface + bearer auth                                       |
+| `05_cron.prc`                | cron interface + scheduler (requires `gem install fugit`)             |
+| `06_shell_block.prc`         | mixed `interface shell` + `interface docker` blocks in one process    |
+| `07_contract.prc`            | output JSON contract + `on violation` policy                          |
+| `08_typed_artifacts.prc`     | named files between blocks (`produces` / `input … from …`)            |
+| `09_llm.prc`                 | `interface llm claude`; ticket summarization via Anthropic            |
+| `10_tg_github/`              | full pipeline: GitHub webhook → format → Telegram (shell-only)        |
+| `11_retry_when.prc`          | smart retries: `retry when error_type in …` + `{{previous}}`          |
+| `12_jira_debug/`             | end-to-end: webhook → http (Jira) → postgres → llm → http             |
+
+Each file's top comment shows the exact commands to run it.
 
 ## A complete walkthrough
 
@@ -31,28 +39,26 @@ DB=/tmp/prouterd-demo.db
 rm -f $DB
 
 # 1. Apply (commit it as version 1)
-bundle exec ruby exe/prouter apply examples/02_conditional_routing.prc --db $DB
+prouter apply examples/02_conditional_routing.prc --db $DB
 
 # 2. Trace what would happen with an event (no execution)
 echo '{}' > /tmp/event.json
-bundle exec ruby exe/prouter trace event /tmp/event.json \
-  --interface cli --db $DB
+prouter trace event /tmp/event.json --interface cli --db $DB
 
-# 3. Trigger the pipeline
-bundle exec ruby exe/prouter trigger process score_pipe \
-  input /tmp/event.json --db $DB
+# 3. Trigger the pipeline (--runner shell so no docker is involved)
+prouter trigger process score_pipe input /tmp/event.json --db $DB --runner shell
 
 # 4. Inspect the run
-bundle exec ruby exe/prouter exec "show runs" --db $DB
-RUN=$(bundle exec ruby exe/prouter exec "show runs" --db $DB | tail -1 | awk '{print $1}')
-bundle exec ruby exe/prouter exec "show run $RUN" --db $DB
-bundle exec ruby exe/prouter exec "show logs run $RUN" --db $DB
+prouter exec "show runs" --db $DB
+RUN=$(prouter exec "show runs" --db $DB | tail -1 | awk '{print $1}')
+prouter exec "show run $RUN"          --db $DB
+prouter exec "show logs run $RUN"     --db $DB
 
 # 5. Replay (with same input + same config commit)
-bundle exec ruby exe/prouter replay run $RUN --db $DB
+prouter replay run $RUN --db $DB
 
 # 6. Replay starting from a chosen block (skips earlier blocks)
-bundle exec ruby exe/prouter replay run $RUN from notify_sales --db $DB
+prouter replay run $RUN from notify_sales --db $DB
 ```
 
 ## Webhook demo
@@ -62,8 +68,8 @@ DB=/tmp/prouterd-webhook.db
 rm -f $DB
 
 export WEBHOOK_TOKEN=demo-token
-bundle exec ruby exe/prouter apply examples/04_webhook.prc --db $DB
-bundle exec ruby exe/prouterd --db $DB --port 8089 &
+prouter apply examples/04_webhook.prc --db $DB
+prouterd --db $DB --port 8089 &
 SERVER_PID=$!
 sleep 0.5
 
@@ -73,24 +79,28 @@ curl -s -X POST http://127.0.0.1:8089/i/leads_in \
 # -> {"run_id":"run_xxxxxxxx","status":"queued"}
 
 sleep 1
-bundle exec ruby exe/prouter exec "show runs" --db $DB
+prouter exec "show runs" --db $DB
 
 kill -INT $SERVER_PID
 ```
 
 ## Cron demo (waits ~70 seconds for a minute boundary)
 
+Requires `gem install fugit`. Without fugit the daemon still runs
+fine — cron interfaces just never fire and the scheduler logs a
+single warning.
+
 ```bash
 DB=/tmp/prouterd-cron.db
 rm -f $DB
 
-bundle exec ruby exe/prouter apply examples/05_cron.prc --db $DB
-bundle exec ruby exe/prouterd --db $DB --port 8090 &
+prouter apply examples/05_cron.prc --db $DB
+prouterd --db $DB --port 8090 &
 SERVER_PID=$!
 
 # Wait for a minute boundary, then check
 sleep 70
-bundle exec ruby exe/prouter exec "show runs" --db $DB
+prouter exec "show runs" --db $DB
 
 kill -INT $SERVER_PID
 ```

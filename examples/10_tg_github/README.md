@@ -106,8 +106,9 @@ GitHub sends the secret as a Bearer header on each request — prouterd's
   ```
   Drafts and label-only edits don't trigger anything (router returns
   422 to GitHub).
-- **`type shell`** — no Docker daemon needed; blocks run as host
-  Ruby processes via `Open3`.
+- **`interface shell`** — no Docker daemon needed; blocks run as
+  host Ruby processes via `Open3`. Default install covers this; no
+  extra gem required.
 
 ## Tweaking via shell
 

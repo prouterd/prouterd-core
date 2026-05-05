@@ -387,25 +387,38 @@ URL, …) and a `call_field` schema for the per-block-call body
 (command, query, body, …). The block references the interface by full
 name and overrides only what it needs:
 
-- `interface docker <name>` — runs the block as a Docker container.
-  Interface fields: `image` (required), `pull`, `network`, `user`,
-  `memory`, `cpu`. Per-call fields: `command`. Best for: multi-language
-  pipelines, audit-grade reproducibility (config pins an image
-  digest), strong isolation.
 - `interface shell <name>` — runs the block as a host process via
-  `Open3`. Interface fields: `cwd`, `shell`, `env KEY VALUE`. Per-call
-  fields: `exec` (required). No Docker daemon needed. Lower latency,
-  blocks see the daemon's filesystem.
+  `Open3`. **Default install** (no extra gem). Interface fields:
+  `cwd`, `shell`, `env KEY VALUE`. Per-call fields: `exec` (required).
+  Lower latency, blocks see the daemon's filesystem. Stdout that
+  parses as JSON becomes `output_json` automatically (no need to
+  redirect to `/prouter/output.json` in trivial cases).
 - `interface http <name>` — POSTs/GETs to a remote endpoint via
-  `Net::HTTP`. Interface fields: `base_url`, `auth bearer secret …`.
-  Per-call fields: `method`, `path`, `body`, `query KEY VALUE`,
-  `header KEY VALUE`. Useful for hitting Jira, GitHub, or any JSON
-  HTTP API as a step.
+  `Net::HTTP`. Default install. Interface fields: `base-url`,
+  `auth bearer secret …`. Per-call fields: `method`, `path`, `query`,
+  `body-json`. Hits Jira, GitHub, any JSON HTTP API as a step.
+- `interface llm <name>` — chat-completion call to Anthropic or
+  OpenAI via `Net::HTTP`. Default install. Interface fields:
+  `provider` (`anthropic` | `openai`), `model`, `auth bearer secret
+  …`, `base-url` (optional). Per-call fields: `prompt` (required),
+  `system`, `max-tokens`, `temperature`. Output is a normalized
+  `{text, model, usage, stop_reason}` Hash.
+- `interface docker <name>` — runs the block as a Docker container.
+  Requires `gem install docker-api`. Interface fields: `image`
+  (required), `pull`, `network`, `user`, `memory`, `cpu`. Per-call
+  fields: `command`. Best for: multi-language pipelines, audit-grade
+  reproducibility (config pins an image digest), strong isolation.
+- `interface postgres <name>` — SQL via `pg`. Requires
+  `gem install pg`. Interface fields: `dsn` (required, templatable
+  with `{{secret.PG_DSN}}`), `statement-timeout`. Per-call fields:
+  `query` (required), `params` (comma-separated, bound to `$1..$N`).
+  Output: `{rows, row_count, fields}`.
 
-All three honor the same `/prouter/{input.json,output.json,artifacts/,inputs/}`
+All five honour the same `/prouter/{input.json,output.json,artifacts/,inputs/}`
 contract. A single pipeline can mix types freely — `shell` for a fast
-preprocessor, `docker` for the heavy CUDA step, `http` for the
-external Jira call.
+preprocessor, `http` for the external Jira call, `postgres` for the
+warehouse lookup, `llm` for the summarization, `docker` for the heavy
+CUDA step.
 
 #### Choosing between docker and shell
 
@@ -431,25 +444,37 @@ recipe.
 `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `exists`, `in`. Multiple matches
 within one route AND together. There is no OR — use a separate route.
 
-### Block contract
+### Block contract (docker / shell)
 
-The runner mounts a per-step directory at `/prouter` inside the container:
+The docker and shell runners both expose a per-step working directory
+at `/prouter`:
 
 | Path                         | Direction | Purpose                                                |
 |------------------------------|-----------|--------------------------------------------------------|
-| `/prouter/input.json`        | read      | run_id, process, block, input slice, full context      |
-| `/prouter/output.json`       | write     | block's JSON result (REQUIRED on success)              |
+| `/prouter/input.json`        | read      | run_id, process, block, full context                   |
+| `/prouter/output.json`       | write     | block's JSON result                                    |
 | `/prouter/artifacts/`        | write     | files to archive (consumable by downstream blocks)     |
 | `/prouter/inputs/<name>`     | read      | staged artifact from upstream `produces` declarations  |
 
 Environment variables: `PROUTER_RUN_ID`, `PROUTER_PROCESS_NAME`,
 `PROUTER_BLOCK_NAME`, `PROUTER_ATTEMPT`, `PROUTER_INPUT_PATH`,
-`PROUTER_OUTPUT_PATH`, `PROUTER_ARTIFACTS_DIR`, plus `PROUTER_INPUT_<NAME>`
-for each staged artifact and every secret declared on the block.
+`PROUTER_OUTPUT_PATH`, `PROUTER_ARTIFACTS_DIR`, plus
+`PROUTER_INPUT_<NAME>` for each staged artifact and every secret
+declared on the block.
 
-A block succeeds iff `exit_code == 0` AND `/prouter/output.json` exists
-AND parses as valid JSON AND every declared `produces <relpath>` was
-written.
+Output rules:
+
+- **docker**: strict — `exit_code == 0` AND `output.json` exists AND
+  parses as valid JSON AND every `produces <relpath>` was written.
+  The container's filesystem IS the contract surface.
+- **shell**: lenient — `exit_code == 0` is enough. If `output.json`
+  doesn't exist, the runner trims stdout and parses it as JSON; if
+  that yields a Hash or Array, it becomes `output_json`. Pure log
+  text falls through to `{}`. The block can still write the file
+  explicitly to override.
+
+For HTTP / LLM / Postgres callers there is no filesystem; output
+shape is plugin-specific (see "Outbound interfaces" above).
 
 ### Two ways data flows between blocks
 
@@ -477,8 +502,8 @@ lib/prouterd/
   storage/        SQLite + migrations + repositories
   control_plane/  ConfigStore (commit/rollback/write_memory)
   iface/          Plugin/Registry, plugins/{webhook,cron,manual,
-                  docker,shell,http}.rb, callers (DockerCaller,
-                  ShellCaller, HttpCaller)
+                  docker,shell,http,llm,postgres}.rb, callers
+                  (HttpCaller, LlmCaller, PostgresCaller)
   runner/         CallRunner (dispatches to caller via Iface::Registry),
                   StubRunner, RunRequest/ExecutionResult value types
   runtime/        Orchestrator, Context, MatchEvaluator, ContractValidator,
@@ -505,27 +530,34 @@ Storage schema (SQLite, WAL):
 bundle exec rspec
 ```
 
-525 specs cover lexer/parser/validator/renderer, shell flows + router-style
-prefix abbreviation / `end` / `do` / context-sensitive `?` / `copy run
-start`, tab completion, storage repositories, ConfigStore lifecycle, orchestrator
-with stub runner, match evaluator, contract validation, retry/replay/
-cancel/diff/scheduler, webhook handler, IPC events bus + WebSocket
-endpoints, plugin registration end-to-end on a fake runner type, the
+617 specs cover lexer / parser / validator / renderer (incl. backtick
+raw strings), shell flows + router-style prefix abbreviation, tab
+completion, storage repositories, ConfigStore lifecycle, orchestrator
+with stub runner, match evaluator, contract validation, retry / replay /
+cancel / diff / scheduler, webhook handler, IPC events bus + WebSocket
+endpoints, iface plugin registration end-to-end on a fake outbound
+plugin, the http / llm / postgres callers (unit + orchestrator-level
+integration), retry-when + `{{previous}}` / `{{iteration}}` overlay
+templating, missing-dep paths for docker-api / pg / fugit, the
 structured logger, body-size enforcement, secret resolvers (env + file),
 rate-limiter eviction, log-capture cap, and a full
-apply→trigger→replay→rollback integration test.
+apply → trigger → replay → rollback integration test.
 
 The Docker-dependent paths are tested with a `StubRunner`. To exercise
-real Docker, the `examples/` scripts run pipelines against `alpine:latest`
-end-to-end.
+real Docker, the `examples/` scripts run pipelines against
+`alpine:latest` end-to-end.
 
 ## Status
 
-Production-ready core: config language, persistent commit history,
-runtime, retries, replay, webhooks, cron, /v1 HTTP API, /metrics,
-graceful shutdown, plugin-driven runners, output contracts, typed
-artifacts. See [CHANGELOG.md](CHANGELOG.md) for the full per-version
-breakdown.
+Production-ready core: config language with `{{path}}` templating and
+backtick raw strings, persistent commit history, runtime with parallel
+DAG execution, smart retries (`retry when` + `{{previous}}` /
+`{{iteration}}`), replay, three inbound interfaces
+(webhook / cron / manual), five outbound interfaces
+(shell / docker / http / llm / postgres) — all extensible via
+`Iface::Plugin`, /v1 HTTP API, /metrics, graceful shutdown, output
+contracts, typed artifacts. See [CHANGELOG.md](CHANGELOG.md) for the
+full per-version breakdown.
 
 A web console (object tree, run inspector, embedded CLI, live updates
 over WebSocket) ships as a separate gem, **prouterd-web**, which
@@ -540,5 +572,8 @@ Deliberately out of v0.1 scope (workable without these for now):
 - ☐ Vault / AWS Secrets Manager (write a class with `#resolve(secret)`,
   inject via `secret_resolver:` — env + file are built-in)
 - ☐ RBAC / mTLS / OIDC (basic admin bearer is in; HTTPS is on)
-- ☐ Postgres adapter (`Storage::DB` abstraction ready)
+- ☐ Postgres as the daemon's own storage backend (`Storage::DB`
+  abstraction is ready; only the SQLite implementation exists — this
+  is unrelated to `interface postgres`, which lets blocks query an
+  external Postgres database)
 - ☐ Idempotency keys

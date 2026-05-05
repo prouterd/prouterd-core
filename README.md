@@ -3,7 +3,9 @@
 **Process workflows as text, not code.**
 
 > Like Airflow, without the Python.
+>
 > Like Argo Workflows, without the Kubernetes.
+>
 > Like n8n, but the config is **readable** — not a 5KB JSON blob hidden inside a database.
 
 A self-hosted orchestrator where every workflow is a `.prc` text file

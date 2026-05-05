@@ -33,6 +33,7 @@ module Prouterd
         when "shell"             then cmd_shell
         when "exec"              then cmd_exec
         when "apply"             then cmd_apply
+        when "validate"          then cmd_validate
         when "trigger"           then cmd_trigger
         when "trace"             then cmd_trace
         when "replay"            then cmd_replay
@@ -420,12 +421,22 @@ module Prouterd
                   end
 
         repo = Prouterd::Storage::Repositories::Runs.new(store.db)
-        @stdout.puts "Replayed #{run_uid} as #{new_run.uid} (#{new_run.status})"
-        repo.list_steps(new_run.id).each do |s|
-          duration = s.duration_ms ? "#{s.duration_ms}ms" : "-"
-          @stdout.puts "  %-25s %-9s %s" % [s.block_name, s.status, duration]
+        if machine_output?
+          steps = repo.list_steps(new_run.id).map do |s|
+            { block: s.block_name, status: s.status, attempt: s.attempt,
+              duration_ms: s.duration_ms, error_type: s.error_type }
+          end
+          @stdout.puts JSON.dump(run_id: new_run.uid, replay_of: run_uid,
+                                  status: new_run.status, steps: steps,
+                                  error: new_run.error_summary)
+        else
+          @stdout.puts "Replayed #{run_uid} as #{new_run.uid} (#{new_run.status})"
+          repo.list_steps(new_run.id).each do |s|
+            duration = s.duration_ms ? "#{s.duration_ms}ms" : "-"
+            @stdout.puts "  %-25s %-9s %s" % [s.block_name, s.status, duration]
+          end
+          @stdout.puts "  error: #{new_run.error_summary}" if new_run.error_summary
         end
-        @stdout.puts "  error: #{new_run.error_summary}" if new_run.error_summary
 
         new_run.status == "success" ? 0 : 1
       rescue Prouterd::Shell::ShellError, Prouterd::Runtime::TriggerError => e
@@ -547,12 +558,7 @@ module Prouterd
         )
 
         repo = Prouterd::Storage::Repositories::Runs.new(store.db)
-        @stdout.puts "Run #{run.uid}: #{run.status}"
-        repo.list_steps(run.id).each do |s|
-          duration = s.duration_ms ? "#{s.duration_ms}ms" : "-"
-          @stdout.puts "  %-25s %-9s %s" % [s.block_name, s.status, duration]
-        end
-        @stdout.puts "  error: #{run.error_summary}" if run.error_summary
+        emit_run_summary(run, repo)
 
         run.status == "success" ? 0 : 1
       rescue Errno::ENOENT => e
@@ -566,6 +572,130 @@ module Prouterd
         1
       ensure
         store&.db&.close if store && store != :error
+      end
+
+      # Emits a run summary in machine-readable JSON when stdout is piped,
+      # human-friendly table form when on a TTY. Same shape across
+      # `trigger`, `replay`, etc.
+      def emit_run_summary(run, repo)
+        steps = repo.list_steps(run.id).map do |s|
+          { block: s.block_name, status: s.status, attempt: s.attempt,
+            duration_ms: s.duration_ms, error_type: s.error_type }
+        end
+        if machine_output?
+          @stdout.puts JSON.dump(
+            run_id: run.uid, status: run.status, steps: steps,
+            error: run.error_summary
+          )
+        else
+          @stdout.puts "Run #{run.uid}: #{run.status}"
+          steps.each do |s|
+            duration = s[:duration_ms] ? "#{s[:duration_ms]}ms" : "-"
+            @stdout.puts "  %-25s %-9s %s" % [s[:block], s[:status], duration]
+          end
+          @stdout.puts "  error: #{run.error_summary}" if run.error_summary
+        end
+      end
+
+      # True when our @stdout is a non-TTY (pipe, file, etc.) — caller
+      # should emit JSON instead of human-formatted tables. The IO may
+      # be a StringIO under test; respond_to? guard avoids NoMethodError
+      # on doubles that don't bother to respond.
+      def machine_output?
+        return true unless @stdout.respond_to?(:tty?)
+
+        !@stdout.tty?
+      end
+
+      # Phase 36e: `prouter validate <file> --against running [--db PATH]`.
+      # Parses + validates the file just like `check`, then computes a
+      # semantic diff against the currently running config — what
+      # interfaces / processes / routes / secrets / policies / queues
+      # add, remove, or change. Useful as a pre-apply review.
+      def cmd_validate
+        store = nil
+        path = @argv.shift
+        unless path
+          @stderr.puts "prouter validate: usage: validate <file> --against running [--db PATH]"
+          return 2
+        end
+
+        # The only `--against` value we support today is `running`. Accept
+        # the long-form to leave room for `startup` / a specific commit
+        # later without breaking the CLI surface.
+        unless @argv.first == "--against"
+          @stderr.puts "prouter validate: missing --against running"
+          return 2
+        end
+        @argv.shift
+        target = @argv.shift
+        unless target == "running"
+          @stderr.puts "prouter validate: only `--against running` is supported"
+          return 2
+        end
+
+        opts = parse_runtime_options("validate")
+        return 2 if opts == :error
+
+        source = read_file(path)
+        return 2 if source.nil?
+        candidate = parse_with_diagnostics(source, path)
+        return 1 if candidate.nil?
+
+        result = Config::Validator.validate(candidate)
+        unless result.valid?
+          @stderr.puts "Validation failed:"
+          result.errors.each { |e| @stderr.puts "  #{path}: #{e}" }
+          return 1
+        end
+
+        store = open_store(opts[:db_path], opts[:no_db])
+        return 1 if store == :error
+        running = store ? store.load_running : Config::AST::Document.new
+
+        diff = Util::SemanticDiff.diff(running, candidate)
+        emit_validate_diff(path, diff)
+        diff.empty? ? 0 : 0
+      ensure
+        store&.db&.close if store && store != :error
+      end
+
+      def emit_validate_diff(path, diff)
+        if machine_output?
+          @stdout.puts JSON.dump(file: path, diff: diff.to_json_payload, total_changes: diff.total)
+          return
+        end
+
+        if diff.empty?
+          @stdout.puts "#{path}: no semantic changes vs running config."
+          return
+        end
+
+        @stdout.puts "#{path}: #{diff.total} change(s) vs running config:"
+        sections = {
+          "interfaces added"   => diff.interfaces_added,
+          "interfaces removed" => diff.interfaces_removed,
+          "interfaces changed" => diff.interfaces_changed,
+          "processes added"    => diff.processes_added,
+          "processes removed"  => diff.processes_removed,
+          "processes changed"  => diff.processes_changed,
+          "routes added"       => diff.routes_added,
+          "routes removed"     => diff.routes_removed,
+          "secrets added"      => diff.secrets_added,
+          "secrets removed"    => diff.secrets_removed,
+          "policies added"     => diff.policies_added,
+          "policies removed"   => diff.policies_removed,
+          "policies changed"   => diff.policies_changed,
+          "queues added"       => diff.queues_added,
+          "queues removed"     => diff.queues_removed,
+          "queues changed"     => diff.queues_changed
+        }
+        sections.each do |label, items|
+          next if items.empty?
+
+          @stdout.puts "  #{label}:"
+          items.each { |c| @stdout.puts "    #{c.name}  (#{c.reason})" }
+        end
       end
 
       def cmd_apply

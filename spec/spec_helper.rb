@@ -3,6 +3,9 @@ $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 require "prouterd"
 require "tmpdir"
 
+# Spec support files (helpers, shared contexts).
+Dir[File.expand_path("support/**/*.rb", __dir__)].each { |f| require f }
+
 FIXTURES_DIR = File.expand_path("fixtures", __dir__)
 
 # Per-test-run scratch dir. PROUTERD_DB defaults here so a stray `prouter shell`

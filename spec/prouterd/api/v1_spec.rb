@@ -176,7 +176,6 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
       original_row = data.find { |r| r["uid"] == original.uid }
 
       expect(replay_row["replay_of_uid"]).to eq(original.uid)
-      expect(replay_row["replay_of"]).to eq(original.id)
       expect(original_row["replay_of_uid"]).to be_nil
     end
   end

@@ -13,6 +13,10 @@ RSpec.describe "Full lifecycle integration" do
 
   def run_cli(*argv, stdin: "")
     out = StringIO.new
+    # The integration spec asserts on the human-format strings ("Run …",
+    # "Replayed …", "Status: …") — Phase 36d's machine_output? would
+    # flip stdout to JSON otherwise.
+    out.define_singleton_method(:tty?) { true }
     err = StringIO.new
     code = Prouterd::CLI::Main.run(
       argv,

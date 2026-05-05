@@ -514,8 +514,7 @@ module Prouterd
           interface_name: r.interface_name,
           status: r.status,
           commit_id: r.process_config_commit_id,
-          replay_of: r.replay_of_run_id,    # numeric, kept for back-compat
-          replay_of_uid: r.replay_of_uid,   # human-friendly, recommended
+          replay_of_uid: r.replay_of_uid,
           started_at: r.started_at,
           finished_at: r.finished_at,
           created_at: r.created_at,

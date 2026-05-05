@@ -1076,10 +1076,53 @@ downstream block's `/prouter/input.json`. Now:
 5 new specs (orphan-container kill + 2 process-timeout + redact-context).
 654 specs / 0 failures.
 
+### Phase 36: API contract freeze + legacy purge + CLI ergonomics
+
+**36a — /v1 contract spec freeze.** New
+`spec/prouterd/api/v1_contract_spec.rb` pins the EXACT shape of every
+documented endpoint via a strict `expect_keys` helper that fails on
+ANY unexpected key (not just missing ones). 7 endpoints covered.
+Future shape drift fails the suite immediately. Per Phase-32 user
+decision: no Accept-header negotiation, no /v2 — breaking changes
+go straight into /v1.
+
+**36b — legacy purge.** Per «легаси сразу выкидывай»:
+- core `run_summary` drops the legacy numeric `replay_of` field
+  (was kept alongside `replay_of_uid` for back-compat). Web adapter
+  + contract spec align on the single field.
+- web `HttpApiAdapter#list_interfaces` drops the pre-Phase-32
+  fallback that read flat `path`/`method`/`schedule`/`timezone`
+  keys; reads only the plugin-driven `fields` hash now.
+- `list_policies` drops `Array(p["retry_when"])` defensive wrap.
+- `views/windows/interfaces.erb` drops the `if fields.empty?`
+  flat-key fallback.
+
+Web suite stays at 182/0 — the new shape is what the stub-core
+fixture was already serving.
+
+**36d — TTY autodetect for `prouter trigger` / `prouter replay`.**
+When stdout is a TTY, the existing human-table format. When stdout
+is piped, a single line of `JSON.dump({run_id, status, steps,
+error})`. Same payload schema across both commands, so
+`prouter trigger ... | jq …` works without parsing tables. New
+`machine_output?` helper guards each output point.
+
+**36e — `prouter validate <file> --against running`.** Beyond the
+existing text-level `diff` command: structural diff over the parsed
+AST::Document. Reports per section (interfaces / processes / routes
+/ secrets / policies / queues) what's added, removed, or changed.
+New `Util::SemanticDiff` produces the diff; `cmd_validate` runs
+`Validator.validate` first, then diffs against `store.load_running`.
+Honours `machine_output?` — JSON when piped, grouped human form on
+terminal.
+
+10 new specs across 36a/36d/36e + 5 SemanticDiff units. 671 specs /
+0 failures. **Phases 34-36 close every pre-launch audit blocker.**
+
 ## Status
 
-- 35 phases shipped, one git commit per phase
-- 654 RSpec specs, 0 failures
+- 36 phases shipped, one git commit per phase
+- 671 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

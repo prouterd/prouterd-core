@@ -225,23 +225,39 @@ module Prouterd
         end
 
         process_name = nil
-        if rest.length == 2 && rest[0] == "process"
-          process_name = rest[1]
-        elsif !rest.empty?
-          raise CommandError, "syntax: show runs [process <name>]"
+        thread_id = nil
+        i = 0
+        while i < rest.length
+          case rest[i]
+          when "process"
+            raise CommandError, "syntax: show runs [process <name>] [thread <id>]" unless rest[i + 1]
+            process_name = rest[i + 1]
+            i += 2
+          when "thread"
+            raise CommandError, "syntax: show runs [process <name>] [thread <id>]" unless rest[i + 1]
+            thread_id = rest[i + 1]
+            i += 2
+          else
+            raise CommandError, "syntax: show runs [process <name>] [thread <id>]"
+          end
         end
 
         repo = Prouterd::Storage::Repositories::Runs.new(session.store.db)
-        runs = repo.list_runs(limit: 100, process_name: process_name)
+        runs = repo.list_runs(limit: 100, process_name: process_name, thread_id: thread_id)
         if runs.empty?
-          out.puts process_name ? "No runs for process '#{process_name}'." : "No runs."
+          out.puts case
+                   when process_name && thread_id then "No runs for process '#{process_name}' thread '#{thread_id}'."
+                   when process_name              then "No runs for process '#{process_name}'."
+                   when thread_id                 then "No runs for thread '#{thread_id}'."
+                   else "No runs."
+                   end
           return
         end
-        out.puts "%-15s %-25s %-10s %-19s %s" % ["UID", "PROCESS", "STATUS", "STARTED", "DURATION"]
+        out.puts "%-15s %-20s %-15s %-10s %-19s %s" % ["UID", "PROCESS", "THREAD", "STATUS", "STARTED", "DURATION"]
         runs.each do |r|
           dur = r.duration_ms ? "#{r.duration_ms}ms" : "-"
-          out.puts "%-15s %-25s %-10s %-19s %s" % [
-            r.uid, r.process_name[0, 25], r.status,
+          out.puts "%-15s %-20s %-15s %-10s %-19s %s" % [
+            r.uid, r.process_name[0, 20], (r.thread_id || "-")[0, 15], r.status,
             (r.started_at || r.created_at).to_s[0, 19], dur
           ]
         end

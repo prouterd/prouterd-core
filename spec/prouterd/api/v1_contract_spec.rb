@@ -179,6 +179,7 @@ RSpec.describe "Phase 36a /v1 contract freeze" do
                   status: "success",
                   commit_id: a_kind_of(Integer),
                   replay_of_uid: NilClass,
+                  thread_id: NilClass,
                   duration_ms: a_kind_of(Integer),
                   started_at: a_kind_of(String),
                   finished_at: a_kind_of(String),

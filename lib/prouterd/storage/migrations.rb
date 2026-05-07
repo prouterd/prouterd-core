@@ -136,6 +136,22 @@ module Prouterd
             CREATE INDEX IF NOT EXISTS idx_jobs_run ON jobs(run_id);
             CREATE INDEX IF NOT EXISTS idx_jobs_locked_at ON jobs(locked_at);
           SQL
+        ),
+        Migration.new(
+          version: "0004",
+          description: "runs.thread_id for per-entity scoping",
+          # SQLite has no `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so
+          # a half-applied retry would otherwise hit "duplicate column"
+          # — we inspect PRAGMA table_info first to keep this idempotent.
+          up: lambda do |db|
+            cols = db.execute("PRAGMA table_info(runs)").map { |row| row[1] }
+            db.execute("ALTER TABLE runs ADD COLUMN thread_id TEXT") unless cols.include?("thread_id")
+            db.execute_batch(<<~SQL)
+              CREATE INDEX IF NOT EXISTS idx_runs_process_thread
+                ON runs(process_name, thread_id);
+              CREATE INDEX IF NOT EXISTS idx_runs_thread ON runs(thread_id);
+            SQL
+          end
         )
       ].freeze
 
@@ -171,12 +187,26 @@ module Prouterd
               "INSERT INTO schema_migrations (version, applied_at, started_at) VALUES (?, ?, ?)",
               [migration.version, now, now]
             )
-            db.execute_batch(migration.up)
+            apply_migration_body(db, migration)
             db.execute(
               "UPDATE schema_migrations SET committed_at = ? WHERE version = ?",
               [Time.now.utc.iso8601, migration.version]
             )
           end
+        end
+      end
+
+      # A migration body is either a SQL string (the common case) or a
+      # Proc that takes the db and runs whatever idempotent bootstrap it
+      # needs. Procs are required when a single migration must inspect
+      # current state to stay re-runnable (e.g. ALTER TABLE ADD COLUMN,
+      # which SQLite has no `IF NOT EXISTS` form for).
+      def apply_migration_body(db, migration)
+        case migration.up
+        when Proc
+          migration.up.call(db)
+        else
+          db.execute_batch(migration.up.to_s)
         end
       end
 

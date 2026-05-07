@@ -79,15 +79,34 @@ module Prouterd
         process = document.processes.find { |p| p.name == process_name }
         raise TriggerError, "no such process '#{process_name}'" unless process
 
+        thread_id = resolve_thread_id(process, input_event)
+
         run = @runs.create_run(
           process_name: process_name,
           process_config_commit_id: commit_id,
           interface_name: interface_name,
           input_event: input_event,
-          replay_of_run_id: replay_of_run_id
+          replay_of_run_id: replay_of_run_id,
+          thread_id: thread_id
         )
         @events.publish(:run_created, run: run)
         run
+      end
+
+      # Resolve the process's `thread-id` template against the input event.
+      # Templating uses the same scope shape as block call-fields, but only
+      # `event.*` is meaningful here (no run/secret context yet). An empty
+      # rendered string is treated as nil so an absent field doesn't pin
+      # all runs to thread_id="".
+      def resolve_thread_id(process, input_event)
+        return nil unless process.thread_id_template
+
+        rendered = Prouterd::Util::Templater.render(
+          process.thread_id_template,
+          { "event" => input_event || {} }
+        )
+        rendered = rendered.to_s.strip
+        rendered.empty? ? nil : rendered
       end
 
       # Execute a previously-enqueued Run against a Document. Returns the

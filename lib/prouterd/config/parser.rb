@@ -374,6 +374,9 @@ module Prouterd
         when "timeout"
           expect_token_count(line, 2, "timeout <duration>")
           node.timeout_ms = expect_duration(line.tokens[1], "timeout")
+        when "thread-id"
+          expect_token_count(line, 2, "thread-id <template>")
+          node.thread_id_template = expect_word_or_string(line.tokens[1], "thread-id template")
         when "shutdown"
           expect_token_count(line, 1, "shutdown")
           node.shutdown = true

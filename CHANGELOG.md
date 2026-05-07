@@ -1193,6 +1193,36 @@ ordering surprises.
 2 parser specs + 1 renderer roundtrip + 2 orchestrator specs.
 686 / 0.
 
+### Phase 37d: process-level `thread-id` for per-entity scoping
+
+Process-level `thread-id "<template>"` derives a stable id from
+the input event at trigger time, persisted into the new
+`runs.thread_id` column (migration 0004) and indexed for filtered
+list queries. An empty rendered template is treated as nil so an
+absent field doesn't pin all runs to thread_id="".
+
+```
+process per_ticket
+ thread-id "{{event.ticket}}"
+ ...
+exit
+```
+
+Wiring:
+- `Storage::Run` carries `thread_id`.
+- `Repositories::Runs#list_runs` accepts a `thread_id:` filter.
+- `/v1/runs?thread_id=...` filter; `run_summary` shape gains
+  `thread_id` (contract spec updated).
+- `show runs [thread <id>] [process <name>]` filters in the shell.
+
+Migration runner now accepts a Proc-bodied migration too — needed
+because SQLite has no `ALTER TABLE ADD COLUMN IF NOT EXISTS`, and
+a half-applied retry would otherwise hit "duplicate column". The
+0004 body inspects `PRAGMA table_info(runs)` before adding.
+
+4 thread-id orchestrator specs + parser + renderer roundtrip +
+v1-contract update. 692 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

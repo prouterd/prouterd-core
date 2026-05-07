@@ -164,6 +164,26 @@ RSpec.describe Prouterd::Config::Renderer do
       expect(second).to eq(first)
     end
 
+    it "round-trips process thread-id template" do
+      src = <<~SRC
+        interface docker img1
+         image alpine:1
+        exit
+        process per_ticket
+         thread-id "{{event.ticket}}"
+         no shutdown
+         block b
+          interface docker img1
+         exit
+        exit
+      SRC
+      first = described_class.render(parse(src))
+      expect(first).to include("thread-id \"{{event.ticket}}\"")
+      reparsed = parse(first)
+      expect(reparsed.processes.first.thread_id_template).to eq("{{event.ticket}}")
+      expect(described_class.render(reparsed)).to eq(first)
+    end
+
     it "round-trips a vars sub-section on a block" do
       src = <<~SRC
         interface docker img1

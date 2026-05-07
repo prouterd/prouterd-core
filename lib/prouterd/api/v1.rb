@@ -173,11 +173,14 @@ module Prouterd
       def get_runs(request)
         process = request.params["process"]
         status = request.params["status"]
+        thread_id = request.params["thread_id"]
         limit = (request.params["limit"] || "50").to_i.clamp(1, 1000)
         offset = (request.params["offset"] || "0").to_i.clamp(0, 100_000)
 
         repo = Storage::Repositories::Runs.new(@store.db)
-        runs = repo.list_runs(limit: limit, offset: offset, process_name: process, status: status)
+        runs = repo.list_runs(limit: limit, offset: offset,
+                              process_name: process, status: status,
+                              thread_id: thread_id)
         json(200, data: runs.map { |r| run_summary(r) })
       end
 
@@ -515,6 +518,7 @@ module Prouterd
           status: r.status,
           commit_id: r.process_config_commit_id,
           replay_of_uid: r.replay_of_uid,
+          thread_id: r.thread_id,
           started_at: r.started_at,
           finished_at: r.finished_at,
           created_at: r.created_at,

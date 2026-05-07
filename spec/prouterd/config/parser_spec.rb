@@ -373,6 +373,20 @@ RSpec.describe Prouterd::Config::Parser do
       expect(doc.global_routes.length).to eq(1)
     end
 
+    it "parses process thread-id template" do
+      doc = parse_with_ifaces(<<~SRC)
+        router x
+        exit
+        process per_ticket
+         thread-id "{{event.ticket}}"
+         block b
+          interface docker img1
+         exit
+        exit
+      SRC
+      expect(doc.processes.first.thread_id_template).to eq("{{event.ticket}}")
+    end
+
     it "parses minimal.prc cleanly" do
       doc = parse(read_fixture("minimal.prc"))
       expect(doc.router.name).to eq("demo")

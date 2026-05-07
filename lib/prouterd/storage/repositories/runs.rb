@@ -21,7 +21,8 @@ module Prouterd
         # ----- runs -----
 
         def create_run(process_name:, input_event:, process_config_commit_id: nil,
-                       interface_name: nil, parent_run_id: nil, replay_of_run_id: nil)
+                       interface_name: nil, parent_run_id: nil, replay_of_run_id: nil,
+                       thread_id: nil)
           uid = generate_uid
           created_at = Time.now.utc.iso8601(3)
 
@@ -29,12 +30,13 @@ module Prouterd
             <<~SQL,
               INSERT INTO runs
                 (uid, process_name, process_config_commit_id, interface_name, status,
-                 input_event_json, context_json, created_at, parent_run_id, replay_of_run_id)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 input_event_json, context_json, created_at, parent_run_id, replay_of_run_id,
+                 thread_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             SQL
             [uid, process_name, process_config_commit_id, interface_name, "queued",
              JSON.dump(input_event || {}), JSON.dump({}), created_at,
-             parent_run_id, replay_of_run_id]
+             parent_run_id, replay_of_run_id, thread_id]
           )
           get_run(@db.last_insert_row_id)
         end
@@ -64,7 +66,7 @@ module Prouterd
           row && row_to_run(row)
         end
 
-        def list_runs(limit: 50, offset: 0, process_name: nil, status: nil)
+        def list_runs(limit: 50, offset: 0, process_name: nil, status: nil, thread_id: nil)
           conditions = []
           params = []
           if process_name
@@ -74,6 +76,10 @@ module Prouterd
           if status
             conditions << "r.status = ?"
             params << status
+          end
+          if thread_id
+            conditions << "r.thread_id = ?"
+            params << thread_id
           end
           where = conditions.empty? ? "" : "WHERE #{conditions.join(' AND ')}"
           rows = @db.execute(
@@ -214,7 +220,7 @@ module Prouterd
         def run_columns
           "id, uid, process_name, process_config_commit_id, interface_name, status, " \
             "input_event_json, context_json, error_summary, started_at, finished_at, " \
-            "created_at, parent_run_id, replay_of_run_id"
+            "created_at, parent_run_id, replay_of_run_id, thread_id"
         end
 
         # Same fields as run_columns, prefixed with `r.` and tail-appended
@@ -224,7 +230,7 @@ module Prouterd
         def run_columns_with_parent
           "r.id, r.uid, r.process_name, r.process_config_commit_id, r.interface_name, r.status, " \
             "r.input_event_json, r.context_json, r.error_summary, r.started_at, r.finished_at, " \
-            "r.created_at, r.parent_run_id, r.replay_of_run_id, parent.uid AS replay_of_uid"
+            "r.created_at, r.parent_run_id, r.replay_of_run_id, r.thread_id, parent.uid AS replay_of_uid"
         end
 
         def step_columns
@@ -233,12 +239,15 @@ module Prouterd
         end
 
         def row_to_run(r)
+          # `replay_of_uid` is appended only by run_columns_with_parent; the
+          # run_columns variant ends at thread_id (index 14) and r[15] is nil.
           Run.new(
             id: r[0], uid: r[1], process_name: r[2], process_config_commit_id: r[3],
             interface_name: r[4], status: r[5], input_event_json: r[6], context_json: r[7],
             error_summary: r[8], started_at: r[9], finished_at: r[10], created_at: r[11],
             parent_run_id: r[12], replay_of_run_id: r[13],
-            replay_of_uid: r[14]  # set by run_columns_with_parent / nil for run_columns
+            thread_id: r[14],
+            replay_of_uid: r[15]
           )
         end
 

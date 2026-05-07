@@ -1167,6 +1167,32 @@ right after the existing `block.shutdown` check.
 2 parser/renderer specs + 2 orchestrator specs (predicate matches /
 predicate misses). 681 / 0.
 
+### Phase 37c: `vars` overlay on a block
+
+Sub-section inside a block body — local-name overlay for templating
+its call-fields. Each line is `<name> <value>` where the value is
+itself a template. The orchestrator resolves the var values against
+the regular scope first, then exposes them at top level under their
+local names while templating the block's call-fields.
+
+```
+block analyze
+ interface llm chat
+ prompt file "prompts/analyze.user.md.tmpl"
+ vars
+  evidence  "{{event.body.evidence}}"
+  iteration "{{previous.attempt}}"
+ exit
+exit
+```
+
+Resolution is single-pass against the base scope — `b "{{a}}"` does
+not see `a`, both see only the underlying context. This avoids
+ordering surprises.
+
+2 parser specs + 1 renderer roundtrip + 2 orchestrator specs.
+686 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

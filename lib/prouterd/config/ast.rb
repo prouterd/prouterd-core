@@ -140,7 +140,7 @@ module Prouterd
         attr_accessor :name, :line, :shutdown,
                       :timeout_ms, :retry_policy_name, :contract_name,
                       :interface_ref, :skip_when
-        attr_reader :secret_names, :produces, :artifact_inputs
+        attr_reader :secret_names, :produces, :artifact_inputs, :vars
 
         # Per-call args keyed by the interface plugin's call_field
         # storage_key. Templated at run time against the current context.
@@ -159,6 +159,11 @@ module Prouterd
           @produces = []
           @artifact_inputs = []
           @skip_when = nil
+          # Local-name overlay for templating. Each value is a template that
+          # resolves against the regular context; the resolved string is
+          # exposed at top level under the var's name when the block's
+          # call-fields are templated.
+          @vars = {}
         end
       end
 

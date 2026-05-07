@@ -412,6 +412,45 @@ RSpec.describe Prouterd::Config::Parser do
         SRC
       }.to raise_error(Prouterd::Config::ParseError, /already has a skip-when/)
     end
+
+    it "parses a vars sub-section into a Hash<name, template>" do
+      doc = parse_with_ifaces(<<~SRC)
+        router x
+        exit
+        process p
+         block b
+          interface docker img1
+          vars
+           evidence  "{{event.body.evidence}}"
+           iteration "{{previous.attempt}}"
+          exit
+         exit
+        exit
+      SRC
+      block = doc.processes.first.blocks.first
+      expect(block.vars).to eq(
+        "evidence"  => "{{event.body.evidence}}",
+        "iteration" => "{{previous.attempt}}"
+      )
+    end
+
+    it "rejects a duplicate var name" do
+      expect {
+        parse_with_ifaces(<<~SRC)
+          router x
+          exit
+          process p
+           block b
+            interface docker img1
+            vars
+             a "1"
+             a "2"
+            exit
+           exit
+          exit
+        SRC
+      }.to raise_error(Prouterd::Config::ParseError, /duplicate var 'a'/)
+    end
   end
 
   describe "artifacts" do

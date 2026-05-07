@@ -445,6 +445,8 @@ module Prouterd
             raise ParseError.new("block '#{node.name}' already has a skip-when", line: line.number)
           end
           node.skip_when = parse_match_at(line, 0)
+        when "vars"
+          parse_block_vars(node, line)
         when "input"
           # Only the typed-artifact form: `input from <block>.<relpath>`.
           # The legacy `input <context.path>` is gone — templating reads
@@ -586,6 +588,22 @@ module Prouterd
             "interface plugin '#{plugin.type_name}' call_field '#{field.name}' has unknown kind #{field.kind.inspect}",
             line: line.number
           )
+        end
+      end
+
+      # `vars` sub-section — local-name overlay for templating call-fields.
+      # Each line is `<name> <value>` where <value> is itself a template
+      # resolved against the regular context at run time.
+      def parse_block_vars(node, header)
+        expect_token_count(header, 1, "vars")
+        advance
+        each_body_line("vars in block #{node.name}") do |line|
+          expect_token_count(line, 2, "<name> <value>")
+          name = expect_identifier(line.tokens[0], "var name")
+          if node.vars.key?(name)
+            raise ParseError.new("duplicate var '#{name}' in block '#{node.name}'", line: line.number)
+          end
+          node.vars[name] = expect_word_or_string(line.tokens[1], "var value")
         end
       end
 

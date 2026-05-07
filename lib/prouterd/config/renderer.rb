@@ -160,6 +160,11 @@ module Prouterd
         if block.skip_when
           emit(level + 1, render_match(block.skip_when).sub(/\Amatch /, "skip-when "))
         end
+        unless block.vars.empty?
+          emit(level + 1, "vars")
+          block.vars.each { |name, value| emit(level + 2, "#{name} #{quote_string(value)}") }
+          emit(level + 1, "exit")
+        end
         block.secret_names.each { |name| emit(level + 1, "secret #{name}") }
         # enable/disable shorthand for shutdown (block-level only).
         emit(level + 1, block.shutdown ? "disable" : "enable")

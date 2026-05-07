@@ -487,6 +487,15 @@ module Prouterd
         templated_call_fields = nil
         ctx_mutex.synchronize do
           input_payload = build_input_payload(run, block, context)
+          # Resolve `vars` first against the base scope so call-fields can
+          # reference them by their local names instead of the underlying
+          # paths (e.g. `{{evidence}}` rather than `{{event.body.evidence}}`).
+          unless block.vars.empty?
+            resolved_vars = block.vars.transform_values do |tmpl|
+              Prouterd::Util::Templater.render(tmpl, scope)
+            end
+            scope = OverlayContext.new(context, overlay.merge(resolved_vars))
+          end
           templated_iface_fields = templated_fields(iface.type_fields || {}, scope)
           templated_call_fields  = templated_fields(block.type_fields, scope)
         end

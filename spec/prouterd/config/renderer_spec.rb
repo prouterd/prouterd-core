@@ -164,6 +164,33 @@ RSpec.describe Prouterd::Config::Renderer do
       expect(second).to eq(first)
     end
 
+    it "round-trips a vars sub-section on a block" do
+      src = <<~SRC
+        interface docker img1
+         image alpine:1
+        exit
+        process p
+         block b
+          interface docker img1
+          vars
+           evidence "{{event.body.evidence}}"
+           lim "10"
+          exit
+         exit
+        exit
+      SRC
+      first = described_class.render(parse(src))
+      expect(first).to include("vars\n")
+      expect(first).to include("  evidence \"{{event.body.evidence}}\"")
+      expect(first).to include("  lim \"10\"")
+      reparsed = parse(first)
+      expect(reparsed.processes.first.blocks.first.vars).to eq(
+        "evidence" => "{{event.body.evidence}}",
+        "lim" => "10"
+      )
+      expect(described_class.render(reparsed)).to eq(first)
+    end
+
     it "round-trips skip-when on a block" do
       src = <<~SRC
         interface docker img1

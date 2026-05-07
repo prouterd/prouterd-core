@@ -15,9 +15,8 @@ module Prouterd
     #   - subprocess invokes `git -C <repo>` with explicit argv (no shell
     #     interpolation) so user-influenced strings can't smuggle flags.
     #
-    # We do not pull, fetch, or write — `auto-pull` on the interface is
-    # informational only; an external cron is expected to keep the
-    # checkouts fresh.
+    # We do not pull, fetch, or write — an external cron is expected
+    # to keep the checkouts fresh.
     class LocalRepoCaller
       include CallerTiming
 

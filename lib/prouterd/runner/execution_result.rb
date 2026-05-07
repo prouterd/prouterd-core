@@ -35,25 +35,6 @@ module Prouterd
           "failed"
         end
       end
-
-      # Reshape a successful result into a logical failure. Used when a
-      # retry-when predicate matched on the output but max attempts were
-      # already consumed — the run can't proceed but the attempt itself
-      # had exit 0, so we reroute it through the failure path with a
-      # synthetic error_type the operator can grep for.
-      def dup_as_failure(error_type:, error_message:)
-        ExecutionResult.new(
-          exit_code: exit_code,
-          stdout: stdout, stderr: stderr,
-          output_json: output_json,
-          artifacts: artifacts,
-          error_type: error_type,
-          error_message: error_message,
-          duration_ms: duration_ms,
-          started_at: started_at,
-          finished_at: finished_at
-        )
-      end
     end
 
     # Spec'd shape of an artifact that the runner discovered in /prouter/artifacts/.

@@ -516,7 +516,6 @@ RSpec.describe Prouterd::Config::Parser do
         tool jira_search
          description "Search Jira issues by JQL."
          args jql, max
-         returns issues
          implementation interface http jira call get
         exit
       SRC
@@ -524,7 +523,6 @@ RSpec.describe Prouterd::Config::Parser do
       expect(tool.name).to eq("jira_search")
       expect(tool.description).to eq("Search Jira issues by JQL.")
       expect(tool.args).to eq(%w[jql max])
-      expect(tool.returns).to eq("issues")
       expect(tool.implementation.iface_type).to eq("http")
       expect(tool.implementation.iface_name).to eq("jira")
       expect(tool.implementation.call_name).to eq("get")

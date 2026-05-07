@@ -7,8 +7,8 @@ module Prouterd
       # underlying provider's native tool-use API and dispatches each
       # call to the named outbound interface + call.
       class Tool
-        attr_accessor :name, :description, :line
-        attr_reader :args, :returns, :implementation
+        attr_accessor :name, :description, :line, :implementation
+        attr_reader :args
 
         Implementation = Struct.new(:iface_type, :iface_name, :call_name, keyword_init: true)
 
@@ -17,16 +17,7 @@ module Prouterd
           @line = line
           @description = nil
           @args = []
-          @returns = nil
           @implementation = nil
-        end
-
-        def implementation=(value)
-          @implementation = value
-        end
-
-        def returns=(value)
-          @returns = value
         end
       end
 

@@ -64,8 +64,7 @@ module Prouterd
             trigger process <name> input <file>
                                                Synchronously run a process for the given event
             replay  run <uid>                  Re-execute a previous run with the same event + commit
-            resume  run <uid> [--value <json> | --value-file <path>]
-                                               Resume a paused run with the given output value
+            resume  run <uid> [--value <json>] Resume a paused run with the given output value
             cancel  run <uid>                  Soft-cancel an in-flight run
             trace   event <file>               Static routing analysis (no execution)
             diff    <file>                     Show changes if file were applied vs running config
@@ -449,12 +448,12 @@ module Prouterd
         store&.db&.close if store && store != :error
       end
 
-      # `prouter resume run <uid> [--value <json> | --value-file <path>]`
-      # — resume a paused run, supplying the JSON output for the paused
-      # block (defaults to {} if neither flag is given).
+      # `prouter resume run <uid> [--value <json>]` — resume a paused
+      # run, supplying the JSON output for the paused block. Defaults
+      # to {} if --value is omitted.
       def cmd_resume
         unless @argv.length >= 2 && @argv[0] == "run"
-          @stderr.puts "prouter resume: usage: resume run <uid> [--value <json> | --value-file <path>] [--db PATH] [--runner KIND]"
+          @stderr.puts "prouter resume: usage: resume run <uid> [--value <json>] [--db PATH] [--runner KIND]"
           return 2
         end
         run_uid = @argv[1]
@@ -466,19 +465,6 @@ module Prouterd
             value = JSON.parse(@argv[1])
           rescue JSON::ParserError => e
             @stderr.puts "prouter resume: invalid JSON for --value: #{e.message}"
-            return 2
-          end
-          @argv = @argv[2..]
-        elsif @argv[0] == "--value-file" && @argv[1]
-          path = @argv[1]
-          unless File.exist?(path)
-            @stderr.puts "prouter resume: --value-file '#{path}' not found"
-            return 2
-          end
-          begin
-            value = JSON.parse(File.read(path))
-          rescue JSON::ParserError => e
-            @stderr.puts "prouter resume: invalid JSON in #{path}: #{e.message}"
             return 2
           end
           @argv = @argv[2..]

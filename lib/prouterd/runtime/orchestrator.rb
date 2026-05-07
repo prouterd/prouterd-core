@@ -393,9 +393,15 @@ module Prouterd
         # block must surface this as a terminal failure — not silently
         # return success.
         if result&.success? && policy && retry_when_match_against_result?(policy, result)
-          result = result.dup_as_failure(
+          result = Runner::ExecutionResult.new(
+            exit_code:     result.exit_code,
+            stdout:        result.stdout, stderr: result.stderr,
+            output_json:   result.output_json,
+            artifacts:     result.artifacts,
             error_type:    "retry_when_unsatisfied",
-            error_message: "retry-when matched on output but max attempts reached"
+            error_message: "retry-when matched on output but max attempts reached",
+            duration_ms:   result.duration_ms,
+            started_at:    result.started_at, finished_at: result.finished_at
           )
         end
 

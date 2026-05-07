@@ -19,6 +19,10 @@ module Prouterd
       #    max-file-size 500KB
       #   exit
       #
+      # Checkout freshness is the operator's responsibility — keep an
+      # external cron job pulling under `root`. The daemon does not
+      # fetch / pull / write.
+      #
       #   block fetch_repo
       #    interface local_repo workspace
       #    call grep
@@ -47,8 +51,6 @@ module Prouterd
                         description: "sandbox mode (currently only read-only)"
         field :"max-file-size", kind: :string, default: "500KB",
                                  description: "size cap for `read` calls; suffix-aware (KB/MB)"
-        field :"auto-pull", kind: :string,
-                            description: "informational — operator-managed cron does the pull (duration like '5m')"
 
         call_field :call, kind: :enum, enum: CALL_KINDS, required: true,
                           description: "which subcommand to run"

@@ -928,7 +928,6 @@ module Prouterd
       # `tool <name> ... exit` — top-level tool declaration. Body:
       #   description "<text>"
       #   args a, b, c
-      #   returns <name>
       #   implementation interface <type> <iface> call <call_name>
       def parse_tool(header)
         expect_token_count(header, 2, "tool <name>")
@@ -957,9 +956,6 @@ module Prouterd
               raise ParseError.new("duplicate arg name(s) in tool '#{name}'", line: line.number)
             end
             node.args.replace(args)
-          when "returns"
-            expect_token_count(line, 2, "returns <name>")
-            node.returns = expect_identifier(line.tokens[1], "returns name")
           when "implementation"
             unless line.tokens.length == 6 &&
                    line.tokens[1].value == "interface" &&

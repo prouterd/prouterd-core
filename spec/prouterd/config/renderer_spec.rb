@@ -244,7 +244,6 @@ RSpec.describe Prouterd::Config::Renderer do
         tool jira_search
          description "Search issues."
          args jql, max
-         returns issues
          implementation interface http jira call get
         exit
         process p

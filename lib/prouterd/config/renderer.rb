@@ -282,7 +282,6 @@ module Prouterd
         emit(0, "tool #{tool.name}")
         emit(1, "description #{quote_if_needed(tool.description)}") if tool.description
         emit(1, "args #{tool.args.join(', ')}") unless tool.args.empty?
-        emit(1, "returns #{tool.returns}") if tool.returns
         if (impl = tool.implementation)
           emit(1, "implementation interface #{impl.iface_type} #{impl.iface_name} call #{impl.call_name}")
         end

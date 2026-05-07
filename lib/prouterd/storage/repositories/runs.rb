@@ -48,6 +48,19 @@ module Prouterd
           get_run(id)
         end
 
+        # Atomically accumulate token usage onto a run. Used by the
+        # orchestrator after each attempt that surfaces an `usage` shape
+        # in its output_json (LLM blocks). Both inputs default to 0 so
+        # callers don't have to ternary on missing keys.
+        def add_run_usage(id, tokens_in: 0, tokens_out: 0)
+          return if tokens_in.zero? && tokens_out.zero?
+
+          @db.execute(
+            "UPDATE runs SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ?",
+            [tokens_in.to_i, tokens_out.to_i, id]
+          )
+        end
+
         def get_run(id)
           row = @db.query_row(
             "SELECT #{run_columns_with_parent} FROM runs r " \
@@ -220,7 +233,7 @@ module Prouterd
         def run_columns
           "id, uid, process_name, process_config_commit_id, interface_name, status, " \
             "input_event_json, context_json, error_summary, started_at, finished_at, " \
-            "created_at, parent_run_id, replay_of_run_id, thread_id"
+            "created_at, parent_run_id, replay_of_run_id, thread_id, tokens_in, tokens_out"
         end
 
         # Same fields as run_columns, prefixed with `r.` and tail-appended
@@ -230,7 +243,8 @@ module Prouterd
         def run_columns_with_parent
           "r.id, r.uid, r.process_name, r.process_config_commit_id, r.interface_name, r.status, " \
             "r.input_event_json, r.context_json, r.error_summary, r.started_at, r.finished_at, " \
-            "r.created_at, r.parent_run_id, r.replay_of_run_id, r.thread_id, parent.uid AS replay_of_uid"
+            "r.created_at, r.parent_run_id, r.replay_of_run_id, r.thread_id, " \
+            "r.tokens_in, r.tokens_out, parent.uid AS replay_of_uid"
         end
 
         def step_columns
@@ -240,14 +254,16 @@ module Prouterd
 
         def row_to_run(r)
           # `replay_of_uid` is appended only by run_columns_with_parent; the
-          # run_columns variant ends at thread_id (index 14) and r[15] is nil.
+          # run_columns variant ends at tokens_out (index 16) and r[17] is nil.
           Run.new(
             id: r[0], uid: r[1], process_name: r[2], process_config_commit_id: r[3],
             interface_name: r[4], status: r[5], input_event_json: r[6], context_json: r[7],
             error_summary: r[8], started_at: r[9], finished_at: r[10], created_at: r[11],
             parent_run_id: r[12], replay_of_run_id: r[13],
             thread_id: r[14],
-            replay_of_uid: r[15]
+            tokens_in: r[15] || 0,
+            tokens_out: r[16] || 0,
+            replay_of_uid: r[17]
           )
         end
 

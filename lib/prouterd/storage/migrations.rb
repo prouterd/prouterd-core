@@ -152,6 +152,19 @@ module Prouterd
               CREATE INDEX IF NOT EXISTS idx_runs_thread ON runs(thread_id);
             SQL
           end
+        ),
+        Migration.new(
+          version: "0005",
+          description: "runs.tokens_in / runs.tokens_out for per-run LLM usage",
+          up: lambda do |db|
+            cols = db.execute("PRAGMA table_info(runs)").map { |row| row[1] }
+            unless cols.include?("tokens_in")
+              db.execute("ALTER TABLE runs ADD COLUMN tokens_in INTEGER NOT NULL DEFAULT 0")
+            end
+            unless cols.include?("tokens_out")
+              db.execute("ALTER TABLE runs ADD COLUMN tokens_out INTEGER NOT NULL DEFAULT 0")
+            end
+          end
         )
       ].freeze
 

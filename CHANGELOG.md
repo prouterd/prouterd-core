@@ -1259,6 +1259,22 @@ without losing output_json/artifacts.
 3 reflection runtime specs + 2 parser + 1 renderer roundtrip.
 698 / 0.
 
+### Phase 37f: per-run LLM token usage accumulator
+
+After each block attempt, the orchestrator inspects the result's
+`output_json["usage"]` envelope (LlmCaller normalises both Anthropic
+and OpenAI providers to {input_tokens, output_tokens}; OpenAI's
+{prompt_tokens, completion_tokens} also accepted as a fallback) and
+accumulates into the new `runs.tokens_in` / `runs.tokens_out`
+columns (migration 0005). Surfaced in `/v1/runs[/<uid>]` summary
+(contract spec updated) and `show run`.
+
+Foundation for cost-bounded retry policies and per-thread cost
+reporting; price-table-driven `cost_usd` is deferred until a real
+price-table source materialises.
+
+3 runtime specs + contract update. 701 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

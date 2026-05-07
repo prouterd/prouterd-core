@@ -20,6 +20,8 @@ module Prouterd
       :replay_of_run_id,
       :replay_of_uid,
       :thread_id,
+      :tokens_in,
+      :tokens_out,
       keyword_init: true
     ) do
       def success?; status == "success"; end

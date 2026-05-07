@@ -661,6 +661,7 @@ module Prouterd
             error_message: redactor.redact(result.error_message),
             output_json: scrubbed_output ? JSON.dump(scrubbed_output) : nil
           )
+          accumulate_run_usage(run, scrubbed_output)
         end
         @events.publish(:step_updated, step: finished_step, run_id: run.id, run_uid: run.uid) if finished_step
 
@@ -765,6 +766,23 @@ module Prouterd
             started_at: result.started_at, finished_at: result.finished_at
           )
         end
+      end
+
+      # Accumulate per-run LLM token usage when the attempt's output_json
+      # carries the canonical `usage` envelope (LlmCaller normalises both
+      # Anthropic and OpenAI providers to {input_tokens, output_tokens}).
+      # Caller must hold db_mutex.
+      def accumulate_run_usage(run, output_json)
+        return unless output_json.is_a?(Hash)
+
+        usage = output_json["usage"]
+        return unless usage.is_a?(Hash)
+
+        @runs.add_run_usage(
+          run.id,
+          tokens_in:  (usage["input_tokens"]  || usage["prompt_tokens"]    || 0).to_i,
+          tokens_out: (usage["output_tokens"] || usage["completion_tokens"] || 0).to_i
+        )
       end
 
       def build_input_payload(run, block, context)

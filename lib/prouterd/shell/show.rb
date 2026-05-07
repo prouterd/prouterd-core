@@ -275,11 +275,15 @@ module Prouterd
 
         out.puts "Run: #{run.uid}"
         out.puts "Process: #{run.process_name}"
+        out.puts "Thread: #{run.thread_id}" if run.thread_id
         out.puts "Status: #{run.status}"
         out.puts "Config commit: #{run.process_config_commit_id || '-'}"
         out.puts "Interface: #{run.interface_name || '-'}"
         out.puts "Started: #{run.started_at || '-'}"
         out.puts "Finished: #{run.finished_at || '-'}"
+        if run.tokens_in.to_i.positive? || run.tokens_out.to_i.positive?
+          out.puts "Tokens: in=#{run.tokens_in.to_i} out=#{run.tokens_out.to_i}"
+        end
         out.puts "Error: #{run.error_summary}" if run.error_summary
         out.puts
         out.puts "Steps:"

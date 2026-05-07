@@ -443,6 +443,28 @@ RSpec.describe Prouterd::Config::Parser do
       }.to raise_error(Prouterd::Config::ParseError, /cannot mix `pause` and `interface`/)
     end
 
+    it "parses block-level fan-out directive" do
+      doc = parse_with_ifaces(<<~SRC)
+        router x
+        exit
+        process poller
+         block search
+          interface docker img1
+          fan-out from issues into analyze
+         exit
+        exit
+        process analyze
+         block a
+          interface docker img1
+         exit
+        exit
+      SRC
+      block = doc.processes.first.blocks.first
+      expect(block.fan_out?).to be true
+      expect(block.fan_out_from).to eq("issues")
+      expect(block.fan_out_into).to eq("analyze")
+    end
+
     it "parses process thread-id template" do
       doc = parse_with_ifaces(<<~SRC)
         router x

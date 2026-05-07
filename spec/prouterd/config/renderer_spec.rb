@@ -198,6 +198,30 @@ RSpec.describe Prouterd::Config::Renderer do
       expect(described_class.render(reparsed)).to eq(first)
     end
 
+    it "round-trips block-level fan-out" do
+      src = <<~SRC
+        interface docker img1
+         image alpine:1
+        exit
+        process poller
+         block search
+          interface docker img1
+          fan-out from issues into analyze
+         exit
+        exit
+        process analyze
+         block a
+          interface docker img1
+         exit
+        exit
+      SRC
+      first = described_class.render(parse(src))
+      expect(first).to include("fan-out from issues into analyze")
+      reparsed = parse(first)
+      expect(reparsed.processes.first.blocks.first.fan_out_into).to eq("analyze")
+      expect(described_class.render(reparsed)).to eq(first)
+    end
+
     it "round-trips process thread-id template" do
       src = <<~SRC
         interface docker img1

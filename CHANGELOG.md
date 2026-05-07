@@ -1343,6 +1343,46 @@ Validator rejects `auth bearer secret` on subprocess providers
 4 driver specs (codex/claude shape, missing binary, non-zero exit).
 712 / 0.
 
+### Phase 37i: block-level `fan-out from <path> into <process>`
+
+After a block succeeds, the orchestrator walks the named array path
+in its (redacted) output_json and enqueues one new run of the named
+process per element. Each element becomes the child run's input
+event; children carry the parent's run id as `parent_run_id` so
+`/v1/runs?...` can query the lineage. When the target process
+declares a `thread-id` template, child runs get their thread_id
+resolved against the per-element event — making per-entity scoping
+work end-to-end.
+
+```
+process poller
+ block search
+  interface http jira
+  fan-out from issues into analyze_ticket
+ exit
+exit
+
+process analyze_ticket
+ thread-id "{{event.key}}"
+ block do_work
+  ...
+ exit
+exit
+```
+
+Children are enqueued only — orchestrator doesn't drive them
+synchronously. The daemon's worker pool / scheduler picks them up.
+Path-not-array and missing-target-process cases log a system
+message and skip; non-Hash array elements get wrapped into
+`{value, index}` so the child sees a Hash event.
+
+Validator rejects fan-outs targeting an undeclared process. No
+dedupe / rate-limit / map clauses yet — the minimum primitive
+ships first.
+
+3 runtime specs + parser + renderer roundtrip + validator
+coverage. 717 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

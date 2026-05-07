@@ -150,7 +150,8 @@ module Prouterd
         # at context[block.name]; templating reads from the full context.
         attr_accessor :name, :line, :shutdown,
                       :timeout_ms, :retry_policy_name, :contract_name,
-                      :interface_ref, :skip_when, :pause_reason
+                      :interface_ref, :skip_when, :pause_reason,
+                      :fan_out_from, :fan_out_into
         attr_reader :secret_names, :produces, :artifact_inputs, :vars
 
         # Per-call args keyed by the interface plugin's call_field
@@ -180,10 +181,21 @@ module Prouterd
           # resume <run> [--value <json>]` injects the supplied JSON as
           # the block's output and continues downstream.
           @pause_reason = nil
+          # When both set, after this block succeeds the orchestrator
+          # walks `output_json[fan_out_from]` (must be Array) and
+          # enqueues one new run of process `fan_out_into` per element
+          # — the element is the child run's input_event. Children carry
+          # this run's id as parent_run_id so the lineage is queryable.
+          @fan_out_from = nil
+          @fan_out_into = nil
         end
 
         def pause?
           !@pause_reason.nil?
+        end
+
+        def fan_out?
+          !@fan_out_from.nil? && !@fan_out_into.nil?
         end
       end
 

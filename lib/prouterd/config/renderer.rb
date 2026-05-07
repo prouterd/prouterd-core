@@ -173,6 +173,9 @@ module Prouterd
           block.vars.each { |name, value| emit(level + 2, "#{name} #{quote_string(value)}") }
           emit(level + 1, "exit")
         end
+        if block.fan_out?
+          emit(level + 1, "fan-out from #{block.fan_out_from} into #{block.fan_out_into}")
+        end
         block.secret_names.each { |name| emit(level + 1, "secret #{name}") }
         # enable/disable shorthand for shutdown (block-level only).
         emit(level + 1, block.shutdown ? "disable" : "enable")

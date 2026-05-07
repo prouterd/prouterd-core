@@ -470,7 +470,15 @@ module Prouterd
         return nil unless result.output_json
 
         cleaned = path.start_with?("output.") ? path.sub(/\Aoutput\./, "") : path
-        cleaned.split(".").reduce(result.output_json) do |acc, key|
+        resolve_dotted_path(result.output_json, cleaned)
+      end
+
+      # Generic dotted-path walker over a JSON-shaped Hash/Array tree.
+      # Returns nil if any intermediate hop is non-traversable.
+      def resolve_dotted_path(root, path)
+        return nil unless root
+
+        path.to_s.split(".").reduce(root) do |acc, key|
           if acc.is_a?(Hash)
             acc[key] || acc[key.to_sym]
           elsif acc.is_a?(Array) && key =~ /\A\d+\z/
@@ -729,9 +737,55 @@ module Prouterd
 
         if result.success?
           ctx_mutex.synchronize { update_context_with_output(block, context, scrubbed_output) }
+          fan_out_children(run, block, document, scrubbed_output, db_mutex) if block.fan_out?
         end
 
         result
+      end
+
+      # `fan-out from <path> into <process>`: walk the named array path
+      # in the block's redacted output_json and enqueue one child run of
+      # <process> per element. Each element becomes the child's input
+      # event; the children are linked back via parent_run_id.
+      def fan_out_children(run, block, document, output_json, db_mutex)
+        target_process = document.processes.find { |p| p.name == block.fan_out_into }
+        unless target_process
+          log_system_safe(run, "fan-out: target process '#{block.fan_out_into}' not declared in document — skipping", db_mutex)
+          return
+        end
+
+        items = resolve_dotted_path(output_json, block.fan_out_from)
+        unless items.is_a?(Array)
+          log_system_safe(run,
+            "fan-out: '#{block.fan_out_from}' is #{items.class} (expected Array) on block '#{block.name}' — skipping",
+            db_mutex)
+          return
+        end
+        return if items.empty?
+
+        thread_id_template = target_process.thread_id_template
+        spawned = 0
+        db_mutex.synchronize do
+          items.each_with_index do |item, idx|
+            event = item.is_a?(Hash) ? item : { "value" => item, "index" => idx }
+            child_thread_id = if thread_id_template
+                                rendered = Prouterd::Util::Templater.render(thread_id_template, { "event" => event })
+                                rendered.to_s.strip.empty? ? nil : rendered.to_s.strip
+                              end
+            @runs.create_run(
+              process_name:  target_process.name,
+              process_config_commit_id: run.process_config_commit_id,
+              input_event:   event,
+              parent_run_id: run.id,
+              thread_id:     child_thread_id
+            )
+            spawned += 1
+          end
+          @runs.append_log(
+            run_id: run.id, stream: "system",
+            content: "fan-out from '#{block.name}.#{block.fan_out_from}' into '#{target_process.name}': #{spawned} child run(s) enqueued"
+          )
+        end
       end
 
       # Look up archived artifacts the block declares as `input X from Y.Z`.

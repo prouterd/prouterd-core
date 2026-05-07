@@ -211,6 +211,9 @@ module Prouterd
           if block.contract_name && !contract_defined?(block.contract_name)
             @result.error("block '#{process.name}/#{block.name}' references unknown contract '#{block.contract_name}'", line: block.line)
           end
+          if block.fan_out? && !@doc.processes.any? { |p| p.name == block.fan_out_into }
+            @result.error("block '#{process.name}/#{block.name}' fan-out targets unknown process '#{block.fan_out_into}'", line: block.line)
+          end
         end
 
         check_artifact_flow(process)

@@ -463,6 +463,23 @@ module Prouterd
           node.skip_when = parse_match_at(line, 0)
         when "vars"
           parse_block_vars(node, line)
+        when "fan-out"
+          # `fan-out from <path> into <process>` — after this block
+          # succeeds, walk the named array path in output_json and
+          # enqueue one run of <process> per element.
+          unless line.tokens.length == 5 &&
+                 line.tokens[1].value == "from" &&
+                 line.tokens[3].value == "into"
+            raise ParseError.new(
+              "syntax: fan-out from <output-path> into <process-name>",
+              line: line.number
+            )
+          end
+          if node.fan_out_from
+            raise ParseError.new("block '#{node.name}' already has a fan-out", line: line.number)
+          end
+          node.fan_out_from = expect_word_or_string(line.tokens[2], "fan-out path")
+          node.fan_out_into = expect_identifier(line.tokens[4], "fan-out target process")
         when "pause"
           if node.interface_ref
             raise ParseError.new(

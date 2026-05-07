@@ -1469,6 +1469,47 @@ system) is deferred — running an agentic block today returns
 
 3 validator specs + 2 parser + 1 renderer roundtrip. 730 / 0.
 
+### Phase 37l: `interface local_repo` (whitelisted, sandboxed git)
+
+New outbound interface plugin: read-only access to a controlled
+set of local git checkouts under a single root directory. Bypasses
+the need to grant agentic blocks (or any block) raw shell access
+when all they need is to look at code.
+
+```
+interface local_repo workspace
+ root /opt/atp/checkouts
+ whitelist vosio/app, vosio/api-gateway
+ default-branch develop
+ sandbox read-only
+ max-file-size 500KB
+exit
+
+block fetch_repo
+ interface local_repo workspace
+ call grep
+ repo vosio/app
+ pattern "TODO\\(release-blocker\\)"
+exit
+```
+
+Three calls: `gather` (commit log over a range), `read` (file
+content), `grep` (pattern, optional path scope). Output JSON shape:
+`{commits|matches|content+path+size}` per call.
+
+Security:
+- `repo` MUST be in the whitelist.
+- The resolved repo dir MUST live under `root`.
+- User-supplied `path` is canonicalised under the repo dir;
+  traversal segments rejected before subprocess invocation.
+- `git -C <repo>` is invoked with explicit argv (no shell), so
+  user-influenced strings can't smuggle flags or shell metacharacters.
+
+Validator enforces absolute `root` and a non-empty whitelist.
+
+6 caller specs covering whitelist, traversal, read, grep (hit/miss),
+gather. 736 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

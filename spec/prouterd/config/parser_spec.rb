@@ -480,4 +480,90 @@ RSpec.describe Prouterd::Config::Parser do
         .to raise_error(Prouterd::Config::ParseError, /cannot derive a local name/)
     end
   end
+
+  describe "call-field `file <path>` form" do
+    require "tempfile"
+    require "tmpdir"
+
+    let(:tmpdir) { Dir.mktmpdir("prc-file-form-") }
+    after { FileUtils.remove_entry(tmpdir) if Dir.exist?(tmpdir) }
+
+    def parse_with_base_dir(src, base_dir)
+      described_class.parse(Prouterd::Config::Lexer.tokenize(src), base_dir: base_dir)
+    end
+
+    let(:llm_iface_src) do
+      <<~PRC
+        interface llm chat
+         provider anthropic
+         model claude-haiku-4-5-20251001
+        exit
+      PRC
+    end
+
+    it "inlines an external file into a :command call-field" do
+      File.write(File.join(tmpdir, "sys.md"), "You are concise.\n")
+      File.write(File.join(tmpdir, "user.md"), "Summarize: {{event.body}}\n")
+
+      doc = parse_with_base_dir(<<~SRC, tmpdir)
+        #{llm_iface_src}
+        process p
+         block summarize
+          interface llm chat
+          system file "sys.md"
+          prompt file "user.md"
+         exit
+        exit
+      SRC
+
+      block = doc.processes.first.blocks.first
+      expect(block.type_fields["system"]).to eq("You are concise.\n")
+      expect(block.type_fields["prompt"]).to eq("Summarize: {{event.body}}\n")
+    end
+
+    it "errors when the file is missing" do
+      expect {
+        parse_with_base_dir(<<~SRC, tmpdir)
+          #{llm_iface_src}
+          process p
+           block summarize
+            interface llm chat
+            prompt file "nope.md"
+           exit
+          exit
+        SRC
+      }.to raise_error(Prouterd::Config::ParseError, /cannot read prompt file 'nope\.md'.*not found/)
+    end
+
+    it "errors when no base_dir was provided" do
+      File.write(File.join(tmpdir, "user.md"), "x")
+      expect {
+        described_class.parse(
+          Prouterd::Config::Lexer.tokenize(<<~SRC)
+            #{llm_iface_src}
+            process p
+             block summarize
+              interface llm chat
+              prompt file "user.md"
+             exit
+            exit
+          SRC
+        )
+      }.to raise_error(Prouterd::Config::ParseError, /requires a base directory/)
+    end
+
+    it "rejects extra tokens after the path" do
+      expect {
+        parse_with_base_dir(<<~SRC, tmpdir)
+          #{llm_iface_src}
+          process p
+           block summarize
+            interface llm chat
+            prompt file "user.md" extra
+           exit
+          exit
+        SRC
+      }.to raise_error(Prouterd::Config::ParseError, /syntax: prompt file <path>/)
+    end
+  end
 end

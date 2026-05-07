@@ -789,7 +789,8 @@ module Prouterd
 
       def parse_with_diagnostics(source, path)
         lines = Config::Lexer.tokenize(source)
-        Config::Parser.parse(lines)
+        base_dir = path && File.exist?(path) ? File.dirname(File.expand_path(path)) : nil
+        Config::Parser.parse(lines, base_dir: base_dir)
       rescue Config::ConfigError => e
         @stderr.puts "#{path}: #{e.message}"
         nil

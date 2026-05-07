@@ -1119,6 +1119,30 @@ terminal.
 10 new specs across 36a/36d/36e + 5 SemanticDiff units. 671 specs /
 0 failures. **Phases 34-36 close every pre-launch audit blocker.**
 
+### Phase 37a: external-file form for text call-fields
+
+`<call-field> file <path>` for `:command` / `:string` call-fields —
+the parser inlines the referenced file's content at parse time.
+Path resolves relative to the .prc file's directory; loaded via the
+new `base_dir:` keyword threaded through `Parser.parse`. Keeps
+multi-line prompts, system messages, JSON bodies in their own
+files instead of bloating the .prc.
+
+```
+block summarize
+ interface llm chat
+ system file "prompts/summarize.system.md"
+ prompt file "prompts/summarize.user.md.tmpl"
+exit
+```
+
+Renderer side: `quote_string` / `escape_string` now encode
+`\n` / `\t` / `\r` so multi-line content survives
+render → DB → reparse round-trip (the lexer is line-oriented and
+neither string form can span source lines).
+
+5 new parser specs + 1 renderer roundtrip spec. 676 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

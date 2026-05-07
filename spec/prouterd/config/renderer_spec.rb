@@ -163,6 +163,43 @@ RSpec.describe Prouterd::Config::Renderer do
       second = described_class.render(parse(first))
       expect(second).to eq(first)
     end
+
+    it "preserves multi-line :command call-fields across render -> parse" do
+      require "tmpdir"
+      tmpdir = Dir.mktmpdir("prc-multiline-")
+      begin
+        File.write(File.join(tmpdir, "sys.md"), "Line 1\nLine 2\twith tab\n")
+
+        src = <<~SRC
+          interface llm chat
+           provider anthropic
+           model claude-haiku-4-5-20251001
+          exit
+          process p
+           block summarize
+            interface llm chat
+            system file "sys.md"
+            prompt "ping"
+           exit
+          exit
+        SRC
+
+        doc = Prouterd::Config::Parser.parse(
+          Prouterd::Config::Lexer.tokenize(src),
+          base_dir: tmpdir
+        )
+        rendered = described_class.render(doc)
+        # Round-trip via the rendered (no base_dir) form must work.
+        reparsed = Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(rendered))
+
+        original_block = doc.processes.first.blocks.first
+        reparsed_block = reparsed.processes.first.blocks.first
+        expect(reparsed_block.type_fields["system"]).to eq(original_block.type_fields["system"])
+        expect(reparsed_block.type_fields["system"]).to eq("Line 1\nLine 2\twith tab\n")
+      ensure
+        FileUtils.remove_entry(tmpdir) if Dir.exist?(tmpdir)
+      end
+    end
   end
 
   describe "artifacts" do

@@ -16,13 +16,18 @@ module Prouterd
 
       ROUTE_BODY_HEADS = %w[match on-failure shutdown no].freeze
 
-      def self.parse(lines)
-        new(lines).parse
+      def self.parse(lines, base_dir: nil)
+        new(lines, base_dir: base_dir).parse
       end
 
-      def initialize(lines)
+      # `base_dir` is the directory used to resolve relative paths in
+      # `<call-field> file <path>` directives (e.g. `prompt file "x.md"`).
+      # Callers that parse a stored config string (DB, shell builder)
+      # leave it nil; the file form then errors with a clear message.
+      def initialize(lines, base_dir: nil)
         @lines = lines
         @pos = 0
+        @base_dir = base_dir
       end
 
       def parse
@@ -534,6 +539,11 @@ module Prouterd
       end
 
       def apply_call_field_value(plugin, field, node, line)
+        if call_field_file_form?(field, line)
+          apply_call_field_from_file(field, node, line)
+          return
+        end
+
         case field.kind
         when :string
           expect_token_count(line, 2, "#{field.dsl_keyword} <value>")
@@ -572,6 +582,48 @@ module Prouterd
             line: line.number
           )
         end
+      end
+
+      # `<call-field> file <path>` — for text-typed call-fields (`:command`
+      # or `:string`), inline the contents of an external file at parse
+      # time. Path resolves relative to the .prc file's directory.
+      def call_field_file_form?(field, line)
+        return false unless %i[command string].include?(field.kind)
+        return false unless line.tokens.length >= 2
+        line.tokens[1].value == "file"
+      end
+
+      def apply_call_field_from_file(field, node, line)
+        unless line.tokens.length == 3
+          raise ParseError.new(
+            "syntax: #{field.dsl_keyword} file <path>",
+            line: line.number
+          )
+        end
+        unless @base_dir
+          raise ParseError.new(
+            "#{field.dsl_keyword} file <path> requires a base directory; " \
+            "load this config via a file path (e.g. `prouter apply <file>`) " \
+            "rather than from a string",
+            line: line.number
+          )
+        end
+        path = expect_word_or_string(line.tokens[2], "#{field.dsl_keyword} file <path>")
+        expanded = File.expand_path(path, @base_dir)
+        begin
+          content = File.read(expanded)
+        rescue Errno::ENOENT
+          raise ParseError.new(
+            "cannot read #{field.dsl_keyword} file '#{path}': not found at #{expanded}",
+            line: line.number
+          )
+        rescue SystemCallError => e
+          raise ParseError.new(
+            "cannot read #{field.dsl_keyword} file '#{path}': #{e.message}",
+            line: line.number
+          )
+        end
+        node.type_fields[field.storage_key] = content
       end
 
       # `input from <block>.<relpath>` — declare that this block consumes a

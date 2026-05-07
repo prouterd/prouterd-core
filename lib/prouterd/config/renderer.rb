@@ -269,12 +269,18 @@ module Prouterd
       end
 
       def quote_string(text)
-        # Emit backtick-raw form when it would noticeably reduce escaping.
-        # Heuristic: the string contains a `"` or a `\`, AND it contains
-        # no backtick (which we can't represent in a backtick raw string).
-        # That covers shell commands and JSON literals — exactly the
-        # places where double-quoted form forces \\\" pyramids.
-        if text.include?("`") || text.empty?
+        # The lexer is line-oriented and neither string form (double-quoted,
+        # backtick-raw) can span source lines. Any text containing `\n`,
+        # `\t`, or `\r` must use the double-quoted form so escape sequences
+        # carry the whitespace through.
+        #
+        # For single-line text we prefer the backtick-raw form when it
+        # would noticeably reduce escaping (text contains `"` or `\` and no
+        # backtick). That covers shell commands and JSON literals — exactly
+        # the places where double-quoted form forces \\\" pyramids.
+        if text.include?("\n") || text.include?("\t") || text.include?("\r")
+          %("#{escape_string(text)}")
+        elsif text.include?("`") || text.empty?
           %("#{escape_string(text)}")
         elsif text.include?('"') || text.include?("\\")
           "`#{text}`"
@@ -284,7 +290,11 @@ module Prouterd
       end
 
       def escape_string(text)
-        text.gsub("\\") { "\\\\" }.gsub('"') { '\\"' }
+        text.gsub("\\") { "\\\\" }
+            .gsub('"')  { '\\"' }
+            .gsub("\n") { '\\n' }
+            .gsub("\t") { '\\t' }
+            .gsub("\r") { '\\r' }
       end
     end
   end

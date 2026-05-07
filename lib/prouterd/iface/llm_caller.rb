@@ -2,6 +2,7 @@ require "uri"
 require "json"
 require_relative "http_client"
 require_relative "caller_timing"
+require_relative "llm_subprocess"
 
 module Prouterd
   module Iface
@@ -59,6 +60,19 @@ module Prouterd
         system_msg  = request.field("system").to_s
         max_tokens  = parse_int(request.field("max-tokens"), DEFAULT_MAX_TOKENS)
         temperature = parse_float(request.field("temperature"))
+
+        if %w[codex_cli claude_cli].include?(provider)
+          return LlmSubprocess.call(
+            provider:   provider,
+            model:      model,
+            binary:     request.field("binary"),
+            home:       request.field("home"),
+            sandbox:    request.field("sandbox"),
+            prompt:     prompt,
+            system_msg: system_msg,
+            timeout_ms: request.timeout_ms
+          )
+        end
 
         auth_token = resolve_token(request)
 

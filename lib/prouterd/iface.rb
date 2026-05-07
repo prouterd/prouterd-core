@@ -10,6 +10,7 @@ module Prouterd
     autoload :CallerTiming,   File.expand_path("iface/caller_timing",   __dir__)
     autoload :HttpCaller,     File.expand_path("iface/http_caller",     __dir__)
     autoload :LlmCaller,      File.expand_path("iface/llm_caller",      __dir__)
+    autoload :LlmSubprocess,  File.expand_path("iface/llm_subprocess",  __dir__)
     autoload :PostgresCaller, File.expand_path("iface/postgres_caller", __dir__)
   end
 end

@@ -1304,6 +1304,45 @@ is removed.
 3 runtime specs + 3 parser specs + 1 renderer roundtrip + CLI
 smoke. 708 / 0.
 
+### Phase 37h: codex_cli / claude_cli LLM providers
+
+`provider codex_cli` / `provider claude_cli` on `interface llm`
+shell out to a local CLI binary whose authentication lives in a
+subscription token on disk — bypasses per-token API pricing for
+high-volume LLM workloads. Authentication is not configurable via
+the DSL: the binary handles it.
+
+```
+interface llm codex
+ provider codex_cli
+ model gpt-5-codex
+ home /Users/u/.codex             # HOME for the subprocess (token state)
+ sandbox read-only                 # passed via -s
+exit
+```
+
+Driver lives in `Iface::LlmSubprocess`: spawns
+`<binary> exec --json -m <model> [-s <sandbox>]`, pipes the prompt
+to stdin, reads JSONL events from stdout. Aggregates text out of:
+`item.completed` (codex), `message_delta` (claude), bare `text`/
+`content`. Sums `usage.input_tokens` / `output_tokens` (with
+`prompt_tokens` / `completion_tokens` as fallback). Returns the
+canonical `{text, model, usage, stop_reason}` shape identical to
+the HTTP providers, so downstream blocks and the per-run usage
+accumulator (Phase 37f) work unchanged.
+
+Binary resolution: `binary <path>` field → `PROUTERD_<PROVIDER>_BIN`
+env → `codex` / `claude` on PATH. Missing-binary surfaces as
+`error_type=missing_dependency`; non-zero exit as `llm_error`;
+deadline exceeded as `timeout`.
+
+Validator rejects `auth bearer secret` on subprocess providers
+(authentication isn't theirs to configure) and `binary`/`home`/
+`sandbox` on HTTP providers (no meaning).
+
+4 driver specs (codex/claude shape, missing binary, non-zero exit).
+712 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

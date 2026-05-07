@@ -34,14 +34,20 @@ module Prouterd
         direction :outbound
 
         # Interface-level config — declared once per upstream account.
-        field :provider, kind: :enum, enum: %w[anthropic openai], required: true,
+        field :provider, kind: :enum, enum: %w[anthropic openai codex_cli claude_cli], required: true,
                          description: "LLM provider"
         field :model, kind: :string, required: true,
                       description: "model identifier (e.g. claude-haiku-4-5-20251001, gpt-4o-mini)"
         field :"base-url", kind: :string,
                             description: "override the provider's public base URL (proxy / self-hosted)"
         field :auth, kind: :auth_bearer,
-                     description: "auth bearer secret <NAME> — API key, sent as the provider's header"
+                     description: "auth bearer secret <NAME> — API key (HTTP providers only)"
+        field :binary, kind: :string,
+                       description: "absolute path to the CLI binary (codex_cli/claude_cli only); defaults to PROUTERD_<PROVIDER>_BIN env or `codex` / `claude` on PATH"
+        field :home, kind: :string,
+                     description: "HOME for the subprocess (codex_cli/claude_cli) — directory holding subscription state"
+        field :sandbox, kind: :string,
+                        description: "sandbox mode passed verbatim via `-s <mode>` (codex_cli/claude_cli)"
 
         # Per-call args — supplied by a block referencing this interface.
         call_field :prompt, kind: :command, required: true,
@@ -57,12 +63,28 @@ module Prouterd
 
         def self.validate(iface, document, result)
           auth = iface.type_fields["auth"]
-          return unless auth
+          if auth
+            unless document.secrets.any? { |s| s.name == auth.secret_name }
+              result.error(
+                "interface '#{iface.name}' references unknown secret '#{auth.secret_name}'",
+                line: auth.line
+              )
+            end
+          end
 
-          unless document.secrets.any? { |s| s.name == auth.secret_name }
+          provider = iface.type_fields["provider"]
+          subprocess_provider = %w[codex_cli claude_cli].include?(provider)
+          if subprocess_provider && auth
             result.error(
-              "interface '#{iface.name}' references unknown secret '#{auth.secret_name}'",
-              line: auth.line
+              "interface '#{iface.name}': provider '#{provider}' uses a CLI binary and does not accept `auth bearer secret` " \
+              "(authentication lives in the CLI's own subscription state)",
+              line: iface.line
+            )
+          end
+          if !subprocess_provider && (iface.type_fields["binary"] || iface.type_fields["home"] || iface.type_fields["sandbox"])
+            result.error(
+              "interface '#{iface.name}': `binary` / `home` / `sandbox` are only valid for codex_cli / claude_cli providers",
+              line: iface.line
             )
           end
         end

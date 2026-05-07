@@ -1143,6 +1143,30 @@ neither string form can span source lines).
 
 5 new parser specs + 1 renderer roundtrip spec. 676 / 0.
 
+### Phase 37b: `skip-when` block-level predicate
+
+Block-level `skip-when <path> <op> <value>` directive. When the
+predicate matches at run time, the block is skipped: a synthetic
+`run_steps` row is written with `status = "skipped"` and
+`output_json = {"skipped": true}`, the block's downstream is still
+considered (skip is a routing pass-through, not a halt).
+
+```
+block fetch_slack
+ interface http slack
+ skip-when event.slack_thread_url eq ""
+exit
+```
+
+Parser reuses `parse_match_at` (same single-line `<path> <op> <val>`
+shape that `match` and `retry when` already use). Renderer emits
+`skip-when` between `contract` and `secret` lines on the block.
+Orchestrator evaluates the predicate during the level-build pass,
+right after the existing `block.shutdown` check.
+
+2 parser/renderer specs + 2 orchestrator specs (predicate matches /
+predicate misses). 681 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

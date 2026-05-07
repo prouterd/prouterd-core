@@ -164,6 +164,27 @@ RSpec.describe Prouterd::Config::Renderer do
       expect(second).to eq(first)
     end
 
+    it "round-trips skip-when on a block" do
+      src = <<~SRC
+        interface docker img1
+         image alpine:1
+        exit
+        process p
+         block b
+          interface docker img1
+          skip-when event.kind eq "noop"
+         exit
+        exit
+      SRC
+      first = described_class.render(parse(src))
+      expect(first).to include("skip-when event.kind eq \"noop\"")
+      reparsed = parse(first)
+      block = reparsed.processes.first.blocks.first
+      expect(block.skip_when.path).to eq("event.kind")
+      expect(block.skip_when.values).to eq(["noop"])
+      expect(described_class.render(reparsed)).to eq(first)
+    end
+
     it "preserves multi-line :command call-fields across render -> parse" do
       require "tmpdir"
       tmpdir = Dir.mktmpdir("prc-multiline-")

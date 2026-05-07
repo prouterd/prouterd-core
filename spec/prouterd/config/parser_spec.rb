@@ -378,6 +378,40 @@ RSpec.describe Prouterd::Config::Parser do
       expect(doc.router.name).to eq("demo")
       expect(doc.processes.first.blocks.first.type_fields["command"]).to eq("echo hello")
     end
+
+    it "parses skip-when into a Match on the block" do
+      doc = parse_with_ifaces(<<~SRC)
+        router x
+        exit
+        process p
+         block b
+          interface docker img1
+          skip-when event.flag eq "skip"
+         exit
+        exit
+      SRC
+      block = doc.processes.first.blocks.first
+      expect(block.skip_when).not_to be_nil
+      expect(block.skip_when.path).to eq("event.flag")
+      expect(block.skip_when.operator).to eq("eq")
+      expect(block.skip_when.values).to eq(["skip"])
+    end
+
+    it "rejects two skip-when directives on one block" do
+      expect {
+        parse_with_ifaces(<<~SRC)
+          router x
+          exit
+          process p
+           block b
+            interface docker img1
+            skip-when event.a eq 1
+            skip-when event.b eq 2
+           exit
+          exit
+        SRC
+      }.to raise_error(Prouterd::Config::ParseError, /already has a skip-when/)
+    end
   end
 
   describe "artifacts" do

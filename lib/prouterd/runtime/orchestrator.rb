@@ -165,8 +165,10 @@ module Prouterd
                                      error: "run_timeout: exceeded #{overshoot}ms wall-clock timeout")
           end
 
-          # Filter out shutdown / already-executed before kicking off threads.
+          # Filter out shutdown / already-executed / skip-when-matched before
+          # kicking off threads.
           level = []
+          skipped = []
           ready.each do |bn|
             next if executed.include?(bn)
 
@@ -180,15 +182,25 @@ module Prouterd
               log_system_safe(run, "block '#{bn}' is shutdown; skipped", db_mutex)
               next
             end
+            if block.skip_when && skip_when_matches?(block, context, ctx_mutex)
+              executed << bn
+              record_skipped_block(run, block, context, ctx_mutex, db_mutex)
+              skipped << block
+              next
+            end
             level << block
           end
           break if failure_reason
-          if level.empty?
+          if level.empty? && skipped.empty?
             ready = []
             next
           end
 
-          results = run_level_in_parallel(run, process, document, level, context, db_mutex, ctx_mutex, redactor)
+          results = if level.empty?
+                      []
+                    else
+                      run_level_in_parallel(run, process, document, level, context, db_mutex, ctx_mutex, redactor)
+                    end
           level.each { |b| executed << b.name }
 
           # Persist accumulated context once after the level drains.
@@ -211,9 +223,11 @@ module Prouterd
           end
           break if failure_reason
 
-          # Build the next level: ONLY successfully completed blocks contribute
-          # downstream (failed-but-continue blocks have no output to feed).
-          successful = level.reject { |b| failed_blocks.include?(b.name) }
+          # Build the next level: successfully completed blocks AND skipped
+          # blocks both contribute downstream — a `skip-when` is a routing
+          # pass-through, not a halt. Failed (no on-failure stop) blocks
+          # have no output to feed.
+          successful = level.reject { |b| failed_blocks.include?(b.name) } + skipped
           next_ready = []
           successful.each do |block|
             passing_routes = process.routes.select do |r|
@@ -376,6 +390,38 @@ module Prouterd
 
       def route_passes?(route, context, ctx_mutex)
         ctx_mutex.synchronize { MatchEvaluator.passes?(route.matches, context) }
+      end
+
+      def skip_when_matches?(block, context, ctx_mutex)
+        ctx_mutex.synchronize { MatchEvaluator.evaluate(block.skip_when, context) }
+      end
+
+      # Persist a synthetic step row + seed context[block.name] so downstream
+      # blocks can detect skip via {{block.skipped}} templating.
+      def record_skipped_block(run, block, context, ctx_mutex, db_mutex)
+        output = { "skipped" => true }
+        now = Time.now.utc.iso8601(3)
+        step = nil
+        db_mutex.synchronize do
+          step = @runs.create_step(
+            run_id: run.id,
+            block_name: block.name,
+            attempt: 1,
+            image: nil
+          )
+          @runs.update_step(
+            step.id,
+            status: "skipped",
+            started_at: now,
+            finished_at: now,
+            duration_ms: 0,
+            exit_code: nil,
+            output_json: JSON.dump(output)
+          )
+        end
+        ctx_mutex.synchronize { context.set(block.name, output) }
+        log_system_safe(run, "block '#{block.name}' skipped (skip-when matched)", db_mutex)
+        @events.publish(:step_updated, step: step, run_id: run.id, run_uid: run.uid) if step
       end
 
       def log_system_safe(run, message, db_mutex)

@@ -157,6 +157,9 @@ module Prouterd
         emit(level + 1, "timeout #{Util::DurationParser.render(block.timeout_ms)}") if block.timeout_ms
         emit(level + 1, "retry #{block.retry_policy_name}") if block.retry_policy_name
         emit(level + 1, "contract #{block.contract_name}") if block.contract_name
+        if block.skip_when
+          emit(level + 1, render_match(block.skip_when).sub(/\Amatch /, "skip-when "))
+        end
         block.secret_names.each { |name| emit(level + 1, "secret #{name}") }
         # enable/disable shorthand for shutdown (block-level only).
         emit(level + 1, block.shutdown ? "disable" : "enable")

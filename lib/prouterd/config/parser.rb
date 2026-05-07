@@ -440,6 +440,11 @@ module Prouterd
         when "contract"
           expect_token_count(line, 2, "contract <name>")
           node.contract_name = expect_identifier(line.tokens[1], "contract name")
+        when "skip-when"
+          if node.skip_when
+            raise ParseError.new("block '#{node.name}' already has a skip-when", line: line.number)
+          end
+          node.skip_when = parse_match_at(line, 0)
         when "input"
           # Only the typed-artifact form: `input from <block>.<relpath>`.
           # The legacy `input <context.path>` is gone — templating reads

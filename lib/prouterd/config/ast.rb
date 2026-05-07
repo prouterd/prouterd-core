@@ -139,7 +139,7 @@ module Prouterd
         # at context[block.name]; templating reads from the full context.
         attr_accessor :name, :line, :shutdown,
                       :timeout_ms, :retry_policy_name, :contract_name,
-                      :interface_ref
+                      :interface_ref, :skip_when
         attr_reader :secret_names, :produces, :artifact_inputs
 
         # Per-call args keyed by the interface plugin's call_field
@@ -158,6 +158,7 @@ module Prouterd
           @type_fields = {}
           @produces = []
           @artifact_inputs = []
+          @skip_when = nil
         end
       end
 

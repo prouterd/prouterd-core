@@ -239,7 +239,19 @@ module Prouterd
           end
           if block.agentic
             iface_ref = block.interface_ref
-            unless iface_ref && iface_ref.type == "llm"
+            if iface_ref && iface_ref.type == "llm"
+              # Runtime currently drives Anthropic only. Catch other
+              # providers at apply time so the operator doesn't ship a
+              # config that fails on first trigger.
+              iface = @doc.interfaces.find { |i| i.type == "llm" && i.name == iface_ref.name }
+              provider = iface&.type_fields&.[]("provider")
+              if iface && provider != "anthropic"
+                @result.error(
+                  "block '#{process.name}/#{block.name}': `agentic on` requires provider 'anthropic' on the referenced interface (got '#{provider}')",
+                  line: block.line
+                )
+              end
+            else
               @result.error("block '#{process.name}/#{block.name}': `agentic on` requires `interface llm <name>`", line: block.line)
             end
             block.allowed_tools.each do |tool_name|

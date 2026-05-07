@@ -1510,6 +1510,41 @@ Validator enforces absolute `root` and a non-empty whitelist.
 6 caller specs covering whitelist, traversal, read, grep (hit/miss),
 gather. 736 / 0.
 
+### Phase 37m: agentic multi-turn tool-use runtime
+
+The agentic-block runtime stub introduced in Phase 37k is replaced
+by a real driver. `Iface::LlmAgentic` runs an Anthropic-flavoured
+multi-turn loop against `/v1/messages` with a `tools` array; on
+each `stop_reason=tool_use` the driver invokes a per-block
+dispatcher, appends the result as a `tool_result` content block,
+and re-fires the next turn until the model returns plain text or
+`tool-call-limit` is hit (then `stop_reason=max_turns`).
+
+The orchestrator's `execute_agentic_block` builds the dispatcher
+as a closure capturing the document + run + parent env; each
+tool_use is mapped to a synthesized `RunRequest` whose
+`execution_type` is the tool's implementation iface and whose
+`type_fields` merge `iface.type_fields` + `tool.implementation.call`
++ the LLM-provided args. Dispatch goes through the same
+`CallRunner` ordinary blocks use — tools are first-class outbound
+calls, not a parallel pipeline.
+
+Output JSON shape matches an ordinary LLM block plus
+`tool_calls:[{name,input,output}]` and `turns:N`; the per-run token
+usage accumulator (Phase 37f) sees both turns and aggregates
+correctly. Persisted step row, redaction, and context-update all
+flow through the standard pipeline.
+
+Validator now also rejects `agentic on` on a non-anthropic
+interface at apply time, so configs that the runtime can't drive
+fail earlier than first trigger. OpenAI / subprocess providers are
+deferred — their tool surfaces differ enough to deserve their own
+drivers.
+
+4 driver specs (tool-use turn, max-turns ceiling, dispatcher-error
+propagation, HTTP non-2xx) + 2 orchestrator integration specs.
+742 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

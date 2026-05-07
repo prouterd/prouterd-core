@@ -617,20 +617,11 @@ module Prouterd
         # already on the context, write a step row, and return success.
         return execute_barrier_block(run, block, context, ctx_mutex, db_mutex) if block.barrier?
 
-        # Agentic multi-turn tool-use loop is declared at the DSL level
-        # (parser/validator/renderer all carry it through round-trip)
-        # but the runtime that drives the loop and dispatches tool calls
-        # is pending. Surface a clear, actionable failure rather than
-        # silently swallowing the directive.
-        if block.agentic
-          return Runner::ExecutionResult.new(
-            exit_code: nil, stdout: "", stderr: "",
-            output_json: nil, artifacts: [],
-            error_type: "agentic_not_implemented",
-            error_message: "block '#{block.name}': agentic mode runtime is not yet shipped — switch `agentic off` or wait for the runtime phase",
-            duration_ms: 0, started_at: nil, finished_at: nil
-          )
-        end
+        # Agentic multi-turn tool-use loop. Drives the provider's tool
+        # API in a loop, dispatching each tool_use through the same
+        # CallRunner that ordinary blocks use. Currently Anthropic only
+        # — OpenAI's function-calling shape needs its own driver.
+        return execute_agentic_block(run, process, block, context, document, db_mutex, ctx_mutex, redactor, attempt) if block.agentic
 
         # Resolve `interface <type> <name>` reference to the AST::Interface
         # declared at top level. Validator already ensured this exists and
@@ -919,6 +910,181 @@ module Prouterd
             duration_ms: result.duration_ms,
             started_at: result.started_at, finished_at: result.finished_at
           )
+        end
+      end
+
+      # Agentic execution path. Resolves the LLM interface + the
+      # block's allowed tools, builds a per-call dispatcher that
+      # synthesises a RunRequest for each tool_use against its
+      # implementation iface, and drives Iface::LlmAgentic.run.
+      # The result is shaped like an ordinary LLM block's output
+      # (text/usage/stop_reason) plus a tool_calls history; the
+      # orchestrator's normal step persistence + redaction +
+      # context-update pipeline still applies.
+      def execute_agentic_block(run, process, block, context, document, db_mutex, ctx_mutex, redactor, attempt)
+        ref = block.interface_ref
+        iface = ref && document.interfaces.find { |i| i.name == ref.name && i.type == ref.type }
+        unless iface && ref.type == "llm"
+          return invalid_agentic(block, "agentic block must reference `interface llm <name>`")
+        end
+
+        provider = (iface.type_fields["provider"] || "").to_s
+        unless provider == "anthropic"
+          return invalid_agentic(
+            block,
+            "agentic mode currently supports provider=anthropic only (got '#{provider}'); switch the interface or `agentic off`"
+          )
+        end
+
+        allowed = block.allowed_tools.map do |name|
+          tool = document.tools.find { |t| t.name == name }
+          return invalid_agentic(block, "allowed-tools references unknown tool '#{name}'") unless tool
+
+          tool
+        end
+
+        # Resolve templated prompt/system + interface fields.
+        overlay = { "iteration" => attempt, "secret" => secret_overlay(document) }
+        scope = OverlayContext.new(context, overlay)
+        prompt    = nil
+        system_m  = nil
+        templated_iface = nil
+        ctx_mutex.synchronize do
+          prompt    = Prouterd::Util::Templater.render(block.type_fields["prompt"].to_s, scope)
+          system_m  = Prouterd::Util::Templater.render(block.type_fields["system"].to_s, scope)
+          templated_iface = templated_fields(iface.type_fields || {}, scope)
+        end
+
+        api_key = nil
+        auth = templated_iface["auth"]
+        if auth && auth.respond_to?(:secret_name)
+          api_key = build_env(run, process, block, iface, document)[auth.secret_name]
+        end
+        base_url = templated_iface["base-url"]
+        base_url = nil if base_url.respond_to?(:empty?) && base_url.empty?
+        base_url ||= "https://api.anthropic.com"
+        model = templated_iface["model"].to_s
+
+        max_tokens = (block.type_fields["max-tokens"] || "1024").to_i
+        max_tokens = 1024 if max_tokens < 1
+        env = build_env(run, process, block, iface, document)
+
+        dispatcher = build_tool_dispatcher(run, process, block, document, env)
+
+        # Persist a step row before the first turn so logs/usage land
+        # against it. The orchestrator's outer attempt machinery would
+        # write its own row at execute_single_attempt's return — we
+        # short-circuit before that, so write here.
+        step = nil
+        db_mutex.synchronize do
+          step = @runs.create_step(run_id: run.id, block_name: block.name, attempt: attempt, image: nil)
+          @runs.update_step(step.id, status: "running", started_at: Time.now.utc.iso8601(3))
+        end
+
+        outcome = Iface::LlmAgentic.run(
+          model:      model,
+          base_url:   base_url,
+          api_key:    api_key,
+          prompt:     prompt,
+          system_msg: system_m,
+          max_tokens: max_tokens,
+          max_turns:  block.tool_call_limit,
+          tools:      allowed,
+          dispatcher: dispatcher,
+          timeout_ms: block.timeout_ms
+        )
+
+        scrubbed = outcome[:output_json] ? redactor.redact_json(outcome[:output_json]) : nil
+        now = Time.now.utc.iso8601(3)
+        db_mutex.synchronize do
+          @runs.update_step(
+            step.id,
+            status: outcome[:ok] ? "success" : "failed",
+            finished_at: now,
+            duration_ms: 0,
+            exit_code: outcome[:exit_code],
+            error_type: outcome[:error_type],
+            error_message: redactor.redact(outcome[:error_message]),
+            output_json: scrubbed ? JSON.dump(scrubbed) : nil
+          )
+          accumulate_run_usage(run, scrubbed)
+        end
+
+        if outcome[:ok]
+          ctx_mutex.synchronize { update_context_with_output(block, context, scrubbed) }
+        end
+
+        Runner::ExecutionResult.new(
+          exit_code: outcome[:exit_code],
+          stdout: outcome[:stdout].to_s,
+          stderr: outcome[:stderr].to_s,
+          output_json: scrubbed,
+          artifacts: [],
+          error_type: outcome[:error_type],
+          error_message: outcome[:error_message],
+          duration_ms: 0,
+          started_at: now, finished_at: now
+        )
+      end
+
+      def invalid_agentic(block, message)
+        Runner::ExecutionResult.new(
+          exit_code: nil, stdout: "", stderr: "",
+          output_json: nil, artifacts: [],
+          error_type: "invalid_agentic", error_message: "block '#{block.name}': #{message}",
+          duration_ms: 0, started_at: nil, finished_at: nil
+        )
+      end
+
+      # Build the per-block tool dispatch callback. Each tool_use from
+      # the LLM is mapped to a synthetic RunRequest against the tool's
+      # implementation iface, dispatched through the same CallRunner
+      # the orchestrator uses for ordinary blocks. Returns a Hash with
+      # output_json / error_type / error_message — the agentic driver
+      # serialises the appropriate tool_result content.
+      def build_tool_dispatcher(run, process, block, document, parent_env)
+        lambda do |name:, input:|
+          tool = document.tools.find { |t| t.name == name }
+          next ({ error_type: "unknown_tool", error_message: "tool '#{name}' is not declared" }) unless tool
+
+          impl = tool.implementation
+          iface = document.interfaces.find { |i| i.name == impl.iface_name && i.type == impl.iface_type }
+          next ({ error_type: "unknown_iface",
+                  error_message: "tool '#{name}' implementation iface '#{impl.iface_type} #{impl.iface_name}' is not declared" }) unless iface
+
+          # Merge interface body + tool args (LLM-supplied). Tool's
+          # `call <name>` value goes into type_fields["call"] verbatim
+          # so the local_repo plugin (and any other plugin keying on
+          # `call`) sees it.
+          fields = (iface.type_fields || {}).dup
+          fields["call"] = impl.call_name if impl.call_name && !impl.call_name.empty?
+          (input || {}).each { |k, v| fields[k.to_s] = stringify_arg(v) }
+
+          req = Runner::RunRequest.new(
+            run_uid: run.uid, process_name: process.name,
+            block_name: "#{block.name}::tool::#{name}",
+            execution_type: iface.type, attempt: 1,
+            env: parent_env, input_json: {}, timeout_ms: 60_000,
+            type_fields: fields, staged_inputs: {}
+          )
+          result = @runner.run(req)
+
+          if result.success?
+            { output_json: result.output_json || {} }
+          else
+            {
+              error_type:    result.error_type || "tool_failed",
+              error_message: result.error_message || "tool '#{name}' returned non-zero exit"
+            }
+          end
+        end
+      end
+
+      def stringify_arg(value)
+        case value
+        when String then value
+        when nil    then ""
+        else             JSON.dump(value)
         end
       end
 

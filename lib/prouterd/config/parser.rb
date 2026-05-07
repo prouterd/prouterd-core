@@ -357,6 +357,9 @@ module Prouterd
           when "route"
             node.routes << parse_process_route(line)
             next
+          when "parallel"
+            parse_parallel_group(node, line)
+            next
           else
             apply_process_field(node, line)
           end
@@ -415,6 +418,75 @@ module Prouterd
         end
 
         node
+      end
+
+      # `parallel <name> ... block X ... block Y ... [join-strategy ...] exit`
+      # Side effects on the parent process node:
+      #   - each child block is appended to process.blocks
+      #   - a synthesized barrier block named <name> is appended; it has
+      #     no interface, and is scheduled by the orchestrator as a
+      #     no-op aggregator over the children's outputs
+      #   - synthesized routes from each child to the barrier are added
+      #     to process.routes (with on-failure tied to the join strategy)
+      #   - the source-form record is kept on process.parallel_groups
+      #     for rendering
+      def parse_parallel_group(process_node, header)
+        expect_token_count(header, 2, "parallel <name>")
+        name = expect_identifier(header.tokens[1], "parallel group name")
+        if process_node.blocks.any? { |b| b.name == name } ||
+           process_node.parallel_groups.any? { |g| g.name == name }
+          raise ParseError.new("name '#{name}' is already declared in process '#{process_node.name}'", line: header.number)
+        end
+
+        group = AST::ParallelGroup.new(name: name, line: header.number)
+        advance
+
+        each_body_line("parallel #{name}") do |line|
+          head = line.head.value
+          case head
+          when "block"
+            child = parse_block(line)
+            if process_node.blocks.any? { |b| b.name == child.name }
+              raise ParseError.new("duplicate block '#{child.name}' inside parallel '#{name}'", line: child.line)
+            end
+            process_node.blocks << child
+            group.member_block_names << child.name
+          when "join-strategy"
+            expect_token_count(line, 2, "join-strategy <#{AST::ParallelGroup::JOIN_STRATEGIES.join('|')}>")
+            value = expect_word(line.tokens[1], "join-strategy")
+            unless AST::ParallelGroup::JOIN_STRATEGIES.include?(value)
+              raise ParseError.new(
+                "invalid join-strategy '#{value}' (allowed: #{AST::ParallelGroup::JOIN_STRATEGIES.join(', ')})",
+                line: line.number
+              )
+            end
+            group.join_strategy = value
+          else
+            raise ParseError.new("unknown directive '#{head}' inside parallel '#{name}'", line: line.number)
+          end
+        end
+
+        if group.member_block_names.empty?
+          raise ParseError.new("parallel '#{name}' must contain at least one block", line: header.number)
+        end
+
+        # Synthesize the barrier block.
+        barrier = AST::Block.new(name: name, line: header.number)
+        barrier.barrier_for = group.member_block_names.dup
+        barrier.barrier_join_strategy = group.join_strategy
+        process_node.blocks << barrier
+
+        # Synthesize routes child -> barrier. all-best-effort needs
+        # on-failure=continue so a failed child doesn't abort the run
+        # before the barrier can pick up the survivors.
+        on_failure = group.join_strategy == "all-best-effort" ? "continue" : "stop"
+        group.member_block_names.each do |child_name|
+          route = AST::ProcessRoute.new(from_block: child_name, to_block: name, line: header.number)
+          route.on_failure = on_failure
+          process_node.routes << route
+        end
+
+        process_node.parallel_groups << group
       end
 
       # A block has three kinds of body directives:

@@ -123,17 +123,57 @@ module Prouterd
         end
         emit(1, process.shutdown ? "shutdown" : "no shutdown")
 
+        # Block-set partition: blocks owned by a `parallel` group render
+        # *inside* that group; synthesized barrier blocks and the
+        # synthesized routes from members to barriers are reproduced
+        # purely from process.parallel_groups, not directly. Standalone
+        # blocks (not in any group, not barriers) render at top level.
+        member_block_names = process.parallel_groups
+                                    .flat_map(&:member_block_names)
+                                    .to_set
+        barrier_names = process.parallel_groups.map(&:name).to_set
+
         process.blocks.each do |block|
+          next if member_block_names.include?(block.name)
+          next if barrier_names.include?(block.name)
+
           @lines << ""
           render_block(block, 1)
         end
 
-        unless process.routes.empty?
+        process.parallel_groups.each do |group|
           @lines << ""
-          process.routes.each { |route| render_process_route(route, 1) }
+          render_parallel_group(process, group, 1)
+        end
+
+        synthesized_route_pairs = process.parallel_groups.flat_map do |group|
+          group.member_block_names.map { |m| [m, group.name] }
+        end.to_set
+        rendered_routes = process.routes.reject do |r|
+          synthesized_route_pairs.include?([r.from_block, r.to_block])
+        end
+
+        unless rendered_routes.empty?
+          @lines << ""
+          rendered_routes.each { |route| render_process_route(route, 1) }
         end
 
         emit(0, "exit")
+      end
+
+      def render_parallel_group(process, group, level)
+        emit(level, "parallel #{group.name}")
+        if group.join_strategy != "all-required"
+          emit(level + 1, "join-strategy #{group.join_strategy}")
+        end
+        group.member_block_names.each do |child_name|
+          child = process.blocks.find { |b| b.name == child_name }
+          next unless child
+
+          @lines << ""
+          render_block(child, level + 1)
+        end
+        emit(level, "exit")
       end
 
       def render_block(block, level)

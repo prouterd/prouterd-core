@@ -531,7 +531,24 @@ module Prouterd
         # Single-incoming is enforced at config time, so .find is exhaustive.
         # Entry blocks (no incoming) default to stop.
         incoming = process.routes.find { |r| r.to_block == block_name }
-        incoming ? incoming.on_failure : "stop"
+        return incoming.on_failure if incoming
+
+        # Members of an all-best-effort parallel group don't have an
+        # ordinary incoming route — they're entry blocks of the group's
+        # parallel section. Their downstream route to the synthesized
+        # barrier carries the join strategy's on-failure: respect it so
+        # the run survives partial failure of the group.
+        outgoing_to_barrier = process.routes.find do |r|
+          r.from_block == block_name && barrier_block?(process, r.to_block)
+        end
+        return outgoing_to_barrier.on_failure if outgoing_to_barrier
+
+        "stop"
+      end
+
+      def barrier_block?(process, name)
+        block = process.blocks.find { |b| b.name == name }
+        block && block.barrier?
       end
 
       def route_passes?(route, context, ctx_mutex)
@@ -594,6 +611,12 @@ module Prouterd
       # for input + set for output go through ctx_mutex. Runner.run() runs
       # OUTSIDE both — that's where the actual concurrency happens.
       def execute_single_attempt(run, process, block, attempt, context, document, db_mutex, ctx_mutex, redactor, template_overlay: nil)
+        # Synthesized barrier blocks (from `parallel <name>` expansion)
+        # are no-op aggregators: they don't dispatch to any runner.
+        # Compose the group's output_json from member blocks' outputs
+        # already on the context, write a step row, and return success.
+        return execute_barrier_block(run, block, context, ctx_mutex, db_mutex) if block.barrier?
+
         # Resolve `interface <type> <name>` reference to the AST::Interface
         # declared at top level. Validator already ensured this exists and
         # is outbound; defensive lookup here is just for runtime safety.
@@ -882,6 +905,52 @@ module Prouterd
             started_at: result.started_at, finished_at: result.finished_at
           )
         end
+      end
+
+      # Barrier execution path. Builds output_json keyed by member block
+      # name where the value is each member's recorded context entry
+      # (nil if the member was skipped or failed). Persists a synthetic
+      # step row, seeds context[barrier.name] with the aggregated map,
+      # and returns success — the orchestrator's normal route walk
+      # then activates routes downstream of the parallel group.
+      def execute_barrier_block(run, block, context, ctx_mutex, db_mutex)
+        members = block.barrier_for || []
+        aggregated = {}
+        succeeded = []
+        ctx_mutex.synchronize do
+          members.each do |m|
+            value = context.get(m)
+            aggregated[m] = value
+            succeeded << m unless value.nil?
+          end
+        end
+        output = {
+          "members"   => aggregated,
+          "succeeded" => succeeded,
+          "failed"    => members - succeeded,
+          "join_strategy" => block.barrier_join_strategy
+        }
+        now = Time.now.utc.iso8601(3)
+        db_mutex.synchronize do
+          step = @runs.create_step(run_id: run.id, block_name: block.name, attempt: 1, image: nil)
+          @runs.update_step(
+            step.id,
+            status: "success",
+            started_at: now,
+            finished_at: now,
+            duration_ms: 0,
+            exit_code: 0,
+            output_json: JSON.dump(output)
+          )
+        end
+        ctx_mutex.synchronize { context.set(block.name, output) }
+
+        Runner::ExecutionResult.new(
+          exit_code: 0, stdout: "", stderr: "",
+          output_json: output, artifacts: [],
+          error_type: nil, error_message: nil,
+          duration_ms: 0, started_at: now, finished_at: now
+        )
       end
 
       # Accumulate per-run LLM token usage when the attempt's output_json

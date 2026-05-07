@@ -302,6 +302,9 @@ module Prouterd
         # them and the run goes to status="paused" until `prouter resume`
         # injects an output. They legally have no `interface` directive.
         return if block.pause?
+        # Synthesized barrier blocks (from `parallel <name>` expansion)
+        # are no-op aggregators — they have no interface either.
+        return if block.barrier?
 
         # Every other block must reference an outbound interface via
         # `interface <type> <name>` in its body.
@@ -398,11 +401,17 @@ module Prouterd
         process.routes.each do |route|
           incoming[route.to_block] << route
         end
+        block_index = process.blocks.each_with_object({}) { |b, h| h[b.name] = b }
         incoming.each do |block_name, routes|
+          # Synthesized barrier blocks for `parallel <name>` legitimately
+          # have multiple incoming routes (one per member). Skip the
+          # join check for them.
+          next if block_index[block_name]&.barrier?
+
           if routes.length > 1
             lines = routes.map(&:line).join(", ")
             @result.error(
-              "block '#{process.name}/#{block_name}' has multiple incoming routes (lines #{lines}); join semantics are not supported in MVP — introduce a merge block instead",
+              "block '#{process.name}/#{block_name}' has multiple incoming routes (lines #{lines}); join semantics are not supported in MVP — introduce a merge block or wrap the upstreams in a `parallel` group instead",
               line: routes.first.line
             )
           end

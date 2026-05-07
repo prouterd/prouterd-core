@@ -118,7 +118,7 @@ module Prouterd
       class Process
         attr_accessor :name, :description, :queue_name, :shutdown, :timeout_ms,
                       :thread_id_template, :line
-        attr_reader :blocks, :routes
+        attr_reader :blocks, :routes, :parallel_groups
 
         def initialize(name:, line:)
           @name = name
@@ -130,10 +130,34 @@ module Prouterd
           @thread_id_template = nil
           @blocks = []
           @routes = []
+          # Source-form record of `parallel <name>` sections — kept for
+          # rendering. The actual scheduling expansion (member blocks +
+          # synthesized barrier block + synthesized routes) lives in
+          # @blocks / @routes alongside ordinary content.
+          @parallel_groups = []
         end
 
         def block(name)
           blocks.find { |b| b.name == name }
+        end
+      end
+
+      # Source-form record of a `parallel <name>` section. Kept so the
+      # renderer can reproduce the original DSL. The scheduling effect
+      # is realised by the parser expanding the section into member
+      # blocks + a synthesized barrier block on @blocks, plus synthetic
+      # routes from each member to the barrier on @routes.
+      class ParallelGroup
+        JOIN_STRATEGIES = %w[all-required all-best-effort].freeze
+
+        attr_accessor :name, :join_strategy, :line
+        attr_reader :member_block_names
+
+        def initialize(name:, line:)
+          @name = name
+          @line = line
+          @join_strategy = "all-required"
+          @member_block_names = []
         end
       end
 
@@ -151,7 +175,8 @@ module Prouterd
         attr_accessor :name, :line, :shutdown,
                       :timeout_ms, :retry_policy_name, :contract_name,
                       :interface_ref, :skip_when, :pause_reason,
-                      :fan_out_from, :fan_out_into
+                      :fan_out_from, :fan_out_into,
+                      :barrier_for, :barrier_join_strategy
         attr_reader :secret_names, :produces, :artifact_inputs, :vars
 
         # Per-call args keyed by the interface plugin's call_field
@@ -188,6 +213,12 @@ module Prouterd
           # this run's id as parent_run_id so the lineage is queryable.
           @fan_out_from = nil
           @fan_out_into = nil
+          # Synthesized barrier block — created by `parallel <name>`
+          # expansion. Has no interface; the orchestrator special-cases
+          # it as a no-op aggregator over its members' outputs. Honest
+          # blocks have @barrier_for == nil.
+          @barrier_for = nil
+          @barrier_join_strategy = nil
         end
 
         def pause?
@@ -196,6 +227,10 @@ module Prouterd
 
         def fan_out?
           !@fan_out_from.nil? && !@fan_out_into.nil?
+        end
+
+        def barrier?
+          !@barrier_for.nil?
         end
       end
 

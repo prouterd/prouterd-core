@@ -443,6 +443,71 @@ RSpec.describe Prouterd::Config::Parser do
       }.to raise_error(Prouterd::Config::ParseError, /cannot mix `pause` and `interface`/)
     end
 
+    it "parses a `parallel` group, materialising children + a barrier + synthesized routes" do
+      doc = parse_with_ifaces(<<~SRC)
+        router x
+        exit
+        process p
+         parallel evidence
+          block a
+           interface docker img1
+          exit
+          block b
+           interface docker img1
+          exit
+         exit
+
+         block downstream
+          interface docker img1
+         exit
+
+         route evidence downstream
+        exit
+      SRC
+      process = doc.processes.first
+      block_names = process.blocks.map(&:name)
+      expect(block_names).to contain_exactly("a", "b", "evidence", "downstream")
+      barrier = process.blocks.find { |b| b.name == "evidence" }
+      expect(barrier.barrier?).to be true
+      expect(barrier.barrier_for).to contain_exactly("a", "b")
+      expect(barrier.barrier_join_strategy).to eq("all-required")
+      members_to_barrier = process.routes.select { |r| r.to_block == "evidence" }
+      expect(members_to_barrier.map(&:from_block)).to contain_exactly("a", "b")
+      expect(members_to_barrier.map(&:on_failure).uniq).to eq(["stop"])
+    end
+
+    it "parses join-strategy all-best-effort and propagates on-failure=continue to synthesized routes" do
+      doc = parse_with_ifaces(<<~SRC)
+        router x
+        exit
+        process p
+         parallel g
+          join-strategy all-best-effort
+          block a
+           interface docker img1
+          exit
+         exit
+        exit
+      SRC
+      process = doc.processes.first
+      barrier = process.blocks.find { |b| b.name == "g" }
+      expect(barrier.barrier_join_strategy).to eq("all-best-effort")
+      expect(process.routes.first.on_failure).to eq("continue")
+    end
+
+    it "rejects `parallel` whose body has no blocks" do
+      expect {
+        parse_with_ifaces(<<~SRC)
+          router x
+          exit
+          process p
+           parallel empty
+           exit
+          exit
+        SRC
+      }.to raise_error(Prouterd::Config::ParseError, /must contain at least one block/)
+    end
+
     it "parses block-level fan-out directive" do
       doc = parse_with_ifaces(<<~SRC)
         router x

@@ -198,6 +198,40 @@ RSpec.describe Prouterd::Config::Renderer do
       expect(described_class.render(reparsed)).to eq(first)
     end
 
+    it "round-trips a `parallel` group (children inside, no synthesized noise)" do
+      src = <<~SRC
+        interface docker img1
+         image alpine:1
+        exit
+        process p
+         parallel evidence
+          join-strategy all-best-effort
+          block a
+           interface docker img1
+          exit
+          block b
+           interface docker img1
+          exit
+         exit
+
+         block downstream
+          interface docker img1
+         exit
+
+         route evidence downstream
+        exit
+      SRC
+      first = described_class.render(parse(src))
+      expect(first).to include("parallel evidence")
+      expect(first).to include("join-strategy all-best-effort")
+      # Synthesized routes (a -> evidence, b -> evidence) must NOT
+      # surface in the rendered output — only the user-written
+      # `route evidence downstream` and the `parallel` section.
+      expect(first).not_to match(/route a evidence/)
+      expect(first).not_to match(/route b evidence/)
+      expect(described_class.render(parse(first))).to eq(first)
+    end
+
     it "round-trips block-level fan-out" do
       src = <<~SRC
         interface docker img1

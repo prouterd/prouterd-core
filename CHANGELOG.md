@@ -1383,6 +1383,55 @@ ships first.
 3 runtime specs + parser + renderer roundtrip + validator
 coverage. 717 / 0.
 
+### Phase 37j: declarative `parallel <name>` container
+
+Process-level `parallel <name>` section groups N child blocks that
+run concurrently, with a synthesized barrier block carrying the
+group's name so downstream routes (`route evidence analyze`) work
+the same as for a single block.
+
+```
+process p
+ parallel evidence
+  join-strategy all-best-effort     # default: all-required
+  block fetch_jira    ... exit
+  block fetch_slack   ... exit
+  block fetch_sentry  ... exit
+ exit
+
+ block analyze
+  command "succeeded={{evidence.succeeded}}"
+ exit
+
+ route evidence analyze
+exit
+```
+
+Mechanism: at parse time the section expands into the group's
+member blocks added to `process.blocks`, plus a synthesized barrier
+block (also on `process.blocks`) named after the group, plus
+synthesized routes from each member to the barrier. Validator
+relaxes its single-incoming check for barrier blocks. The
+orchestrator special-cases barriers in `execute_single_attempt` —
+no runner dispatch, just a step row + an aggregated output of
+`{members:{...}, succeeded:[...], failed:[...], join_strategy}`
+seeded into context under the group name.
+
+Join strategies:
+- `all-required` (default): default route on-failure="stop" so any
+  member failure aborts the run before the barrier even fires.
+- `all-best-effort`: synthesized routes get on-failure="continue",
+  and on_failure_for now also consults a failed block's outgoing
+  route to a barrier — survivors flow through, failures appear in
+  `output.failed`.
+
+`first-success` / `first-completed` deferred until a real driver.
+
+Renderer round-trips the source form (children inside the
+`parallel` body, no synthesized routes leaked).
+
+3 runtime specs + 3 parser + 1 renderer roundtrip. 724 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

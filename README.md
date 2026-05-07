@@ -1,17 +1,16 @@
 # prouterd
 
-**Process workflows as text, not code.**
+**Pipelines as config, not code.**
+
+A single-binary orchestrator for ops automation: webhooks, cron,
+LLM calls, HTTP, shell, docker — all declared in a `.prc` text file
+committed to git. No Python, no YAML, no SaaS dashboard.
 
 > Like Airflow, without the Python.
 >
 > Like Argo Workflows, without the Kubernetes.
 >
-> Like n8n, but the config is **readable** — not a 5KB JSON blob hidden inside a database.
-
-A self-hosted orchestrator where every workflow is a `.prc` text file
-you commit to git. No Python decorators, no YAML soup, no JSON
-state-machine, no SaaS dashboard hiding the truth. The config IS the
-workflow.
+> Like n8n, with config that survives a code review.
 
 ## Read this and tell me what it does
 
@@ -70,7 +69,7 @@ Temporal, Argo, or n8n.
 
 ## Why a text DSL beats every alternative
 
-| Tool                    | Config form              | Readable in `git diff` | Standalone | Operator can edit without engineering? |
+| Tool                    | Source form              | Readable in `git diff` | Standalone | Operator can edit without engineering? |
 | ----------------------- | ------------------------ | ---------------------- | ---------- | -------------------------------------- |
 | Airflow / Prefect / Dagster | Python                | only by Python devs    | needs DB / scheduler | no                          |
 | Temporal / Cadence      | Go / Java / TS           | only by code devs      | needs cluster | no                                   |
@@ -149,16 +148,17 @@ change before you apply.
 The base install runs on Ruby stdlib — no Docker daemon required.
 Heavier callers are `gem install` away.
 
-| `interface …`     | Does what                                | Needs                    |
-| ----------------- | ---------------------------------------- | ------------------------ |
-| `shell <name>`    | Host process via `Open3`                 | _(default)_              |
-| `http <name>`     | `Net::HTTP` GET/POST/… JSON APIs         | _(default)_              |
-| `llm <name>`      | Anthropic / OpenAI chat completion       | _(default)_              |
-| `webhook <name>`  | Inbound HTTPS endpoint with bearer auth  | _(default)_              |
-| `manual <name>`   | Inbound entry for `prouter trigger`      | _(default)_              |
-| `docker <name>`   | OCI container with image / memory / cpu  | `gem install docker-api` |
-| `postgres <name>` | SQL with `$1..$N` bind params            | `gem install pg`         |
-| `cron <name>`     | Inbound cron schedule                    | `gem install fugit`      |
+| `interface …`        | Does what                                       | Needs                    |
+| -------------------- | ----------------------------------------------- | ------------------------ |
+| `shell <name>`       | Host process via `Open3`                        | _(default)_              |
+| `http <name>`        | `Net::HTTP` GET/POST/… JSON APIs                | _(default)_              |
+| `llm <name>`         | Anthropic / OpenAI HTTP, or Codex / Claude CLI  | _(default)_              |
+| `webhook <name>`     | Inbound HTTPS endpoint with bearer auth         | _(default)_              |
+| `manual <name>`      | Inbound entry for `prouter trigger`             | _(default)_              |
+| `local_repo <name>`  | Read commits, files, grep in whitelisted git repos | `git` on PATH         |
+| `docker <name>`      | OCI container with image / memory / cpu         | `gem install docker-api` |
+| `postgres <name>`    | SQL with `$1..$N` bind params                   | `gem install pg`         |
+| `cron <name>`        | Inbound cron schedule                           | `gem install fugit`      |
 
 Adding your own type is one plugin file + one caller class — no edits
 to parser/validator/renderer/CLI. See [CLAUDE.md](CLAUDE.md) for the
@@ -167,17 +167,45 @@ worked recipe.
 ## What you get with it
 
 - **Versioned config history.** Every `apply` is a git-style commit.
-  `show config commits`, `rollback`, `diff file running-config`.
-- **Smart retries.** `retry attempts 3 backoff exponential` plus
-  `retry when error_type in "timeout","http_status"`. Retry attempts
-  see `{{previous.error_type}}` and `{{iteration}}` for retry-with-feedback.
+  `show config commits`, `rollback`, `diff file running-config`,
+  `prouter validate <file> --against running` for semantic dry-run.
+- **Smart retries with reflection.** Backoff (fixed/linear/exponential)
+  plus `retry when` predicates that fire on failure metadata OR output
+  fields (`retry when output.verify eq "fail"`). `retry feedback
+  output.notes into feedback` carries notes forward as
+  `{{previous.feedback}}` — reflection loops, no boilerplate.
 - **Replay.** Re-run a finished run with the same input + same config
-  commit (even if the running config has moved on), or start
-  mid-pipeline from a chosen block.
+  commit, or start mid-pipeline from a chosen block.
+- **Pause + resume.** A `pause "<reason>"` block halts the run with
+  `status="paused"`; `prouter resume <run> --value <json>` injects an
+  output and continues. Foundation for human-in-the-loop.
+- **Parallel groups.** `parallel evidence ... block fetch_jira ...
+  block fetch_slack ... exit` runs siblings concurrently with
+  `all-required` or `all-best-effort` join semantics — routing flows
+  in/out of the group as if it were one block.
+- **Fan-out.** `fan-out from issues into analyze_ticket` — one child
+  run per upstream-block's array element, lineage queryable via
+  `parent_run_id`.
+- **Per-entity scoping.** `thread-id "{{event.ticket}}"` on a process
+  pins each run to a stable id; list / replay / cancel queries filter
+  by it.
+- **LLM blocks, native.** Anthropic + OpenAI HTTP plus Codex / Claude
+  CLI providers (subscription pricing via subprocess + JSONL).
+  Multi-turn tool use with `agentic on` + `allowed-tools` +
+  `tool-call-limit`. Per-run token usage aggregated into
+  `runs.tokens_in/out` and surfaced in `/v1`.
+- **Prompts in their own files.** `system file "prompts/x.system.md"`
+  + `prompt file "prompts/x.user.md.tmpl"` keeps prose out of the
+  `.prc`; `vars { evidence "{{event.body.evidence}}" }` exposes local
+  names inside the prompt.
+- **Conditional skip.** `skip-when event.flag eq ""` short-circuits a
+  block with `status="skipped"`, downstream still routes through.
+- **Local-repo access.** `interface local_repo` — whitelisted,
+  sandboxed read-only git for code-aware pipelines. No raw shell.
 - **Output contracts.** Declare expected JSON shape, validate at
   runtime, fail / retry / warn on violation.
-- **Typed artifacts.** `produces model.pkl`, `input from train.model.pkl`.
-  Files between blocks, not just JSON.
+- **Typed artifacts.** `produces model.pkl`, `input from
+  train.model.pkl`. Files between blocks, not just JSON.
 - **Webhook ingestion.** `interface webhook` with bearer auth, rate
   limits, body-size cap, async dispatch.
 - **`/metrics`** Prometheus, **`/v1/events`** WebSocket live tail.
@@ -218,7 +246,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 
 ## Status
 
-Production-ready core. 630 specs, 0 failures. End-to-end smoke-tested
+Production-ready core. 742 specs, 0 failures. End-to-end smoke-tested
 against real Docker, Puma, cron, and shell exec. Web console
 (`prouterd-web`) ships separately and talks to the daemon over `/v1`
 HTTP + `/v1/events` WS.
@@ -230,7 +258,7 @@ idempotency keys. Storage is SQLite, by design — single binary, no
 external DB dependency.
 
 See [CHANGELOG.md](CHANGELOG.md) for the per-version breakdown
-(32 phases shipped).
+(37 phases shipped).
 
 ## License
 

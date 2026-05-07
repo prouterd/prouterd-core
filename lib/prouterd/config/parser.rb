@@ -182,6 +182,19 @@ module Prouterd
           # result. Reuses the route-match parser by skipping the leading
           # `retry` token and treating `when` as if it were `match`.
           node.retry_when_matches << parse_match_at(line, 1)
+        when "feedback"
+          # `retry feedback <output-path> into <local>` — copy a path out
+          # of the failed attempt's output_json into the next attempt's
+          # `previous.<local>` overlay. Used by reflection loops.
+          unless line.tokens.length == 5 && line.tokens[3].value == "into"
+            raise ParseError.new(
+              "syntax: retry feedback <output-path> into <local-name>",
+              line: line.number
+            )
+          end
+          from = expect_word_or_string(line.tokens[2], "retry feedback path")
+          into = expect_identifier(line.tokens[4], "retry feedback target name")
+          node.retry_feedbacks << AST::Policy::Feedback.new(from: from, into: into, line: line.number)
         else
           raise ParseError.new("unknown retry field '#{field}'", line: line.number)
         end

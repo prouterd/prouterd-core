@@ -129,6 +129,30 @@ RSpec.describe Prouterd::Config::Parser do
         SRC
       end.to raise_error(Prouterd::Config::ParseError, /invalid backoff 'weird'/)
     end
+
+    it "parses `retry feedback <path> into <name>` directives" do
+      doc = parse(<<~SRC)
+        policy reflect
+         retry attempts 3
+         retry feedback output.verify.notes into feedback
+         retry feedback output.score        into score
+        exit
+      SRC
+      fbs = doc.policies.first.retry_feedbacks
+      expect(fbs.length).to eq(2)
+      expect(fbs.map(&:from)).to eq(%w[output.verify.notes output.score])
+      expect(fbs.map(&:into)).to eq(%w[feedback score])
+    end
+
+    it "rejects `retry feedback` without an `into` clause" do
+      expect do
+        parse(<<~SRC)
+          policy p
+           retry feedback output.notes
+          exit
+        SRC
+      end.to raise_error(Prouterd::Config::ParseError, /retry feedback <output-path> into <local-name>/)
+    end
   end
 
   describe "interface" do

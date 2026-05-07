@@ -64,6 +64,9 @@ module Prouterd
         emit(1, "retry initial-delay #{Util::DurationParser.render(policy.retry_initial_delay_ms)}") if policy.retry_initial_delay_ms
         emit(1, "retry max-delay #{Util::DurationParser.render(policy.retry_max_delay_ms)}") if policy.retry_max_delay_ms
         policy.retry_when_matches.each { |m| emit(1, render_match(m).sub(/\Amatch /, "retry when ")) }
+        policy.retry_feedbacks.each do |fb|
+          emit(1, "retry feedback #{fb.from} into #{fb.into}")
+        end
         emit(1, "timeout #{Util::DurationParser.render(policy.timeout_ms)}") if policy.timeout_ms
         emit(0, "exit")
       end

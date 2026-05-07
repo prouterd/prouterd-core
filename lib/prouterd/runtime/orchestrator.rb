@@ -317,30 +317,46 @@ module Prouterd
             run, process, block, attempt, context, document,
             db_mutex, ctx_mutex, redactor, template_overlay: overlay
           )
-          break if result.success?
+          break unless retry_should_fire?(policy, result, db_mutex, run, block)
           break unless RetryCalculator.more_attempts?(policy, attempt)
-          break unless retry_when_passes?(policy, result, db_mutex, run, block)
 
-          previous_summary = build_previous_summary(result, attempt)
+          previous_summary = build_previous_summary(result, attempt, policy)
           attempt += 1
+        end
+
+        # The retry loop drives BOTH classic failure-retry and reflection
+        # loops where a successful attempt is re-fired because output
+        # didn't satisfy the verifier. If we exit the loop on a "logical
+        # failure" success (predicate matched, attempts exhausted), the
+        # block must surface this as a terminal failure — not silently
+        # return success.
+        if result&.success? && policy && retry_when_match_against_result?(policy, result)
+          result = result.dup_as_failure(
+            error_type:    "retry_when_unsatisfied",
+            error_message: "retry-when matched on output but max attempts reached"
+          )
         end
 
         result
       end
 
-      # When a policy declares one or more `retry when` conditions, the failure
-      # result must satisfy at least one for retry to proceed. No conditions
-      # means "retry on any failure" (existing behaviour).
-      def retry_when_passes?(policy, result, db_mutex, run, block)
-        return true if policy.nil? || policy.retry_when_matches.empty?
+      # Decide whether to retry after this attempt. The unified rule:
+      #
+      #   - With no `retry when` conditions on the policy: retry when the
+      #     result is a failure (legacy behaviour).
+      #   - With `retry when` conditions: retry iff at least one matches.
+      #     Predicates can reference `output.<...>` so a successful result
+      #     whose output flags a verifier-fail still triggers a retry.
+      def retry_should_fire?(policy, result, db_mutex, run, block)
+        return false if policy.nil?
 
-        synthetic = {
-          "error_type"    => result.error_type,
-          "error_message" => result.error_message,
-          "exit_code"     => result.exit_code
-        }
-        passes = policy.retry_when_matches.any? { |m| MatchEvaluator.evaluate(m, OverlayContext.new({}, synthetic)) }
-        unless passes
+        if policy.retry_when_matches.empty?
+          return !result.success?
+        end
+
+        passes = retry_when_match_against_result?(policy, result)
+        unless passes || result.success?
+          # Failure that didn't match any predicate — terminal.
           db_mutex.synchronize do
             @runs.append_log(
               run_id: run.id, stream: "system",
@@ -351,8 +367,24 @@ module Prouterd
         passes
       end
 
-      def build_previous_summary(result, attempt)
-        {
+      # Evaluate the policy's retry-when matches against the unified
+      # synthetic context: failure metadata + the attempt's output_json
+      # under the `output.*` namespace.
+      def retry_when_match_against_result?(policy, result)
+        return false if policy.retry_when_matches.empty?
+
+        synthetic = {
+          "error_type"    => result.error_type,
+          "error_message" => result.error_message,
+          "exit_code"     => result.exit_code,
+          "output"        => result.output_json || {}
+        }
+        ctx = OverlayContext.new({}, synthetic)
+        policy.retry_when_matches.any? { |m| MatchEvaluator.evaluate(m, ctx) }
+      end
+
+      def build_previous_summary(result, attempt, policy)
+        summary = {
           "attempt"       => attempt,
           "error_type"    => result.error_type,
           "error_message" => result.error_message,
@@ -360,6 +392,31 @@ module Prouterd
           "stdout"        => result.stdout.to_s,
           "stderr"        => result.stderr.to_s
         }
+        if policy
+          policy.retry_feedbacks.each do |fb|
+            summary[fb.into] = resolve_feedback_value(result, fb.from)
+          end
+        end
+        summary
+      end
+
+      # `retry feedback <path> into <local>` — fetch the path out of the
+      # attempt's output_json (path may start with `output.` or be a bare
+      # key). Missing paths surface as nil; the templater renders nil as
+      # the empty string, so `{{previous.feedback}}` is always safe.
+      def resolve_feedback_value(result, path)
+        return nil unless result.output_json
+
+        cleaned = path.start_with?("output.") ? path.sub(/\Aoutput\./, "") : path
+        cleaned.split(".").reduce(result.output_json) do |acc, key|
+          if acc.is_a?(Hash)
+            acc[key] || acc[key.to_sym]
+          elsif acc.is_a?(Array) && key =~ /\A\d+\z/
+            acc[key.to_i]
+          else
+            break nil
+          end
+        end
       end
 
       # Lightweight context wrapper for templating overlays. Falls through to

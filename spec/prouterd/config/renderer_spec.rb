@@ -164,6 +164,25 @@ RSpec.describe Prouterd::Config::Renderer do
       expect(second).to eq(first)
     end
 
+    it "round-trips a policy with retry feedback directives" do
+      src = <<~SRC
+        policy reflect
+         retry attempts 3
+         retry backoff fixed
+         retry when output.verify eq "fail"
+         retry feedback output.verify.notes into feedback
+        exit
+      SRC
+      first = described_class.render(parse(src))
+      expect(first).to include("retry feedback output.verify.notes into feedback")
+      reparsed = parse(first)
+      fbs = reparsed.policies.first.retry_feedbacks
+      expect(fbs.length).to eq(1)
+      expect(fbs.first.from).to eq("output.verify.notes")
+      expect(fbs.first.into).to eq("feedback")
+      expect(described_class.render(reparsed)).to eq(first)
+    end
+
     it "round-trips process thread-id template" do
       src = <<~SRC
         interface docker img1

@@ -1223,6 +1223,42 @@ a half-applied retry would otherwise hit "duplicate column". The
 4 thread-id orchestrator specs + parser + renderer roundtrip +
 v1-contract update. 692 / 0.
 
+### Phase 37e: reflection-loop retry — output predicates + feedback
+
+`retry when` predicates now also evaluate against the attempt's
+`output_json` under the `output.*` namespace. A successful attempt
+whose output flags a verifier-fail is treated as a logical failure
+and re-fired (subject to attempts/backoff). Reaching max attempts
+on a still-matching success surfaces as `error_type =
+retry_when_unsatisfied`, so the run terminates as failed rather
+than silently returning the last bad output.
+
+New `retry feedback <output-path> into <local>` directive copies a
+path out of the prior attempt's output into the next attempt's
+`previous.<local>` overlay. Reflection loops can then template
+`{{previous.feedback}}` to carry verifier notes forward.
+
+```
+policy reflect
+ retry attempts 3
+ retry when output.verify eq "fail"
+ retry feedback output.verify.notes into feedback
+exit
+```
+
+The unified retry rule:
+- No `retry when` matches → retry on failure (legacy).
+- Any `retry when` match → retry, regardless of success/failure.
+- Failure with no match → terminal.
+- Success with no match → success.
+
+`Runner::ExecutionResult#dup_as_failure` reshapes a
+predicate-matched success into the `retry_when_unsatisfied` failure
+without losing output_json/artifacts.
+
+3 reflection runtime specs + 2 parser + 1 renderer roundtrip.
+698 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

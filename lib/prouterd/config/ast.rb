@@ -43,9 +43,15 @@ module Prouterd
       class Policy
         attr_accessor :name, :retry_attempts, :retry_backoff, :retry_initial_delay_ms,
                       :retry_max_delay_ms, :timeout_ms, :line
-        attr_reader :retry_when_matches
+        attr_reader :retry_when_matches, :retry_feedbacks
 
         BACKOFF_TYPES = %w[fixed linear exponential].freeze
+
+        # `retry feedback` — copies a path out of the failed/rejected
+        # attempt's output_json into the next attempt's `previous.<into>`
+        # overlay. Lets the block template `{{previous.feedback}}` and
+        # have it carry verifier-supplied notes from the prior turn.
+        Feedback = Struct.new(:from, :into, :line, keyword_init: true)
 
         def initialize(name:, line:)
           @name = name
@@ -56,9 +62,12 @@ module Prouterd
           @retry_max_delay_ms = nil
           @timeout_ms = nil
           # Optional `retry when <path> <op> <value>` conditions. Multiple
-          # entries OR together — any one matching means the failure is
-          # retryable. No entries means "retry on any failure".
+          # entries OR together — any one matching forces a retry. With no
+          # entries, retry fires on any failure (legacy behaviour). Path
+          # `output.<...>` predicates evaluate against the result's
+          # output_json, so reflection loops can fire on success too.
           @retry_when_matches = []
+          @retry_feedbacks = []
         end
       end
 

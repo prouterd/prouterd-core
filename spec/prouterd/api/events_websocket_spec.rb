@@ -45,6 +45,91 @@ RSpec.describe Prouterd::API::EventsWebSocket do
       good_conn.on_open
       expect(last_msg["type"]).to eq("hello")
     end
+
+    it "accepts the bearer via the ?token= query parameter (browser fallback)" do
+      env["QUERY_STRING"] = "token=right"
+      good_conn = described_class.new(socket, env: env, events: events, admin_token: "right")
+      good_conn.on_open
+      expect(last_msg["type"]).to eq("hello")
+    end
+
+    it "rejects a wrong ?token= query parameter" do
+      env["QUERY_STRING"] = "token=wrong"
+      bad_conn = described_class.new(socket, env: env, events: events, admin_token: "right")
+      bad_conn.on_open
+      expect(JSON.parse(socket.sent.first)["type"]).to eq("error")
+      expect(JSON.parse(socket.sent.first).dig("payload", "code")).to eq("unauthorized")
+    end
+  end
+
+  describe "WS-RPC (type: 'call')" do
+    let(:dispatcher) do
+      Class.new do
+        attr_reader :calls
+        def initialize; @calls = []; end
+        def call(method, args)
+          @calls << [method, args]
+          if method == "boom"
+            { type: "error", payload: { code: "not_found", message: "no such thing" } }
+          else
+            { type: "reply", payload: { method: method, echoed: args } }
+          end
+        end
+      end.new
+    end
+
+    let(:rpc_conn) do
+      described_class.new(socket, env: env, events: events,
+                          admin_token: nil, dispatcher: dispatcher)
+    end
+
+    before { rpc_conn.on_open }
+
+    it "dispatches a call frame and replies with the dispatcher's payload" do
+      rpc_conn.on_message(JSON.dump(id: "c1", type: "call",
+                                    payload: { method: "processes.list", args: { limit: 5 } }))
+      expect(dispatcher.calls).to eq([["processes.list", { "limit" => 5 }]])
+      reply = last_msg
+      expect(reply["type"]).to eq("reply")
+      expect(reply["reply_to"]).to eq("c1")
+      expect(reply.dig("payload", "method")).to eq("processes.list")
+      expect(reply.dig("payload", "echoed", "limit")).to eq(5)
+    end
+
+    it "passes through dispatcher errors as type:error frames" do
+      rpc_conn.on_message(JSON.dump(id: "c2", type: "call",
+                                    payload: { method: "boom", args: {} }))
+      err = last_msg
+      expect(err["type"]).to eq("error")
+      expect(err["reply_to"]).to eq("c2")
+      expect(err.dig("payload", "code")).to eq("not_found")
+    end
+
+    it "errors when no dispatcher is wired" do
+      no_disp = described_class.new(socket, env: env, events: events,
+                                    admin_token: nil, dispatcher: nil)
+      no_disp.on_open
+      no_disp.on_message(JSON.dump(id: "c3", type: "call",
+                                   payload: { method: "status", args: {} }))
+      err = last_msg
+      expect(err["type"]).to eq("error")
+      expect(err.dig("payload", "code")).to eq("unsupported")
+    end
+
+    it "rejects a call with no method" do
+      rpc_conn.on_message(JSON.dump(id: "c4", type: "call", payload: {}))
+      err = last_msg
+      expect(err["type"]).to eq("error")
+      expect(err.dig("payload", "code")).to eq("invalid_payload")
+    end
+
+    it "rejects a call whose args is not an object" do
+      rpc_conn.on_message(JSON.dump(id: "c5", type: "call",
+                                    payload: { method: "x", args: "nope" }))
+      err = last_msg
+      expect(err["type"]).to eq("error")
+      expect(err.dig("payload", "code")).to eq("invalid_payload")
+    end
   end
 
   describe "subscribe / unsubscribe" do

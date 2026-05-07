@@ -43,6 +43,13 @@ RSpec.describe Prouterd::API::CliWebSocket do
       expect(JSON.parse(socket.sent.first)["type"]).to eq("error")
       expect(socket.closed_with).to eq([4401, "unauthorized"])
     end
+
+    it "accepts the bearer via ?token= query parameter (browser fallback)" do
+      env["QUERY_STRING"] = "token=right"
+      good = described_class.new(socket, env: env, session_id: "y", store: store, admin_token: "right")
+      good.on_open
+      expect(last_msg["type"]).to eq("hello")
+    end
   end
 
   describe "command.exec" do

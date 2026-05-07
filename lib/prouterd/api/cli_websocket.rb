@@ -114,11 +114,8 @@ module Prouterd
       def authenticated?
         return true if @admin_token.nil? || @admin_token.empty?
 
-        header = @env["HTTP_AUTHORIZATION"].to_s
-        return false unless header.start_with?("Bearer ")
-
-        provided = header.sub(/\ABearer\s+/, "").strip
-        return false if provided.empty?
+        provided = Auth.token_from(@env)
+        return false if provided.nil? || provided.empty?
 
         Rack::Utils.secure_compare(provided, @admin_token)
       end

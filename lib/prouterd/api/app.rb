@@ -77,6 +77,7 @@ module Prouterd
           logger: @logger,
           jobs: @jobs
         )
+        @rpc_dispatcher = RpcDispatcher.new(v1: @v1, app: self, store: @store)
       end
 
       # Begin graceful shutdown: state-changing requests get 503; /v1/status,
@@ -183,6 +184,23 @@ module Prouterd
       DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024     # 1 MB for /i/* + most /v1
       DEFAULT_MAX_CONFIG_BYTES = 4 * 1024 * 1024   # 4 MB for /v1/config/apply (DSL files)
 
+      # Same payload that GET /v1/status returns. Exposed publicly so
+      # the WS-RPC `status` method (RpcDispatcher) can reuse it.
+      def status_payload
+        document = @store.load_running
+        {
+          version: Prouterd::VERSION,
+          router: document.router&.name,
+          hostname: document.router&.hostname,
+          interfaces: document.interfaces.length,
+          processes: document.processes.length,
+          running_commit: @store.running_commit&.id,
+          startup_commit: @store.startup_commit&.id,
+          accepting: @accepting,
+          in_flight: @in_flight&.in_flight_count
+        }
+      end
+
       private
 
       def readonly?(method, path)
@@ -222,6 +240,7 @@ module Prouterd
             env,
             events:      @events,
             admin_token: @admin_token,
+            dispatcher:  @rpc_dispatcher,
             logger:      @logger
           )
         elsif (m = CLI_WS_PATH.match(path))
@@ -291,30 +310,15 @@ module Prouterd
       def check_admin(request)
         return nil if @admin_token.nil? || @admin_token.empty? # open mode
 
-        header = request.get_header("HTTP_AUTHORIZATION").to_s
-        return json_response(401, error: "missing bearer token") unless header.start_with?("Bearer ")
-
-        provided = header.sub(/\ABearer\s+/, "").strip
-        return json_response(401, error: "missing bearer token") if provided.empty?
+        provided = Auth.token_from(request)
+        return json_response(401, error: "missing bearer token") if provided.nil? || provided.empty?
         return nil if Rack::Utils.secure_compare(provided, @admin_token)
 
         json_response(403, error: "admin token rejected")
       end
 
       def status_response
-        document = @store.load_running
-        body = {
-          version: Prouterd::VERSION,
-          router: document.router&.name,
-          hostname: document.router&.hostname,
-          interfaces: document.interfaces.length,
-          processes: document.processes.length,
-          running_commit: @store.running_commit&.id,
-          startup_commit: @store.startup_commit&.id,
-          accepting: @accepting,
-          in_flight: @in_flight&.in_flight_count
-        }
-        json_response(200, body)
+        json_response(200, status_payload)
       end
 
       def metrics_response

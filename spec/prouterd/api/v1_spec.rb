@@ -268,6 +268,59 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
     end
   end
 
+  describe "?token= query parameter auth (browser fallback)" do
+    let(:app) do
+      Prouterd::API::App.new(
+        store: store, runner: runner, jobs: jobs,
+        in_flight: in_flight, metrics: metrics, admin_token: "secret"
+      )
+    end
+
+    it "rejects /v1/processes without any credentials" do
+      get "/v1/processes"
+      expect(last_response.status).to eq(401)
+    end
+
+    it "accepts /v1/processes with the bearer header" do
+      get "/v1/processes", {}, { "HTTP_AUTHORIZATION" => "Bearer secret" }
+      expect(last_response.status).to eq(200)
+    end
+
+    it "accepts /v1/processes with the ?token= query parameter" do
+      get "/v1/processes?token=secret"
+      expect(last_response.status).to eq(200)
+    end
+
+    it "rejects /v1/processes with a wrong ?token= query parameter" do
+      get "/v1/processes?token=nope"
+      expect(last_response.status).to eq(403)
+    end
+
+    it "lets <a download> hit /v1/artifacts/:id/download with ?token=" do
+      require "tempfile"
+      tmp = Tempfile.new(["art", ".bin"])
+      tmp.write("payload")
+      tmp.flush
+
+      runs_repo = Prouterd::Storage::Repositories::Runs.new(db)
+      run = runs_repo.create_run(process_name: "pipeline", input_event: {}, interface_name: "cli")
+      step = runs_repo.create_step(run_id: run.id, block_name: "extract")
+      runs_repo.add_artifact(
+        run_id: run.id, step_id: step.id, block_name: "extract",
+        name: "out.bin", path: tmp.path, size_bytes: tmp.size,
+        content_type: "application/octet-stream"
+      )
+      art = runs_repo.list_artifacts(run.id).first
+
+      get "/v1/artifacts/#{art.id}/download?token=secret"
+      expect(last_response.status).to eq(200)
+      expect(last_response.body).to eq("payload")
+    ensure
+      tmp&.close
+      tmp&.unlink
+    end
+  end
+
   describe "GET /v1/interfaces" do
     it "lists interfaces from running config" do
       get "/v1/interfaces"

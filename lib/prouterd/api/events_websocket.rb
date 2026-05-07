@@ -24,20 +24,25 @@ module Prouterd
     # `socket` only needs to expose `#send(string)` and `#close(code, reason)`
     # — production wires Faye::WebSocket; tests inject a capture double.
     class EventsWebSocket
-      def self.handle(env, events:, admin_token: nil, logger: nil)
+      def self.handle(env, events:, admin_token: nil, dispatcher: nil, logger: nil)
         ws   = Faye::WebSocket.new(env)
-        conn = new(ws, env: env, events: events, admin_token: admin_token, logger: logger)
+        conn = new(ws,
+                   env: env, events: events,
+                   admin_token: admin_token,
+                   dispatcher: dispatcher,
+                   logger: logger)
         ws.on(:open)    { conn.on_open }
         ws.on(:message) { |e| conn.on_message(e.data) }
         ws.on(:close)   { conn.on_close }
         ws.rack_response
       end
 
-      def initialize(socket, env:, events:, admin_token: nil, logger: nil)
+      def initialize(socket, env:, events:, admin_token: nil, dispatcher: nil, logger: nil)
         @socket          = socket
         @env             = env
         @events          = events
         @admin_token     = admin_token
+        @dispatcher      = dispatcher
         @logger          = logger
         @client_topics   = {}      # wire_topic_string => true
         @internal_subs   = []
@@ -69,6 +74,7 @@ module Prouterd
         case msg["type"]
         when "subscribe"   then handle_subscribe(msg)
         when "unsubscribe" then handle_unsubscribe(msg)
+        when "call"        then handle_call(msg)
         when "ping"        then send_message(reply_to: msg["id"], type: "pong")
         else send_error(code: "unknown_type",
                         message: "unknown message type: #{msg["type"].inspect}",
@@ -95,11 +101,8 @@ module Prouterd
       def authenticated?
         return true if @admin_token.nil? || @admin_token.empty?
 
-        header = @env["HTTP_AUTHORIZATION"].to_s
-        return false unless header.start_with?("Bearer ")
-
-        provided = header.sub(/\ABearer\s+/, "").strip
-        return false if provided.empty?
+        provided = Auth.token_from(@env)
+        return false if provided.nil? || provided.empty?
 
         Rack::Utils.secure_compare(provided, @admin_token)
       end
@@ -143,6 +146,39 @@ module Prouterd
 
         @subs_mutex.synchronize { @client_topics.delete(topic) }
         send_message(reply_to: msg["id"], type: "unsubscribe.ok", payload: { topic: topic })
+      end
+
+      # WS-RPC: dispatches `{ id, type:"call", payload:{ method, args } }`
+      # through the RpcDispatcher and replies with
+      # `{ reply_to, type:"reply"|"error", payload }`. Lets the browser
+      # console talk to the daemon over a single socket without using
+      # HTTP /v1/* for individual data fetches.
+      def handle_call(msg)
+        reply_to = msg["id"]
+        unless @dispatcher
+          return send_error(code: "unsupported",
+                            message: "RPC not configured on this socket",
+                            reply_to: reply_to)
+        end
+
+        method = msg.dig("payload", "method")
+        unless method.is_a?(String) && !method.empty?
+          return send_error(code: "invalid_payload",
+                            message: "call requires payload.method",
+                            reply_to: reply_to)
+        end
+
+        args = msg.dig("payload", "args") || {}
+        unless args.is_a?(Hash)
+          return send_error(code: "invalid_payload",
+                            message: "call payload.args must be an object",
+                            reply_to: reply_to)
+        end
+
+        result = @dispatcher.call(method, args)
+        send_message(reply_to: reply_to,
+                     type:     result[:type],
+                     payload:  result[:payload])
       end
 
       # ----- internal-event routing -----

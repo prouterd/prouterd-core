@@ -139,7 +139,9 @@ module Prouterd
       def render_block(block, level)
         emit(level, "block #{block.name}")
 
-        if (ref = block.interface_ref)
+        if block.pause?
+          emit(level + 1, "pause #{quote_string(block.pause_reason)}")
+        elsif (ref = block.interface_ref)
           emit(level + 1, "interface #{ref.type} #{ref.name}")
           # Per-call args, driven off the interface plugin's call_field schema.
           plugin = Iface::Registry.lookup(ref.type)

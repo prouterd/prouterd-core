@@ -130,6 +130,55 @@ module Prouterd
         end
       end
 
+      # Resume a paused run with the supplied JSON value (defaults to {}).
+      # Finalises the paused step with the value as its output, seeds the
+      # run context with `<paused_block.name> => value`, and re-enters
+      # the executor at the blocks immediately downstream of the paused
+      # block. Idempotent only when the run is currently paused.
+      def resume_run(run_uid, document, value: nil)
+        run = @runs.get_run_by_uid(run_uid)
+        raise TriggerError, "no such run '#{run_uid}'" unless run
+        unless run.status == "paused"
+          raise TriggerError, "run '#{run_uid}' is not paused (status=#{run.status})"
+        end
+
+        process = document.processes.find { |p| p.name == run.process_name }
+        raise TriggerError, "process '#{run.process_name}' is not in the supplied document" unless process
+
+        paused_step = @runs.list_steps(run.id).reverse.find { |s| s.status == "paused" }
+        raise TriggerError, "run '#{run_uid}' has no paused step row" unless paused_step
+
+        block = process.block(paused_step.block_name)
+        unless block && block.pause?
+          raise TriggerError,
+                "paused step references block '#{paused_step.block_name}' which is no longer a pause block"
+        end
+
+        output_json = value || {}
+        now = Time.now.utc.iso8601(3)
+        @runs.update_step(
+          paused_step.id,
+          status: "success",
+          finished_at: now,
+          duration_ms: 0,
+          output_json: JSON.dump(output_json)
+        )
+
+        seed = JSON.parse(run.context_json || "{}")
+        seed[block.name] = output_json
+        @runs.update_run(run.id, status: "running", context_json: JSON.dump(seed))
+
+        downstream = downstream_blocks(process, block.name)
+        if downstream.empty?
+          finalize_run(run, status: "success")
+          return @runs.get_run(run.id)
+        end
+
+        execute(run, process, document,
+                seed_context: seed,
+                start_blocks: downstream)
+      end
+
       private
 
       def execute(run, process, document, seed_context: nil, start_blocks: nil)
@@ -188,6 +237,7 @@ module Prouterd
           # kicking off threads.
           level = []
           skipped = []
+          paused_block = nil
           ready.each do |bn|
             next if executed.include?(bn)
 
@@ -201,6 +251,14 @@ module Prouterd
               log_system_safe(run, "block '#{bn}' is shutdown; skipped", db_mutex)
               next
             end
+            if block.pause?
+              # Halt execution at this block. The run goes to status="paused"
+              # until `prouter resume <run> [--value <json>]` injects an
+              # output and re-enters this orchestrator at the downstream
+              # blocks. Persist context so resume sees what's been built.
+              paused_block = block
+              break
+            end
             if block.skip_when && skip_when_matches?(block, context, ctx_mutex)
               executed << bn
               record_skipped_block(run, block, context, ctx_mutex, db_mutex)
@@ -210,6 +268,10 @@ module Prouterd
             level << block
           end
           break if failure_reason
+          if paused_block
+            db_mutex.synchronize { update_run_context(run, context) }
+            return finalize_run_paused(run, paused_block)
+          end
           if level.empty? && skipped.empty?
             ready = []
             next
@@ -966,6 +1028,33 @@ module Prouterd
           # best-effort; orphan-container sweep on next boot will catch
           # anything we miss.
         end
+      end
+
+      # Halt at a `pause` block: write a step row marking it paused, set
+      # the run status to "paused", and surface a system log line for
+      # observability. Resumed via `Orchestrator#resume_run` later.
+      def finalize_run_paused(run, block)
+        now = Time.now.utc.iso8601(3)
+        step = @runs.create_step(
+          run_id: run.id,
+          block_name: block.name,
+          attempt: 1,
+          image: nil
+        )
+        @runs.update_step(
+          step.id,
+          status: "paused",
+          started_at: now,
+          input_json: JSON.dump("pause_reason" => block.pause_reason)
+        )
+        log_system(run, "block '#{block.name}' paused: #{block.pause_reason}")
+        paused = @runs.update_run(
+          run.id,
+          status: "paused"
+        )
+        @events.publish(:run_updated, run: paused) if paused
+        @events.publish(:step_updated, step: step, run_id: run.id, run_uid: run.uid) if step
+        paused
       end
 
       def finalize_canceled(run)

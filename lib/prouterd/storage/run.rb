@@ -1,7 +1,7 @@
 module Prouterd
   module Storage
-    RUN_STATUSES = %w[queued running success failed canceled waiting].freeze
-    STEP_STATUSES = %w[pending queued running success failed retrying skipped canceled timeout].freeze
+    RUN_STATUSES = %w[queued running success failed canceled paused].freeze
+    STEP_STATUSES = %w[pending queued running success failed retrying skipped canceled timeout paused].freeze
 
     Run = Struct.new(
       :id,

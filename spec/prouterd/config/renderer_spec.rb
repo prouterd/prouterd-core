@@ -183,6 +183,21 @@ RSpec.describe Prouterd::Config::Renderer do
       expect(described_class.render(reparsed)).to eq(first)
     end
 
+    it "round-trips a pause block" do
+      src = <<~SRC
+        process p
+         block approve
+          pause "ok?"
+         exit
+        exit
+      SRC
+      first = described_class.render(parse(src))
+      expect(first).to include("pause \"ok?\"")
+      reparsed = parse(first)
+      expect(reparsed.processes.first.blocks.first.pause_reason).to eq("ok?")
+      expect(described_class.render(reparsed)).to eq(first)
+    end
+
     it "round-trips process thread-id template" do
       src = <<~SRC
         interface docker img1

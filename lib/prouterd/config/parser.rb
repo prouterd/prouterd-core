@@ -463,6 +463,19 @@ module Prouterd
           node.skip_when = parse_match_at(line, 0)
         when "vars"
           parse_block_vars(node, line)
+        when "pause"
+          if node.interface_ref
+            raise ParseError.new(
+              "block '#{node.name}': `pause` blocks have no interface dispatch — " \
+              "remove the `interface ...` directive",
+              line: line.number
+            )
+          end
+          if node.pause_reason
+            raise ParseError.new("block '#{node.name}' already has a `pause` directive", line: line.number)
+          end
+          expect_token_count(line, 2, "pause <reason>")
+          node.pause_reason = expect_word_or_string(line.tokens[1], "pause reason")
         when "input"
           # Only the typed-artifact form: `input from <block>.<relpath>`.
           # The legacy `input <context.path>` is gone — templating reads
@@ -505,6 +518,13 @@ module Prouterd
       end
 
       def parse_block_interface_ref(node, line)
+        if node.pause_reason
+          raise ParseError.new(
+            "block '#{node.name}': cannot mix `pause` and `interface` — " \
+            "pause blocks have no interface dispatch",
+            line: line.number
+          )
+        end
         expect_token_count(line, 3, "interface <type> <name>")
         type = expect_word(line.tokens[1], "interface type")
         plugin = Iface::Registry.lookup(type)

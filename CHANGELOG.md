@@ -1275,6 +1275,35 @@ price-table source materialises.
 
 3 runtime specs + contract update. 701 / 0.
 
+### Phase 37g: pause + resume primitive
+
+A block can declare `pause "<reason>"` instead of `interface ...`.
+When the orchestrator hits a pause block it writes a synthetic
+`run_steps` row with `status="paused"`, persists the run context,
+and sets `runs.status="paused"` — execution halts there. New
+`prouter resume run <uid> [--value <json> | --value-file <path>]`
+loads the run's pinned commit, fills the paused step's output_json
+with the supplied value (default `{}`), seeds the run context with
+`<paused_block_name> => value`, and re-enters the orchestrator at
+the blocks immediately downstream of the paused one.
+
+```
+block approve
+ pause "ok to ship?"
+exit
+```
+
+The same run uid persists across pause/resume — one logical run,
+two execution phases. Pause-blocks are mutually exclusive with
+`interface` (validator + parser); a pause block at a terminal
+position succeeds immediately on resume. Run status enum gains
+"paused"; step status enum gains "paused" too. The placeholder
+"waiting" status (introduced in earlier phases but never emitted)
+is removed.
+
+3 runtime specs + 3 parser specs + 1 renderer roundtrip + CLI
+smoke. 708 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

@@ -295,7 +295,12 @@ module Prouterd
       end
 
       def check_block_type(process, block)
-        # Every block must reference an outbound interface via
+        # Pause-blocks have no interface dispatch — execution halts at
+        # them and the run goes to status="paused" until `prouter resume`
+        # injects an output. They legally have no `interface` directive.
+        return if block.pause?
+
+        # Every other block must reference an outbound interface via
         # `interface <type> <name>` in its body.
         ref = block.interface_ref
         unless ref

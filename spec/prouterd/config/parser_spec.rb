@@ -397,6 +397,52 @@ RSpec.describe Prouterd::Config::Parser do
       expect(doc.global_routes.length).to eq(1)
     end
 
+    it "parses a pause block (no interface dispatch)" do
+      doc = parse_with_ifaces(<<~SRC)
+        router x
+        exit
+        process p
+         block approve
+          pause "ok to ship?"
+         exit
+        exit
+      SRC
+      block = doc.processes.first.blocks.first
+      expect(block.pause?).to be true
+      expect(block.pause_reason).to eq("ok to ship?")
+      expect(block.interface_ref).to be_nil
+    end
+
+    it "rejects mixing `pause` after `interface` on one block" do
+      expect {
+        parse_with_ifaces(<<~SRC)
+          router x
+          exit
+          process p
+           block b
+            interface docker img1
+            pause "huh"
+           exit
+          exit
+        SRC
+      }.to raise_error(Prouterd::Config::ParseError, /pause` blocks have no interface dispatch/)
+    end
+
+    it "rejects mixing `interface` after `pause` on one block" do
+      expect {
+        parse_with_ifaces(<<~SRC)
+          router x
+          exit
+          process p
+           block b
+            pause "huh"
+            interface docker img1
+           exit
+          exit
+        SRC
+      }.to raise_error(Prouterd::Config::ParseError, /cannot mix `pause` and `interface`/)
+    end
+
     it "parses process thread-id template" do
       doc = parse_with_ifaces(<<~SRC)
         router x

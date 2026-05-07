@@ -37,6 +37,7 @@ module Prouterd
         when "trigger"           then cmd_trigger
         when "trace"             then cmd_trace
         when "replay"            then cmd_replay
+        when "resume"            then cmd_resume
         when "cancel"            then cmd_cancel
         when "diff"              then cmd_diff
         when "cleanup"           then cmd_cleanup
@@ -63,6 +64,8 @@ module Prouterd
             trigger process <name> input <file>
                                                Synchronously run a process for the given event
             replay  run <uid>                  Re-execute a previous run with the same event + commit
+            resume  run <uid> [--value <json> | --value-file <path>]
+                                               Resume a paused run with the given output value
             cancel  run <uid>                  Soft-cancel an in-flight run
             trace   event <file>               Static routing analysis (no execution)
             diff    <file>                     Show changes if file were applied vs running config
@@ -441,6 +444,99 @@ module Prouterd
         new_run.status == "success" ? 0 : 1
       rescue Prouterd::Shell::ShellError, Prouterd::Runtime::TriggerError => e
         @stderr.puts "prouter replay: #{e.message}"
+        1
+      ensure
+        store&.db&.close if store && store != :error
+      end
+
+      # `prouter resume run <uid> [--value <json> | --value-file <path>]`
+      # — resume a paused run, supplying the JSON output for the paused
+      # block (defaults to {} if neither flag is given).
+      def cmd_resume
+        unless @argv.length >= 2 && @argv[0] == "run"
+          @stderr.puts "prouter resume: usage: resume run <uid> [--value <json> | --value-file <path>] [--db PATH] [--runner KIND]"
+          return 2
+        end
+        run_uid = @argv[1]
+        @argv = @argv[2..]
+
+        value = nil
+        if @argv[0] == "--value" && @argv[1]
+          begin
+            value = JSON.parse(@argv[1])
+          rescue JSON::ParserError => e
+            @stderr.puts "prouter resume: invalid JSON for --value: #{e.message}"
+            return 2
+          end
+          @argv = @argv[2..]
+        elsif @argv[0] == "--value-file" && @argv[1]
+          path = @argv[1]
+          unless File.exist?(path)
+            @stderr.puts "prouter resume: --value-file '#{path}' not found"
+            return 2
+          end
+          begin
+            value = JSON.parse(File.read(path))
+          rescue JSON::ParserError => e
+            @stderr.puts "prouter resume: invalid JSON in #{path}: #{e.message}"
+            return 2
+          end
+          @argv = @argv[2..]
+        end
+
+        opts = parse_runtime_options("resume")
+        return 2 if opts == :error
+
+        store = open_store(opts[:db_path], opts[:no_db])
+        return 1 if store == :error
+        unless store
+          @stderr.puts "prouter resume: requires --db (resumes act on a persisted run)"
+          return 2
+        end
+
+        runner = build_runner(opts[:runner_kind])
+        return 1 if runner == :error
+
+        repo = Prouterd::Storage::Repositories::Runs.new(store.db)
+        run = repo.get_run_by_uid(run_uid)
+        unless run
+          @stderr.puts "prouter resume: no such run '#{run_uid}'"
+          return 1
+        end
+        unless run.process_config_commit_id
+          @stderr.puts "prouter resume: run '#{run_uid}' has no pinned commit; cannot resume"
+          return 1
+        end
+
+        commit = store.get_commit(run.process_config_commit_id)
+        unless commit
+          @stderr.puts "prouter resume: pinned commit ##{run.process_config_commit_id} is gone"
+          return 1
+        end
+        document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
+
+        orchestrator = Prouterd::Runtime::Orchestrator.new(db: store.db, runner: runner)
+        finished = orchestrator.resume_run(run_uid, document, value: value)
+
+        if machine_output?
+          steps = repo.list_steps(finished.id).map do |s|
+            { block: s.block_name, status: s.status, attempt: s.attempt,
+              duration_ms: s.duration_ms, error_type: s.error_type }
+          end
+          @stdout.puts JSON.dump(run_id: finished.uid, status: finished.status,
+                                 steps: steps, error: finished.error_summary)
+        else
+          @stdout.puts "Resumed #{run_uid} (#{finished.status})"
+          repo.list_steps(finished.id).each do |s|
+            duration = s.duration_ms ? "#{s.duration_ms}ms" : "-"
+            @stdout.puts "  %-25s %-9s %s" % [s.block_name, s.status, duration]
+          end
+          @stdout.puts "  error: #{finished.error_summary}" if finished.error_summary
+        end
+
+        finished.status == "success" ? 0 : 1
+      rescue Prouterd::Runtime::TriggerError => e
+        @stderr.puts "prouter resume: #{e.message}"
         1
       ensure
         store&.db&.close if store && store != :error

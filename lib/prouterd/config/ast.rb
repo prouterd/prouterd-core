@@ -150,7 +150,7 @@ module Prouterd
         # at context[block.name]; templating reads from the full context.
         attr_accessor :name, :line, :shutdown,
                       :timeout_ms, :retry_policy_name, :contract_name,
-                      :interface_ref, :skip_when
+                      :interface_ref, :skip_when, :pause_reason
         attr_reader :secret_names, :produces, :artifact_inputs, :vars
 
         # Per-call args keyed by the interface plugin's call_field
@@ -175,6 +175,15 @@ module Prouterd
           # exposed at top level under the var's name when the block's
           # call-fields are templated.
           @vars = {}
+          # When set, the block has no interface dispatch — execution
+          # halts here, the run goes to status="paused", and `prouter
+          # resume <run> [--value <json>]` injects the supplied JSON as
+          # the block's output and continues downstream.
+          @pause_reason = nil
+        end
+
+        def pause?
+          !@pause_reason.nil?
         end
       end
 

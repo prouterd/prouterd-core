@@ -617,6 +617,21 @@ module Prouterd
         # already on the context, write a step row, and return success.
         return execute_barrier_block(run, block, context, ctx_mutex, db_mutex) if block.barrier?
 
+        # Agentic multi-turn tool-use loop is declared at the DSL level
+        # (parser/validator/renderer all carry it through round-trip)
+        # but the runtime that drives the loop and dispatches tool calls
+        # is pending. Surface a clear, actionable failure rather than
+        # silently swallowing the directive.
+        if block.agentic
+          return Runner::ExecutionResult.new(
+            exit_code: nil, stdout: "", stderr: "",
+            output_json: nil, artifacts: [],
+            error_type: "agentic_not_implemented",
+            error_message: "block '#{block.name}': agentic mode runtime is not yet shipped — switch `agentic off` or wait for the runtime phase",
+            duration_ms: 0, started_at: nil, finished_at: nil
+          )
+        end
+
         # Resolve `interface <type> <name>` reference to the AST::Interface
         # declared at top level. Validator already ensured this exists and
         # is outbound; defensive lookup here is just for runtime safety.

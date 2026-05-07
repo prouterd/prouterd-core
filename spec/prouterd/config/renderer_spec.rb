@@ -232,6 +232,39 @@ RSpec.describe Prouterd::Config::Renderer do
       expect(described_class.render(parse(first))).to eq(first)
     end
 
+    it "round-trips a `tool` declaration and a block with `agentic on`" do
+      src = <<~SRC
+        interface http jira
+         base-url "https://x"
+        exit
+        interface llm m
+         provider anthropic
+         model claude-haiku-4-5-20251001
+        exit
+        tool jira_search
+         description "Search issues."
+         args jql, max
+         returns issues
+         implementation interface http jira call get
+        exit
+        process p
+         block deep_dive
+          interface llm m
+          prompt "ping"
+          agentic on
+          allowed-tools jira_search
+          tool-call-limit 8
+         exit
+        exit
+      SRC
+      first = described_class.render(parse(src))
+      expect(first).to include("tool jira_search")
+      expect(first).to include("agentic on")
+      expect(first).to include("allowed-tools jira_search")
+      expect(first).to include("tool-call-limit 8")
+      expect(described_class.render(parse(first))).to eq(first)
+    end
+
     it "round-trips block-level fan-out" do
       src = <<~SRC
         interface docker img1

@@ -337,4 +337,55 @@ RSpec.describe Prouterd::Config::Validator do
         .to match(/'train' is not upstream/)
     end
   end
+
+  describe "tools and agentic" do
+    it "errors when a tool's implementation interface is not declared" do
+      _, result = validate(<<~SRC)
+        router x
+        exit
+        tool t
+         args a
+         implementation interface http nope call get
+        exit
+      SRC
+      expect(result.errors.map(&:message).join("\n"))
+        .to match(/tool 't' implementation references undeclared interface 'http nope'/)
+    end
+
+    it "errors when an agentic block uses a non-llm interface" do
+      _, result = validate_with_ifaces(<<~SRC)
+        router x
+        exit
+        process p
+         block b
+          interface docker img1
+          agentic on
+         exit
+        exit
+      SRC
+      expect(result.errors.map(&:message).join("\n"))
+        .to match(/agentic on` requires `interface llm/)
+    end
+
+    it "errors when allowed-tools references an undeclared tool" do
+      _, result = validate(<<~SRC)
+        router x
+        exit
+        interface llm m
+         provider anthropic
+         model claude-haiku-4-5-20251001
+        exit
+        process p
+         block b
+          interface llm m
+          prompt "ping"
+          agentic on
+          allowed-tools nonexistent
+         exit
+        exit
+      SRC
+      expect(result.errors.map(&:message).join("\n"))
+        .to match(/allowed-tools references undeclared tool 'nonexistent'/)
+    end
+  end
 end

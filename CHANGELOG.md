@@ -1432,6 +1432,43 @@ Renderer round-trips the source form (children inside the
 
 3 runtime specs + 3 parser + 1 renderer roundtrip. 724 / 0.
 
+### Phase 37k: tool declarations + agentic-block DSL surface
+
+DSL surface for multi-turn tool-use on `interface llm` blocks.
+Top-level `tool <name>` declares a callable; block-level `agentic
+on`, `allowed-tools <list>`, `tool-call-limit <int>` opt the LLM
+block into the (still-pending) multi-turn loop.
+
+```
+tool jira_search
+ description "Search Jira issues by JQL."
+ args jql, max
+ returns issues
+ implementation interface http jira call get
+exit
+
+block deep_dive
+ interface llm codex
+ prompt file "prompts/deep_dive.user.md"
+ agentic on
+ allowed-tools jira_search, repo_grep
+ tool-call-limit 12
+exit
+```
+
+Validator:
+- tool implementation must reference a declared interface
+- `agentic on` requires `interface llm <name>`
+- `allowed-tools` entries must reference declared tools
+
+Renderer round-trips the form. Parser/AST/validator/renderer ship
+this turn; the orchestrator runtime (multi-turn loop, native
+provider tool API integration, tool dispatch via the iface plugin
+system) is deferred — running an agentic block today returns
+`error_type=agentic_not_implemented` with an actionable message.
+
+3 validator specs + 2 parser + 1 renderer roundtrip. 730 / 0.
+
 ## Status
 
 - 36 phases shipped, one git commit per phase

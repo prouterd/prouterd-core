@@ -28,6 +28,7 @@ module Prouterd
         @doc.policies.each  { |p| blank; render_policy(p) }
         @doc.queues.each    { |q| blank; render_queue(q) }
         @doc.contracts.each { |c| blank; render_contract(c) }
+        @doc.tools.each     { |t| blank; render_tool(t) }
         @doc.interfaces.each { |i| blank; render_interface(i) }
         @doc.processes.each { |p| blank; render_process(p) }
         @doc.global_routes.each { |r| blank; render_global_route(r) }
@@ -216,6 +217,13 @@ module Prouterd
         if block.fan_out?
           emit(level + 1, "fan-out from #{block.fan_out_from} into #{block.fan_out_into}")
         end
+        if block.agentic
+          emit(level + 1, "agentic on")
+          unless block.allowed_tools.empty?
+            emit(level + 1, "allowed-tools #{block.allowed_tools.join(', ')}")
+          end
+          emit(level + 1, "tool-call-limit #{block.tool_call_limit}") if block.tool_call_limit
+        end
         block.secret_names.each { |name| emit(level + 1, "secret #{name}") }
         # enable/disable shorthand for shutdown (block-level only).
         emit(level + 1, block.shutdown ? "disable" : "enable")
@@ -267,6 +275,17 @@ module Prouterd
       def render_global_route(route)
         emit(0, "route interface #{route.interface_name} process #{route.process_name}")
         route.matches.each { |m| emit(1, render_match(m)) }
+        emit(0, "exit")
+      end
+
+      def render_tool(tool)
+        emit(0, "tool #{tool.name}")
+        emit(1, "description #{quote_if_needed(tool.description)}") if tool.description
+        emit(1, "args #{tool.args.join(', ')}") unless tool.args.empty?
+        emit(1, "returns #{tool.returns}") if tool.returns
+        if (impl = tool.implementation)
+          emit(1, "implementation interface #{impl.iface_type} #{impl.iface_name} call #{impl.call_name}")
+        end
         emit(0, "exit")
       end
 

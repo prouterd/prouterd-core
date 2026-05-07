@@ -2,9 +2,37 @@ module Prouterd
   module Config
     module AST
       # Root of the parsed config. Top-level sections live here in declaration order.
+      # `tool <name>` — top-level declaration of a callable an agentic
+      # LLM block can request. The runtime translates the tool to the
+      # underlying provider's native tool-use API and dispatches each
+      # call to the named outbound interface + call.
+      class Tool
+        attr_accessor :name, :description, :line
+        attr_reader :args, :returns, :implementation
+
+        Implementation = Struct.new(:iface_type, :iface_name, :call_name, keyword_init: true)
+
+        def initialize(name:, line:)
+          @name = name
+          @line = line
+          @description = nil
+          @args = []
+          @returns = nil
+          @implementation = nil
+        end
+
+        def implementation=(value)
+          @implementation = value
+        end
+
+        def returns=(value)
+          @returns = value
+        end
+      end
+
       class Document
         attr_accessor :router
-        attr_reader :secrets, :policies, :queues, :interfaces, :processes, :global_routes, :contracts
+        attr_reader :secrets, :policies, :queues, :interfaces, :processes, :global_routes, :contracts, :tools
 
         def initialize
           @router = nil
@@ -15,6 +43,7 @@ module Prouterd
           @processes = []
           @global_routes = []
           @contracts = []
+          @tools = []
         end
       end
 
@@ -219,7 +248,17 @@ module Prouterd
           # blocks have @barrier_for == nil.
           @barrier_for = nil
           @barrier_join_strategy = nil
+          # Agentic-mode controls — only meaningful on `interface llm`
+          # blocks. When @agentic is true, the LLM caller switches to
+          # multi-turn tool-use against the listed @allowed_tools, with
+          # @tool_call_limit as a hard ceiling on round-trips.
+          @agentic = false
+          @allowed_tools = []
+          @tool_call_limit = nil
         end
+
+        attr_accessor :agentic, :tool_call_limit
+        attr_reader :allowed_tools
 
         def pause?
           !@pause_reason.nil?

@@ -52,14 +52,37 @@ module Prouterd
         check_unique_interfaces
         check_unique_processes
         check_unique_contracts
+        check_unique_tools
         check_secret_sources
         check_policies
         check_queues
         check_interfaces
         check_contracts
+        check_tools
         check_processes
         check_global_routes
         @result
+      end
+
+      def check_unique_tools
+        check_unique(@doc.tools, "tool")
+      end
+
+      def check_tools
+        @doc.tools.each do |tool|
+          impl = tool.implementation
+          unless impl
+            @result.error("tool '#{tool.name}' missing `implementation` directive", line: tool.line)
+            next
+          end
+          iface = @doc.interfaces.find { |i| i.name == impl.iface_name && i.type == impl.iface_type }
+          unless iface
+            @result.error(
+              "tool '#{tool.name}' implementation references undeclared interface '#{impl.iface_type} #{impl.iface_name}'",
+              line: tool.line
+            )
+          end
+        end
       end
 
       private
@@ -213,6 +236,20 @@ module Prouterd
           end
           if block.fan_out? && !@doc.processes.any? { |p| p.name == block.fan_out_into }
             @result.error("block '#{process.name}/#{block.name}' fan-out targets unknown process '#{block.fan_out_into}'", line: block.line)
+          end
+          if block.agentic
+            iface_ref = block.interface_ref
+            unless iface_ref && iface_ref.type == "llm"
+              @result.error("block '#{process.name}/#{block.name}': `agentic on` requires `interface llm <name>`", line: block.line)
+            end
+            block.allowed_tools.each do |tool_name|
+              unless @doc.tools.any? { |t| t.name == tool_name }
+                @result.error(
+                  "block '#{process.name}/#{block.name}' allowed-tools references undeclared tool '#{tool_name}'",
+                  line: block.line
+                )
+              end
+            end
           end
         end
 

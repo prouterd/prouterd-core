@@ -46,6 +46,7 @@ module Prouterd
           when "process"   then doc.processes << parse_process(line)
           when "route"     then doc.global_routes << parse_global_route(line)
           when "contract"  then doc.contracts << parse_contract(line)
+          when "tool"      then doc.tools << parse_tool(line)
           when "exit"
             raise ParseError.new("unexpected 'exit' at top level", line: line.number)
           else
@@ -535,6 +536,28 @@ module Prouterd
           node.skip_when = parse_match_at(line, 0)
         when "vars"
           parse_block_vars(node, line)
+        when "agentic"
+          expect_token_count(line, 2, "agentic <on|off>")
+          value = expect_word(line.tokens[1], "agentic")
+          unless %w[on off].include?(value)
+            raise ParseError.new("invalid agentic value '#{value}' (allowed: on, off)", line: line.number)
+          end
+          node.agentic = (value == "on")
+        when "allowed-tools"
+          expect_min_tokens(line, 2, "allowed-tools <name>[, <name>...]")
+          raw = line.tokens[1..].map(&:value).join(" ")
+          names = raw.split(",").map(&:strip).reject(&:empty?)
+          names.each do |t|
+            unless t.match?(IDENT_RE)
+              raise ParseError.new("invalid tool name '#{t}' in allowed-tools", line: line.number)
+            end
+          end
+          node.allowed_tools.replace((node.allowed_tools + names).uniq)
+        when "tool-call-limit"
+          expect_token_count(line, 2, "tool-call-limit <integer>")
+          value = expect_integer(line.tokens[1], "tool-call-limit")
+          raise ParseError.new("tool-call-limit must be >= 1", line: line.number) if value < 1
+          node.tool_call_limit = value
         when "fan-out"
           # `fan-out from <path> into <process>` — after this block
           # succeeds, walk the named array path in output_json and
@@ -902,6 +925,66 @@ module Prouterd
       # a block's output JSON. Multiple `require <path>` lines for the same
       # path accumulate into one Requirement; `optional <path>` makes the
       # path's presence non-mandatory but still applies any constraints.
+      # `tool <name> ... exit` — top-level tool declaration. Body:
+      #   description "<text>"
+      #   args a, b, c
+      #   returns <name>
+      #   implementation interface <type> <iface> call <call_name>
+      def parse_tool(header)
+        expect_token_count(header, 2, "tool <name>")
+        name = expect_identifier(header.tokens[1], "tool name")
+        node = AST::Tool.new(name: name, line: header.number)
+        advance
+
+        each_body_line("tool #{name}") do |line|
+          head = line.head.value
+          case head
+          when "description"
+            if line.tokens.length < 2
+              raise ParseError.new("description requires text", line: line.number)
+            end
+            node.description = line.tokens[1..].map(&:value).join(" ")
+          when "args"
+            expect_min_tokens(line, 2, "args <name>[, <name>...]")
+            raw = line.tokens[1..].map(&:value).join(" ")
+            args = raw.split(",").map(&:strip).reject(&:empty?)
+            args.each do |a|
+              unless a.match?(IDENT_RE)
+                raise ParseError.new("invalid arg name '#{a}'", line: line.number)
+              end
+            end
+            if args.uniq.length != args.length
+              raise ParseError.new("duplicate arg name(s) in tool '#{name}'", line: line.number)
+            end
+            node.args.replace(args)
+          when "returns"
+            expect_token_count(line, 2, "returns <name>")
+            node.returns = expect_identifier(line.tokens[1], "returns name")
+          when "implementation"
+            unless line.tokens.length == 6 &&
+                   line.tokens[1].value == "interface" &&
+                   line.tokens[4].value == "call"
+              raise ParseError.new(
+                "syntax: implementation interface <type> <iface_name> call <call_name>",
+                line: line.number
+              )
+            end
+            iface_type = expect_word(line.tokens[2], "implementation interface type")
+            iface_name = expect_identifier(line.tokens[3], "implementation interface name")
+            call_name  = expect_identifier(line.tokens[5], "implementation call name")
+            node.implementation = AST::Tool::Implementation.new(
+              iface_type: iface_type,
+              iface_name: iface_name,
+              call_name:  call_name
+            )
+          else
+            raise ParseError.new("unknown directive '#{head}' in tool", line: line.number)
+          end
+        end
+
+        node
+      end
+
       def parse_contract(header)
         expect_token_count(header, 2, "contract <name>")
         name = expect_identifier(header.tokens[1], "contract name")

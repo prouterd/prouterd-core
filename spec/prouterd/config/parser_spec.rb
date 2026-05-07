@@ -508,6 +508,56 @@ RSpec.describe Prouterd::Config::Parser do
       }.to raise_error(Prouterd::Config::ParseError, /must contain at least one block/)
     end
 
+    it "parses a top-level `tool <name>` declaration" do
+      doc = parse(<<~SRC)
+        interface http jira
+         base-url "https://x"
+        exit
+        tool jira_search
+         description "Search Jira issues by JQL."
+         args jql, max
+         returns issues
+         implementation interface http jira call get
+        exit
+      SRC
+      tool = doc.tools.first
+      expect(tool.name).to eq("jira_search")
+      expect(tool.description).to eq("Search Jira issues by JQL.")
+      expect(tool.args).to eq(%w[jql max])
+      expect(tool.returns).to eq("issues")
+      expect(tool.implementation.iface_type).to eq("http")
+      expect(tool.implementation.iface_name).to eq("jira")
+      expect(tool.implementation.call_name).to eq("get")
+    end
+
+    it "parses block-level agentic directives" do
+      doc = parse_with_ifaces(<<~SRC)
+        router x
+        exit
+        interface llm m
+         provider anthropic
+         model claude-haiku-4-5-20251001
+        exit
+        tool t
+         args x
+         implementation interface docker img1 call run
+        exit
+        process p
+         block deep_dive
+          interface llm m
+          agentic on
+          allowed-tools t
+          tool-call-limit 5
+          prompt "ping"
+         exit
+        exit
+      SRC
+      block = doc.processes.first.blocks.first
+      expect(block.agentic).to be true
+      expect(block.allowed_tools).to eq(%w[t])
+      expect(block.tool_call_limit).to eq(5)
+    end
+
     it "parses block-level fan-out directive" do
       doc = parse_with_ifaces(<<~SRC)
         router x

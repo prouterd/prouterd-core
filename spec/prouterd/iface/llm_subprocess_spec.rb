@@ -49,13 +49,22 @@ RSpec.describe Prouterd::Iface::LlmSubprocess do
     File.unlink(bin)
   end
 
-  it "aggregates claude-style message_delta events" do
-    bin = fake_binary([
-      '{"type":"message_start"}',
-      '{"type":"message_delta","delta":{"text":"abc"}}',
-      '{"type":"message_delta","delta":{"text":"def"}}',
-      '{"type":"message_stop","usage":{"input_tokens":7,"output_tokens":4}}'
-    ])
+  # Real Claude Code CLI 2.1.x in `-p --output-format json` mode emits
+  # ONE wrapper JSON object on stdout. Schema (per docs/headless):
+  #   {type, subtype, is_error, result, session_id, usage,
+  #    total_cost_usd, model}
+  it "parses claude-style single-JSON-wrapper output" do
+    wrapper = JSON.dump(
+      "type"           => "result",
+      "subtype"        => "success",
+      "is_error"       => false,
+      "result"         => "hello world",
+      "session_id"     => "sess_abc",
+      "usage"          => { "input_tokens" => 7, "output_tokens" => 4 },
+      "total_cost_usd" => 0.0001,
+      "model"          => "claude-haiku-4-5"
+    )
+    bin = fake_binary([wrapper])
 
     result = described_class.call(
       provider: "claude_cli",
@@ -68,9 +77,38 @@ RSpec.describe Prouterd::Iface::LlmSubprocess do
       timeout_ms: 5_000
     )
 
-    expect(result[:output_json]["text"]).to eq("abcdef")
+    expect(result[:output_json]["text"]).to eq("hello world")
     expect(result[:output_json]["usage"]).to eq("input_tokens" => 7, "output_tokens" => 4)
+    expect(result[:output_json]["stop_reason"]).to eq("success")
 
+    File.unlink(bin)
+  end
+
+  it "builds the real Claude Code argv (-p / --output-format / --bare / --model)" do
+    captured = nil
+    allow(Open3).to receive(:popen3).and_wrap_original do |original, *args, &blk|
+      env = args.first.is_a?(Hash) ? args.shift : {}
+      captured = args.dup
+      original.call(env, *args, &blk)
+    end
+    bin = fake_binary([JSON.dump(
+      "type" => "result", "subtype" => "success", "is_error" => false,
+      "result" => "ok", "usage" => { "input_tokens" => 1, "output_tokens" => 1 }
+    )])
+
+    described_class.call(
+      provider: "claude_cli",
+      model:    "claude-sonnet-4-6",
+      binary:   bin,
+      home:     nil, sandbox: nil,
+      prompt:   "what is 2+2?",
+      system_msg: "you are terse",
+      timeout_ms: 5_000
+    )
+
+    expect(captured).to include(bin, "-p", "what is 2+2?", "--output-format", "json", "--bare",
+                                "--model", "claude-sonnet-4-6",
+                                "--system-prompt", "you are terse")
     File.unlink(bin)
   end
 

@@ -239,14 +239,23 @@ module Prouterd
           end
           if block.agentic
             iface_ref = block.interface_ref
-            agentic_providers = %w[anthropic codex_cli claude_cli]
+            # Anthropic HTTP + Codex CLI subprocess support full
+            # multi-turn agentic loop. Claude Code CLI's `-p` mode
+            # is one-shot; multi-turn would need --resume chaining
+            # which the current driver doesn't speak. Use HTTP
+            # provider="anthropic" for agentic against Claude.
+            agentic_providers = %w[anthropic codex_cli]
             if iface_ref && iface_ref.type == "llm"
-              # Runtime supports Anthropic HTTP + Codex/Claude CLI
-              # subprocess providers. OpenAI HTTP function-calling shape
-              # is wired in a follow-up.
               iface = @doc.interfaces.find { |i| i.type == "llm" && i.name == iface_ref.name }
               provider = iface&.type_fields&.[]("provider")
-              if iface && !agentic_providers.include?(provider)
+              if iface && provider == "claude_cli"
+                @result.error(
+                  "block '#{process.name}/#{block.name}': `agentic on` is not supported with `provider claude_cli` " \
+                  "(Claude Code CLI's `-p` mode is one-shot; for multi-turn agentic against Claude, " \
+                  "use `provider anthropic` HTTP instead)",
+                  line: block.line
+                )
+              elsif iface && !agentic_providers.include?(provider)
                 @result.error(
                   "block '#{process.name}/#{block.name}': `agentic on` supports providers #{agentic_providers.join('/')} on the referenced interface (got '#{provider}')",
                   line: block.line

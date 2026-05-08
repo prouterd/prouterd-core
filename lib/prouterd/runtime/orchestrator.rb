@@ -1263,7 +1263,12 @@ module Prouterd
         end
 
         provider = (iface.type_fields["provider"] || "").to_s
-        agentic_providers = %w[anthropic codex_cli claude_cli]
+        agentic_providers = %w[anthropic codex_cli]
+        if provider == "claude_cli"
+          return invalid_agentic(block,
+            "agentic mode is not supported with `provider claude_cli` " \
+            "(Claude Code CLI's `-p` mode is one-shot; use `provider anthropic` HTTP for multi-turn)")
+        end
         unless agentic_providers.include?(provider)
           return invalid_agentic(
             block,

@@ -36,7 +36,7 @@ module Prouterd
       DEFAULT_TIMEOUT_MS = 120_000
 
       def call(provider:, model:, binary:, home:, sandbox:, prompt:, system_msg:, timeout_ms:)
-        argv = build_argv(provider, binary, model, sandbox)
+        argv, stdin_text = build_invocation(provider, binary, model, sandbox, prompt, system_msg)
         env = build_env(home)
 
         unless cli_available?(argv.first)
@@ -47,7 +47,6 @@ module Prouterd
           }
         end
 
-        stdin_text = build_stdin(prompt, system_msg)
         stdout_lines, stderr_text, status = run_subprocess(env, argv, stdin_text, timeout_ms || DEFAULT_TIMEOUT_MS)
 
         if status == :timeout
@@ -56,7 +55,9 @@ module Prouterd
                    error_message: "#{provider} timed out after #{timeout_ms || DEFAULT_TIMEOUT_MS}ms" }
         end
 
-        text, usage, stop_reason, raw_stderr_extra = aggregate(stdout_lines)
+        # Output protocol differs by provider — codex emits JSONL events,
+        # claude (-p mode) emits one wrapper JSON object on stdout.
+        text, usage, stop_reason, raw_stderr_extra = parse_output(provider, stdout_lines)
         stderr_combined = [stderr_text, raw_stderr_extra].reject(&:empty?).join
 
         if !status.success?
@@ -85,19 +86,70 @@ module Prouterd
         }
       end
 
+      # Returns [argv, stdin_text]. Per-provider: codex_cli takes the
+      # prompt via stdin in a JSONL-friendly form; claude_cli (Claude
+      # Code) takes the prompt as the positional arg of `-p` and reads
+      # nothing from stdin.
+      def build_invocation(provider, binary, model, sandbox, prompt, system_msg)
+        bin = resolve_binary(provider, binary)
+        case provider
+        when "codex_cli"
+          argv = [bin, "exec", "--json"]
+          argv += ["-m", model] unless model.to_s.empty?
+          argv += ["-s", sandbox] if sandbox && !sandbox.empty?
+          stdin_text = build_codex_stdin(prompt, system_msg)
+        when "claude_cli"
+          argv = build_argv_claude(bin, model, prompt, system_msg)
+          stdin_text = ""
+        else
+          raise ArgumentError, "unknown subprocess provider '#{provider}'"
+        end
+        [argv, stdin_text]
+      end
+
+      # Back-compat for the multi-turn agentic loop (Iface::LlmAgentic),
+      # which speaks codex's persistent-stdin JSONL protocol. Claude
+      # Code CLI's `-p` mode is one-shot — multi-turn would need
+      # `--resume <session>` chaining, which is a different driver.
+      # Validator rejects `agentic on` + `provider claude_cli` at apply
+      # time so this method is only hit for codex_cli.
       def build_argv(provider, binary, model, sandbox)
+        unless provider == "codex_cli"
+          raise ArgumentError, "build_argv only supports codex_cli; " \
+                               "claude_cli requires the per-call build_invocation path"
+        end
+
+        bin = resolve_binary(provider, binary)
+        argv = [bin, "exec", "--json"]
+        argv += ["-m", model] unless model.to_s.empty?
+        argv += ["-s", sandbox] if sandbox && !sandbox.empty?
+        argv
+      end
+
+      # Real Claude Code CLI 2.1.x invocation:
+      #   claude -p "<prompt>" --output-format json --model <model>
+      #          [--system-prompt "<system>"] [--bare]
+      #
+      # `--bare` skips auto-loading hooks/skills/MCP/CLAUDE.md from the
+      # operator's machine — what we want for clean LLM-block use that
+      # behaves the same on every host (CI vs dev). `--system-prompt`
+      # FULLY replaces Claude Code's default agent system prompt; that's
+      # what we want for `interface llm` blocks (no Claude-Code-agent
+      # baggage). Without `system_msg` we omit the flag and let Claude
+      # Code apply its default — usually fine for one-shot prompts.
+      def build_argv_claude(bin, model, prompt, system_msg)
+        argv = [bin, "-p", prompt.to_s, "--output-format", "json", "--bare"]
+        argv += ["--model", model] unless model.to_s.empty?
+        argv += ["--system-prompt", system_msg] if system_msg && !system_msg.to_s.empty?
+        argv
+      end
+
+      def resolve_binary(provider, binary)
         bin = binary
         bin = nil if bin.respond_to?(:empty?) && bin.empty?
         bin ||= ENV["PROUTERD_#{provider.upcase}_BIN"]
         bin ||= provider == "codex_cli" ? "codex" : "claude"
-
-        argv = [bin, "exec", "--json"]
-        argv += ["-m", model] unless model.empty?
-        argv += ["-s", sandbox] if sandbox && !sandbox.empty?
-        # `--skip-git-repo-check` is benign on both binaries when present
-        # (codex requires it for non-repo dirs; claude ignores unknown
-        # flags) — leave it off to keep the argv minimal.
-        argv
+        bin
       end
 
       def build_env(home)
@@ -106,7 +158,7 @@ module Prouterd
         env
       end
 
-      def build_stdin(prompt, system_msg)
+      def build_codex_stdin(prompt, system_msg)
         if system_msg && !system_msg.empty?
           "[SYSTEM]\n#{system_msg}\n[USER]\n#{prompt}\n"
         else
@@ -153,7 +205,52 @@ module Prouterd
         [stdout_lines, stderr_buf, status]
       end
 
-      def aggregate(stdout_lines)
+      # Dispatch per-provider stdout shape. `codex_cli` is a JSONL
+      # stream of events (one per line). `claude_cli` in `-p
+      # --output-format json` mode emits a single wrapper JSON object
+      # on stdout.
+      def parse_output(provider, stdout_lines)
+        case provider
+        when "claude_cli"
+          parse_output_claude(stdout_lines)
+        else
+          parse_output_codex(stdout_lines)
+        end
+      end
+
+      # Claude Code emits ONE JSON wrapper:
+      #   {
+      #     "type":"result", "subtype":"success",
+      #     "is_error":false, "result":"<assistant text>",
+      #     "session_id":"...",
+      #     "usage":{"input_tokens":N,"output_tokens":M,...},
+      #     "total_cost_usd":0.0123,
+      #     "model":"claude-..."
+      #   }
+      # If `--json-schema` is passed, the schema-conformant payload
+      # appears under `structured_output`. We don't pass `--json-schema`
+      # in v0; downstream contract validation handles shape.
+      def parse_output_claude(stdout_lines)
+        unparsed = String.new(encoding: Encoding::UTF_8)
+        joined = stdout_lines.join("\n")
+        parsed = (JSON.parse(joined) rescue nil)
+        unless parsed.is_a?(Hash)
+          unparsed << joined unless joined.empty?
+          return ["", { "input_tokens" => 0, "output_tokens" => 0 }, nil, unparsed]
+        end
+
+        text = parsed["result"].to_s
+        text = parsed["structured_output"].to_json if parsed["structured_output"]
+        usage = parsed["usage"].is_a?(Hash) ? parsed["usage"] : {}
+        in_tokens  = (usage["input_tokens"]  || usage["prompt_tokens"]    || 0).to_i
+        out_tokens = (usage["output_tokens"] || usage["completion_tokens"] || 0).to_i
+        stop_reason = parsed["stop_reason"] || parsed["subtype"]
+
+        [text, { "input_tokens" => in_tokens, "output_tokens" => out_tokens }, stop_reason, unparsed]
+      end
+
+      # Codex emits JSONL: one event per line, multiple events per run.
+      def parse_output_codex(stdout_lines)
         text = String.new(encoding: Encoding::UTF_8)
         in_tokens = 0
         out_tokens = 0

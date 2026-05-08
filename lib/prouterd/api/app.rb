@@ -276,6 +276,7 @@ module Prouterd
         when ["GET",    %w[v1 policies]]         then @v1.get_policies(request)
         when ["GET",    %w[v1 secrets]]          then @v1.get_secrets(request)
         when ["GET",    %w[v1 runs]]             then @v1.get_runs(request)
+        when ["GET",    %w[v1 tools]]            then @v1.get_tools(request)
         when ["POST",   %w[v1 trace]]            then @v1.post_trace(request)
         else
           dispatch_v1_dynamic(method, segments, request)
@@ -300,6 +301,8 @@ module Prouterd
           @v1.post_run_replay(request, segments[2])
         when method == "POST" && segments.length == 4 && segments[0..1] == %w[v1 runs] && segments[3] == "cancel"
           @v1.post_run_cancel(request, segments[2])
+        when method == "POST" && segments.length == 4 && segments[0..1] == %w[v1 runs] && segments[3] == "resume"
+          @v1.post_run_resume(request, segments[2])
         when method == "GET" && segments.length == 4 && segments[0..1] == %w[v1 artifacts] && segments[3] == "download"
           @v1.get_artifact_download(request, segments[2])
         else

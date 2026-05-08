@@ -102,7 +102,8 @@ RSpec.describe "Phase 36a /v1 contract freeze" do
 
       expect_keys(data,
                   name: "pipeline", description: NilClass, queue: "default",
-                  shutdown: FalseClass, blocks: Array, routes: Array)
+                  shutdown: FalseClass, thread_id_template: NilClass,
+                  blocks: Array, routes: Array, parallel_groups: Array)
 
       block = data["blocks"].first
       expect_keys(block,
@@ -110,7 +111,9 @@ RSpec.describe "Phase 36a /v1 contract freeze" do
                   interface: { "type" => "shell", "name" => "host" },
                   call_fields: Hash, timeout_ms: NilClass,
                   retry_policy: NilClass, contract: NilClass,
-                  secret_names: ["API_TOKEN"], shutdown: FalseClass)
+                  secret_names: ["API_TOKEN"], shutdown: FalseClass,
+                  skip_when: NilClass, vars: Hash, fan_out: NilClass,
+                  agentic: NilClass, pause_reason: NilClass, barrier: NilClass)
     end
   end
 
@@ -136,6 +139,7 @@ RSpec.describe "Phase 36a /v1 contract freeze" do
                   retry_initial_delay_ms: 1000,
                   retry_max_delay_ms: NilClass,
                   retry_when: a_kind_of(Array),
+                  retry_feedback: a_kind_of(Array),
                   timeout_ms: NilClass)
       expect(policy["retry_when"].first).to include(
         "path" => "error_type",

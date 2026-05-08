@@ -52,11 +52,13 @@ module Prouterd
         when "queues.list"        then forward_json { @v1.get_queues(req(args)) }
         when "policies.list"      then forward_json { @v1.get_policies(req(args)) }
         when "secrets.list"       then forward_json { @v1.get_secrets(req(args)) }
+        when "tools.list"         then forward_json { @v1.get_tools(req(args)) }
 
         when "runs.list"          then forward_json { @v1.get_runs(req(args)) }
         when "runs.get"           then forward_json { @v1.get_run(req(args), str(args, "uid")) }
         when "runs.cancel"        then forward_json { @v1.post_run_cancel(req(args), str(args, "uid")) }
         when "runs.replay"        then forward_json { @v1.post_run_replay(req(args, body: replay_body(args)), str(args, "uid")) }
+        when "runs.resume"        then forward_json { @v1.post_run_resume(req(args, body: { "value" => args["value"] }), str(args, "uid")) }
         when "runs.logs"          then forward_json { @v1.get_run_logs(req(args), str(args, "uid")) }
         when "runs.artifacts"     then forward_json { @v1.get_run_artifacts(req(args), str(args, "uid")) }
 

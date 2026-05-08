@@ -144,6 +144,11 @@ module Prouterd
         json(200, data: process_detail(process))
       end
 
+      def get_tools(_request)
+        document = @store.load_running
+        json(200, data: document.tools.map { |t| tool_summary(t) })
+      end
+
       def post_process_trigger(request, name)
         document = @store.load_running
         process = document.processes.find { |p| p.name == name }
@@ -303,6 +308,25 @@ module Prouterd
         json(202, data: { run_id: new_run.uid, status: "queued", replay_of: uid, from: from_block })
       end
 
+      def post_run_resume(request, uid)
+        run = run_by_uid(uid) or return json(404, error: "no such run")
+        return json(409, error: "run is not paused (status=#{run.status})") unless run.status == "paused"
+        return json(422, error: "run not pinned to a commit") unless run.process_config_commit_id
+
+        commit = @store.get_commit(run.process_config_commit_id)
+        return json(410, error: "config commit no longer exists") unless commit
+
+        body = parse_json_body(request) || {}
+        value = body["value"]
+
+        document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
+        orchestrator = build_orchestrator
+        finished = orchestrator.resume_run(uid, document, value: value)
+        json(202, data: { run_id: finished.uid, status: finished.status })
+      rescue Runtime::TriggerError => e
+        json(409, error: e.message)
+      end
+
       def post_run_cancel(_request, uid)
         run = run_by_uid(uid) or return json(404, error: "no such run")
         if %w[success failed canceled].include?(run.status)
@@ -403,6 +427,7 @@ module Prouterd
           description: p.description,
           queue: p.queue_name,
           shutdown: p.shutdown,
+          thread_id_template: p.thread_id_template,
           blocks: p.blocks.length,
           routes: p.routes.length
         }
@@ -414,22 +439,40 @@ module Prouterd
           description: p.description,
           queue: p.queue_name,
           shutdown: p.shutdown,
-          blocks: p.blocks.map do |b|
-            ref = b.interface_ref
-            {
-              name: b.name,
-              interface: ref ? { type: ref.type, name: ref.name } : nil,
-              call_fields: b.type_fields,
-              timeout_ms: b.timeout_ms,
-              retry_policy: b.retry_policy_name,
-              contract: b.contract_name,
-              secret_names: Array(b.secret_names),
-              shutdown: b.shutdown
-            }
-          end,
+          thread_id_template: p.thread_id_template,
+          blocks: p.blocks.map { |b| block_detail(b) },
           routes: p.routes.map { |r| { from: r.from_block, to: r.to_block,
                                        on_failure: r.on_failure,
-                                       matches: r.matches.map { |m| match_summary(m) } } }
+                                       matches: r.matches.map { |m| match_summary(m) } } },
+          parallel_groups: p.parallel_groups.map do |g|
+            { name: g.name, join_strategy: g.join_strategy, members: g.member_block_names }
+          end
+        }
+      end
+
+      def block_detail(b)
+        ref = b.interface_ref
+        {
+          name: b.name,
+          interface: ref ? { type: ref.type, name: ref.name } : nil,
+          call_fields: b.type_fields,
+          timeout_ms: b.timeout_ms,
+          retry_policy: b.retry_policy_name,
+          contract: b.contract_name,
+          secret_names: Array(b.secret_names),
+          shutdown: b.shutdown,
+          skip_when: b.skip_when ? match_summary(b.skip_when) : nil,
+          vars: b.vars,
+          fan_out: b.fan_out? ? { from: b.fan_out_from, into: b.fan_out_into } : nil,
+          agentic: b.agentic ? {
+            allowed_tools: b.allowed_tools,
+            tool_call_limit: b.tool_call_limit
+          } : nil,
+          pause_reason: b.pause_reason,
+          barrier: b.barrier? ? {
+            for: b.barrier_for,
+            join_strategy: b.barrier_join_strategy
+          } : nil
         }
       end
 
@@ -473,7 +516,22 @@ module Prouterd
           retry_initial_delay_ms: p.retry_initial_delay_ms,
           retry_max_delay_ms:     p.retry_max_delay_ms,
           retry_when:             p.retry_when_matches.map { |m| match_summary(m) },
+          retry_feedback:         p.retry_feedbacks.map { |f| { from: f.from, into: f.into } },
           timeout_ms:             p.timeout_ms
+        }
+      end
+
+      def tool_summary(t)
+        impl = t.implementation
+        {
+          name:        t.name,
+          description: t.description,
+          args:        t.args,
+          implementation: impl ? {
+            iface_type: impl.iface_type,
+            iface_name: impl.iface_name,
+            call_name:  impl.call_name
+          } : nil
         }
       end
 

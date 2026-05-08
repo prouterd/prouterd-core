@@ -239,7 +239,8 @@ module Prouterd
         def run_columns
           "id, uid, process_name, process_config_commit_id, interface_name, status, " \
             "input_event_json, context_json, error_summary, started_at, finished_at, " \
-            "created_at, parent_run_id, replay_of_run_id, thread_id, tokens_in, tokens_out, cost_usd"
+            "created_at, parent_run_id, replay_of_run_id, thread_id, tokens_in, tokens_out, " \
+            "cost_usd, mcp_tools_json"
         end
 
         # Same fields as run_columns, prefixed with `r.` and tail-appended
@@ -250,7 +251,8 @@ module Prouterd
           "r.id, r.uid, r.process_name, r.process_config_commit_id, r.interface_name, r.status, " \
             "r.input_event_json, r.context_json, r.error_summary, r.started_at, r.finished_at, " \
             "r.created_at, r.parent_run_id, r.replay_of_run_id, r.thread_id, " \
-            "r.tokens_in, r.tokens_out, r.cost_usd, parent.uid AS replay_of_uid"
+            "r.tokens_in, r.tokens_out, r.cost_usd, r.mcp_tools_json, " \
+            "parent.uid AS replay_of_uid"
         end
 
         def step_columns
@@ -260,8 +262,8 @@ module Prouterd
 
         def row_to_run(r)
           # `replay_of_uid` is appended only by run_columns_with_parent;
-          # the run_columns variant ends at cost_usd (index 17) and r[18]
-          # is nil.
+          # the run_columns variant ends at mcp_tools_json (index 18)
+          # and r[19] is nil.
           Run.new(
             id: r[0], uid: r[1], process_name: r[2], process_config_commit_id: r[3],
             interface_name: r[4], status: r[5], input_event_json: r[6], context_json: r[7],
@@ -271,7 +273,8 @@ module Prouterd
             tokens_in: r[15] || 0,
             tokens_out: r[16] || 0,
             cost_usd: r[17] || 0.0,
-            replay_of_uid: r[18]
+            mcp_tools_json: r[18],
+            replay_of_uid: r[19]
           )
         end
 

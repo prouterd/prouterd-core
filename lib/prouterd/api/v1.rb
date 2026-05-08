@@ -428,7 +428,8 @@ module Prouterd
           secret_resolver: @secret_resolver,
           in_flight: @in_flight,
           metrics: @metrics,
-          system_url: @app&.system_url
+          system_url: @app&.system_url,
+          mcp_pool: @app&.mcp_pool
         )
       end
 

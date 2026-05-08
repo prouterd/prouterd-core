@@ -86,9 +86,29 @@ module Prouterd
         # here instead of spawning ad-hoc threads, so daemon crashes recover.
         jobs = Prouterd::Storage::Repositories::Jobs.new(store.db)
 
+        # MCP pool — one persistent JSON-RPC session per
+        # `interface mcp <name>` declaration. Spawned with the
+        # current running config; reconciliation on `config apply`
+        # is wired through the events bus. Shut down inside the
+        # `ensure` block below so daemon shutdown SIGTERMs each
+        # subprocess gracefully. Built before the worker pool so
+        # workers see it on first claim.
+        secret_resolver = Prouterd::Runtime::EnvSecretResolver.new
+        mcp_pool = Prouterd::Iface::Mcp::Pool.new(
+          secret_resolver: secret_resolver, logger: logger
+        )
+        begin
+          mcp_pool.start_or_reconcile(store.load_running)
+        rescue StandardError => e
+          logger.warn("mcp pool initial reconcile failed",
+                      facility: "MCP", mnemonic: "RECONCILE_ERR",
+                      error: e.class.name, message: e.message)
+        end
+
         worker_pool = Prouterd::Runtime::WorkerPool.new(
           store: store, runner: runner, in_flight: in_flight, metrics: metrics,
-          workers: opts[:workers], logger: logger
+          workers: opts[:workers], logger: logger,
+          mcp_pool: mcp_pool
         )
         worker_pool.run
 
@@ -124,7 +144,8 @@ module Prouterd
           in_flight: in_flight, metrics: metrics,
           admin_token: admin_token, jobs: jobs, rate_limiter: rate_limiter,
           system_url: system_url,
-          console_dir: console_dir
+          console_dir: console_dir,
+          mcp_pool: mcp_pool
         )
         app.start_storage_probe
 
@@ -138,6 +159,7 @@ module Prouterd
           app.stop_storage_probe
           scheduler.stop
           worker_pool.stop
+          mcp_pool.stop
           logger.info("daemon stopped", facility: "DAEMON", mnemonic: "STOPPED")
         end
         0

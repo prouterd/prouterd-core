@@ -41,7 +41,14 @@ module Prouterd
       # it intentionally weak — every arg is a required string — because
       # the full type system would require fields we don't currently
       # carry on AST::Tool. Operators tighten via prompt engineering.
+      #
+      # MCP tool refs (Iface::McpToolRef) carry the schema verbatim
+      # from the server's `tools/list`; we honour it as-is.
       def schema_for(tool)
+        if tool.respond_to?(:input_schema) && tool.input_schema.is_a?(Hash)
+          return tool.input_schema
+        end
+
         properties = tool.args.each_with_object({}) do |arg, h|
           h[arg] = { "type" => "string", "description" => "" }
         end
@@ -54,8 +61,17 @@ module Prouterd
 
       def tool_definitions(tools)
         tools.map do |t|
-          { "name" => t.name, "description" => t.description.to_s, "input_schema" => schema_for(t) }
+          { "name" => tool_facing_name(t),
+            "description" => t.description.to_s,
+            "input_schema" => schema_for(t) }
         end
+      end
+
+      # MCP tools use their full `<iface>.<name>` form on the wire so
+      # the orchestrator's dispatcher can route them. AST::Tool just
+      # uses the bare `name`.
+      def tool_facing_name(tool)
+        tool.respond_to?(:full_name) ? tool.full_name : tool.name
       end
 
       # Drive one agentic block. Required keyword args:

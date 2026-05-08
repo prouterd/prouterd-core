@@ -24,13 +24,15 @@ module Prouterd
       POLL_INTERVAL = 0.25
 
       def initialize(store:, runner:, in_flight: nil, metrics: nil,
-                     workers: DEFAULT_WORKERS, logger: NullLogger.new)
+                     workers: DEFAULT_WORKERS, logger: NullLogger.new,
+                     mcp_pool: nil)
         @store = store
         @runner = runner
         @in_flight = in_flight
         @metrics = metrics
         @workers = workers
         @logger = logger
+        @mcp_pool = mcp_pool
         @threads = []
         @stopping = false
         @worker_id_prefix = "worker-#{SecureRandom.hex(2)}"
@@ -95,7 +97,8 @@ module Prouterd
 
         orchestrator = Orchestrator.new(
           db: @store.db, runner: @runner,
-          in_flight: @in_flight, metrics: @metrics
+          in_flight: @in_flight, metrics: @metrics,
+          mcp_pool: @mcp_pool
         )
 
         kwargs = build_execute_kwargs(job)

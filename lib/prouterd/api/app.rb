@@ -47,7 +47,8 @@ module Prouterd
                      rate_limiter: nil,
                      events: Prouterd::Events.default,
                      system_url: nil,
-                     console_dir: nil)
+                     console_dir: nil,
+                     mcp_pool: nil)
         @store = store
         @runner = runner
         @secret_resolver = secret_resolver || Runtime::EnvSecretResolver.new
@@ -60,6 +61,7 @@ module Prouterd
         @events = events
         @accepting = true
         @system_url = system_url
+        @mcp_pool = mcp_pool
         # Cookie session store — populated by POST /v1/login. Bearer auth
         # remains the primary path; cookie auth is an opt-in upgrade for
         # browser operators that closes the XSS-leak surface around the
@@ -116,6 +118,12 @@ module Prouterd
       # the entry point (Daemon::Main / Server) once the listener is
       # up; nil for in-process tests / CLI commands that don't bind.
       attr_accessor :system_url
+
+      # The Iface::Mcp::Pool the daemon spawned, or nil for tests /
+      # CLI processes that don't run subprocesses. Orchestrator
+      # consumes this for namespaced tool dispatch (`atlassian.foo`)
+      # and trigger-time `tools/list` snapshots.
+      attr_reader :mcp_pool
 
       # Background storage-health probe. The daemon entry point starts
       # this thread; tests / CLI processes don't. Runs forever, checking

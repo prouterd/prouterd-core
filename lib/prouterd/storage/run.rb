@@ -23,6 +23,7 @@ module Prouterd
       :tokens_in,
       :tokens_out,
       :cost_usd,
+      :mcp_tools_json,
       keyword_init: true
     ) do
       def success?; status == "success"; end

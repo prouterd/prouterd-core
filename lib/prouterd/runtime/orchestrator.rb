@@ -41,7 +41,8 @@ module Prouterd
                      logger: Prouterd::NullLogger.new,
                      max_parallelism: 8, in_flight: nil, metrics: nil,
                      events: Prouterd::Events.default,
-                     system_url: nil)
+                     system_url: nil,
+                     mcp_pool: nil)
         @db = db
         @runner = runner
         @runs = Storage::Repositories::Runs.new(db)
@@ -53,6 +54,7 @@ module Prouterd
         @metrics = metrics
         @events = events
         @system_url = system_url
+        @mcp_pool = mcp_pool
       end
 
       # Trigger a process. Returns the Run record after execution completes.
@@ -92,8 +94,28 @@ module Prouterd
           replay_of_run_id: replay_of_run_id,
           thread_id: thread_id
         )
+
+        # Snapshot the live MCP tools/list at trigger time so replay
+        # can detect drift (server upgraded between trigger and replay).
+        # Single source of truth: per-iface descriptor list. Stored
+        # only when the process actually uses MCP tools — keeps the
+        # run row small for the common case.
+        snapshot = capture_mcp_snapshot(process, document)
+        if snapshot && !snapshot.empty?
+          @runs.update_run(run.id, mcp_tools_json: JSON.dump(snapshot))
+        end
+
         @events.publish(:run_created, run: run)
         run
+      end
+
+      def capture_mcp_snapshot(process, _document)
+        return nil unless @mcp_pool
+
+        ifaces = process.blocks.flat_map(&:mcp_refs).uniq
+        return nil if ifaces.empty?
+
+        @mcp_pool.tool_snapshot(ifaces)
       end
 
       # Resolve the process's `thread-id` template against the input event.
@@ -1076,11 +1098,44 @@ module Prouterd
           )
         end
 
-        allowed = block.allowed_tools.map do |name|
-          tool = document.tools.find { |t| t.name == name }
-          return invalid_agentic(block, "allowed-tools references unknown tool '#{name}'") unless tool
+        # Resolve allowed-tools to the descriptors the LLM gets in
+        # its tool array. Two universes:
+        #   - Plain `name` resolves to a `tool <name>` declaration.
+        #   - Namespaced `<iface>.<name>` is an MCP server tool. The
+        #     descriptor comes from the live tools/list (via the
+        #     pool); if the pool isn't wired in (tests / CLI) or the
+        #     server is degraded, fail clean.
+        # Block.mcp_refs further widens the allowed set: every tool
+        # advertised by the listed mcp interfaces becomes available
+        # under its namespaced name. If `allowed-tools` is set, that
+        # acts as a tighter filter on top.
+        allowed = []
+        block.allowed_tools.each do |name|
+          if name.include?(".")
+            ns, tool_name = name.split(".", 2)
+            descriptor = mcp_tool_descriptor(ns, tool_name)
+            unless descriptor
+              return invalid_agentic(block,
+                                     "allowed-tools '#{name}' is not advertised by mcp interface '#{ns}' " \
+                                     "(check daemon log for `%MCP-3-START_FAILED` / `%MCP-6-READY`)")
+            end
+            allowed << descriptor
+          else
+            tool = document.tools.find { |t| t.name == name }
+            return invalid_agentic(block, "allowed-tools references unknown tool '#{name}'") unless tool
 
-          tool
+            allowed << tool
+          end
+        end
+
+        # If the block names mcp interfaces but no `allowed-tools`,
+        # auto-include every tool those interfaces advertise.
+        if block.allowed_tools.empty? && !block.mcp_refs.empty?
+          block.mcp_refs.each do |ns|
+            tools_for_iface(ns).each do |t|
+              allowed << build_mcp_tool(ns, t)
+            end
+          end
         end
 
         # Resolve templated prompt/system + interface fields.
@@ -1186,8 +1241,50 @@ module Prouterd
       # the orchestrator uses for ordinary blocks. Returns a Hash with
       # output_json / error_type / error_message — the agentic driver
       # serialises the appropriate tool_result content.
+      # MCP tool descriptor as it appears to the agentic loop. The
+      # live `tools/list` response from the server is shaped as
+      # `{name, description, inputSchema}`; we wrap it so the rest of
+      # the loop reads it like a `tool <name>` AST node would.
+      def mcp_tool_descriptor(iface_name, tool_name)
+        return nil unless @mcp_pool
+
+        tools = tools_for_iface(iface_name)
+        descriptor = tools.find { |t| t["name"] == tool_name }
+        return nil unless descriptor
+
+        build_mcp_tool(iface_name, descriptor)
+      end
+
+      def tools_for_iface(iface_name)
+        return [] unless @mcp_pool
+
+        @mcp_pool.tool_snapshot([iface_name])[iface_name] || []
+      end
+
+      def build_mcp_tool(iface_name, descriptor)
+        Iface::McpToolRef.new(
+          iface_name:   iface_name,
+          tool_name:    descriptor["name"],
+          full_name:    "#{iface_name}.#{descriptor["name"]}",
+          description:  descriptor["description"],
+          input_schema: descriptor["inputSchema"]
+        )
+      end
+
       def build_tool_dispatcher(run, process, block, document, parent_env)
         lambda do |name:, input:|
+          # Namespaced names → MCP pool. `tools/list` already validated
+          # the prefix at agentic-block setup; we re-check here for
+          # the case where a server hot-restarted and lost the tool.
+          if name.include?(".")
+            unless @mcp_pool
+              next ({ error_type: "mcp_unavailable",
+                      error_message: "mcp pool is not wired into this orchestrator" })
+            end
+            timeout_ms = block.timeout_ms || 60_000
+            next @mcp_pool.call_tool(name, input || {}, timeout_ms: timeout_ms)
+          end
+
           tool = document.tools.find { |t| t.name == name }
           next ({ error_type: "unknown_tool", error_message: "tool '#{name}' is not declared" }) unless tool
 

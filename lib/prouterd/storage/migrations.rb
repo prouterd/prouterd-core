@@ -175,6 +175,17 @@ module Prouterd
               db.execute("ALTER TABLE runs ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0.0")
             end
           end
+        ),
+        Migration.new(
+          version: "0007",
+          description: "runs.mcp_tools_json — snapshot of MCP tools/list at trigger time " \
+                       "so replay can detect drift if a server upgraded between trigger and replay",
+          up: lambda do |db|
+            cols = db.execute("PRAGMA table_info(runs)").map { |row| row[1] }
+            unless cols.include?("mcp_tools_json")
+              db.execute("ALTER TABLE runs ADD COLUMN mcp_tools_json TEXT")
+            end
+          end
         )
       ].freeze
 

@@ -331,6 +331,34 @@ module Prouterd
         json(409, error: e.message)
       end
 
+      # POST /v1/runs/by-thread/:thread_id/resume — resume the most
+      # recently-paused run carrying that thread_id. Mirrors the
+      # `prouter resume run-by-thread` CLI subcommand: external systems
+      # (Slack interaction webhook, signed callback, anything that
+      # knows the thread_id but not the internal run uid) can resume
+      # a paused run without an extra round-trip to look up the uid.
+      # Body shape is identical to /v1/runs/:uid/resume — `{ value: <json> }`.
+      def post_run_resume_by_thread(request, thread_id)
+        repo = Storage::Repositories::Runs.new(@store.db)
+        paused = repo.list_runs(limit: 200, status: "paused", thread_id: thread_id)
+        run = paused.first   # list_runs orders DESC by id → first is latest
+        return json(404, error: "no paused run for thread '#{thread_id}'") unless run
+        return json(422, error: "run not pinned to a commit") unless run.process_config_commit_id
+
+        commit = @store.get_commit(run.process_config_commit_id)
+        return json(410, error: "config commit no longer exists") unless commit
+
+        body = parse_json_body(request) || {}
+        value = body["value"]
+
+        document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
+        orchestrator = build_orchestrator
+        finished = orchestrator.resume_run(run.uid, document, value: value)
+        json(202, data: { run_id: finished.uid, status: finished.status, thread_id: thread_id })
+      rescue Runtime::TriggerError => e
+        json(409, error: e.message)
+      end
+
       def post_run_cancel(_request, uid)
         run = run_by_uid(uid) or return json(404, error: "no such run")
         if %w[success failed canceled].include?(run.status)

@@ -59,6 +59,12 @@ module Prouterd
         when "runs.cancel"        then forward_json { @v1.post_run_cancel(req(args), str(args, "uid")) }
         when "runs.replay"        then forward_json { @v1.post_run_replay(req(args, body: replay_body(args)), str(args, "uid")) }
         when "runs.resume"        then forward_json { @v1.post_run_resume(req(args, body: { "value" => args["value"] }), str(args, "uid")) }
+        when "runs.resume_by_thread" then forward_json {
+                                       @v1.post_run_resume_by_thread(
+                                         req(args, body: { "value" => args["value"] }),
+                                         str(args, "thread_id")
+                                       )
+                                     }
         when "runs.logs"          then forward_json { @v1.get_run_logs(req(args), str(args, "uid")) }
         when "runs.artifacts"     then forward_json { @v1.get_run_artifacts(req(args), str(args, "uid")) }
 

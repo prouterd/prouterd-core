@@ -106,6 +106,13 @@ RSpec.describe Prouterd::API::RpcDispatcher do
       expect(r[:payload]).to have_key("data")
     end
 
+    it "runs.resume_by_thread → not_found when thread has no paused run" do
+      r = dispatcher.call("runs.resume_by_thread", { "thread_id" => "nope", "value" => {} })
+      expect(r[:type]).to eq("error")
+      expect(r[:payload][:code]).to eq("not_found")
+      expect(r[:payload][:message]).to include("no paused run")
+    end
+
     it "unknown method returns code:'unknown_method'" do
       r = dispatcher.call("nope.thing", {})
       expect(r[:type]).to eq("error")

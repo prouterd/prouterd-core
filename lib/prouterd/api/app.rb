@@ -314,6 +314,8 @@ module Prouterd
           @v1.post_run_cancel(request, segments[2])
         when method == "POST" && segments.length == 4 && segments[0..1] == %w[v1 runs] && segments[3] == "resume"
           @v1.post_run_resume(request, segments[2])
+        when method == "POST" && segments.length == 5 && segments[0..2] == %w[v1 runs by-thread] && segments[4] == "resume"
+          @v1.post_run_resume_by_thread(request, segments[3])
         when method == "GET" && segments.length == 4 && segments[0..1] == %w[v1 artifacts] && segments[3] == "download"
           @v1.get_artifact_download(request, segments[2])
         else

@@ -555,6 +555,86 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
       expect(last_response.status).to eq(404)
     end
 
+    it "POST /v1/runs/by-thread/:tid/resume wakes the latest paused run for that thread" do
+      pause_dsl = parse(<<~PRC)
+        router demo
+        exit
+        interface manual cli
+         no shutdown
+        exit
+        process need_approval
+         thread-id "{{event.thread_id}}"
+         block ask
+          pause "ok to deploy?"
+         exit
+         block apply
+          interface docker img1
+         exit
+         route ask apply
+        exit
+        interface docker img1
+         image alpine:1
+        exit
+        route interface cli process need_approval
+        exit
+      PRC
+      store.commit(pause_dsl)
+      runner.default(&Prouterd::Runner::StubRunner.success)
+
+      orch = Prouterd::Runtime::Orchestrator.new(db: db, runner: runner)
+      run  = orch.trigger(pause_dsl, "need_approval",
+                          input_event: { "thread_id" => "abc123" },
+                          commit_id: store.running_commit.id)
+      expect(run.status).to eq("paused")
+
+      post "/v1/runs/by-thread/abc123/resume",
+           JSON.dump(value: { decision: "approve" }),
+           { "CONTENT_TYPE" => "application/json" }
+      expect(last_response.status).to eq(202)
+      data = JSON.parse(last_response.body)["data"]
+      expect(data["thread_id"]).to eq("abc123")
+      expect(data["status"]).to eq("success")
+    end
+
+    it "POST /v1/runs/by-thread/:tid/resume picks the most recent paused run on collisions" do
+      pause_dsl = parse(<<~PRC)
+        router demo
+        exit
+        interface manual cli
+         no shutdown
+        exit
+        process need_approval
+         thread-id "{{event.thread_id}}"
+         block ask
+          pause "ok?"
+         exit
+        exit
+        route interface cli process need_approval
+        exit
+      PRC
+      store.commit(pause_dsl)
+      runner.default(&Prouterd::Runner::StubRunner.success)
+      orch = Prouterd::Runtime::Orchestrator.new(db: db, runner: runner)
+
+      first  = orch.trigger(pause_dsl, "need_approval", input_event: { "thread_id" => "shared" }, commit_id: store.running_commit.id)
+      second = orch.trigger(pause_dsl, "need_approval", input_event: { "thread_id" => "shared" }, commit_id: store.running_commit.id)
+      expect(first.status).to eq("paused")
+      expect(second.status).to eq("paused")
+
+      post "/v1/runs/by-thread/shared/resume",
+           JSON.dump(value: { decision: "approve" }),
+           { "CONTENT_TYPE" => "application/json" }
+      expect(last_response.status).to eq(202)
+      expect(JSON.parse(last_response.body)["data"]["run_id"]).to eq(second.uid)
+    end
+
+    it "POST /v1/runs/by-thread/:tid/resume → 404 when no paused run for the thread" do
+      post "/v1/runs/by-thread/no-such-tid/resume", JSON.dump({}),
+           { "CONTENT_TYPE" => "application/json" }
+      expect(last_response.status).to eq(404)
+      expect(JSON.parse(last_response.body)["error"]).to include("no paused run")
+    end
+
     it "artifact_summary exposes step_id so step-scoped UIs can filter" do
       runs_repo = Prouterd::Storage::Repositories::Runs.new(db)
       r = runs_repo.create_run(process_name: "pipeline", input_event: {})

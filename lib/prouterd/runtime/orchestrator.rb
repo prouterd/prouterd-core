@@ -1297,15 +1297,24 @@ module Prouterd
           # `call <name>` value goes into type_fields["call"] verbatim
           # so the local_repo plugin (and any other plugin keying on
           # `call`) sees it.
+          #
+          # input_json carries the raw LLM-supplied args too. HTTP /
+          # postgres / llm callers consume args via type_fields (one
+          # call_field per kind); shell-backed tools have only one
+          # call_field (`exec`), so the LLM args wouldn't otherwise
+          # reach the script. ShellRunner writes input_json to
+          # /prouter/input.json (env: PROUTER_INPUT_PATH) — the script
+          # reads its `op`/`key`/`jql`/etc. from there.
           fields = (iface.type_fields || {}).dup
           fields["call"] = impl.call_name if impl.call_name && !impl.call_name.empty?
-          (input || {}).each { |k, v| fields[k.to_s] = stringify_arg(v) }
+          tool_args = (input || {}).each_with_object({}) { |(k, v), h| h[k.to_s] = v }
+          tool_args.each { |k, v| fields[k] = stringify_arg(v) }
 
           req = Runner::RunRequest.new(
             run_uid: run.uid, process_name: process.name,
             block_name: "#{block.name}::tool::#{name}",
             execution_type: iface.type, attempt: 1,
-            env: parent_env, input_json: {}, timeout_ms: 60_000,
+            env: parent_env, input_json: tool_args, timeout_ms: 60_000,
             type_fields: fields, staged_inputs: {}
           )
           result = @runner.run(req)

@@ -1,6 +1,6 @@
 # Examples
 
-Twelve runnable `.prc` files, each demonstrating one feature in
+Thirteen runnable `.prc` files, each demonstrating one feature in
 isolation (or, for `10_tg_github` and `12_jira_debug`, a full
 real-world pipeline).
 
@@ -29,6 +29,7 @@ gem install fugit        # interface cron
 | `10_tg_github/`              | full pipeline: GitHub webhook → format → Telegram (shell-only)        |
 | `11_retry_when.prc`          | smart retries: `retry when error_type in …` + `{{previous}}`          |
 | `12_jira_debug/`             | end-to-end: webhook → http (Jira) → postgres → llm → http             |
+| `13_slack_approval.prc`      | human-in-the-loop: Slack interactive button → `pause`/`resume`, no Slack-specific plugin |
 
 Each file's top comment shows the exact commands to run it.
 

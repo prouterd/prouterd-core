@@ -160,9 +160,9 @@ RSpec.describe Prouterd::Config::Parser do
       expect(tbl.entries.first.price_out).to be_within(0.001).of(1.25)
     end
 
-    it "expands `mcp_tool <name>` into an interface shell + tool pair" do
+    it "expands `shell_tool <name>` into an interface shell + tool pair" do
       doc = parse(<<~SRC)
-        mcp_tool jira
+        shell_tool jira
          description "Jira API microservice."
          args op, key, jql
          cwd /opt/atp

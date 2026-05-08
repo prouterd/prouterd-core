@@ -48,7 +48,7 @@ module Prouterd
           when "contract"  then doc.contracts << parse_contract(line)
           when "tool"      then doc.tools << parse_tool(line)
           when "prices"    then doc.prices << parse_prices(line)
-          when "mcp_tool"  then parse_mcp_tool(doc, line)
+          when "shell_tool" then parse_shell_tool(doc, line)
           when "exit"
             raise ParseError.new("unexpected 'exit' at top level", line: line.number)
           else
@@ -1121,11 +1121,11 @@ module Prouterd
         node.fan_out_rate_limit = { "n" => n, "window_ms" => window_ms }
       end
 
-      # `mcp_tool <name> ... exit` — pure parser sugar for the common
+      # `shell_tool <name> ... exit` — pure parser sugar for the common
       # case where an integration is one shell-script with an `op`
       # discriminator and JSON I/O. Expands at parse time into:
       #
-      #   interface shell <name>     ! one per mcp_tool
+      #   interface shell <name>     ! one per shell_tool
       #    cwd <body.cwd>            ! optional
       #   exit
       #
@@ -1141,16 +1141,16 @@ module Prouterd
       # exec line is supplied by the LLM-generated args at dispatch
       # time. Carrying `exec` here is for completeness when the operator
       # wants a fixed prefix.
-      def parse_mcp_tool(doc, header)
-        expect_token_count(header, 2, "mcp_tool <name>")
-        name = expect_identifier(header.tokens[1], "mcp_tool name")
+      def parse_shell_tool(doc, header)
+        expect_token_count(header, 2, "shell_tool <name>")
+        name = expect_identifier(header.tokens[1], "shell_tool name")
         if doc.interfaces.any? { |i| i.name == name } || doc.tools.any? { |t| t.name == name }
           raise ParseError.new("name '#{name}' is already declared", line: header.number)
         end
         advance
 
         body = { description: nil, args: [], exec: nil, cwd: nil }
-        each_body_line("mcp_tool #{name}") do |line|
+        each_body_line("shell_tool #{name}") do |line|
           head = line.head.value
           case head
           when "description"
@@ -1175,7 +1175,7 @@ module Prouterd
             expect_token_count(line, 2, "cwd <path>")
             body[:cwd] = expect_word_or_string(line.tokens[1], "cwd")
           else
-            raise ParseError.new("unknown directive '#{head}' in mcp_tool", line: line.number)
+            raise ParseError.new("unknown directive '#{head}' in shell_tool", line: line.number)
           end
         end
 

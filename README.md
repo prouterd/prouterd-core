@@ -211,7 +211,7 @@ worked recipe.
   sandboxed read-only git for code-aware pipelines. No raw shell.
   Optional `auto-pull <duration>` keeps checkouts fresh from the
   daemon, no external cron required.
-- **`mcp_tool <name>` sugar.** Collapses the
+- **`shell_tool <name>` sugar.** Collapses the
   `interface shell` + `tool` + `implementation` triplet into one
   declaration for shell-script integrations. Pure parser-time
   expansion, no new runtime.

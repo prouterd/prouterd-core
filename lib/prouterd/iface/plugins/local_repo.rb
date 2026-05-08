@@ -51,6 +51,8 @@ module Prouterd
                         description: "sandbox mode (currently only read-only)"
         field :"max-file-size", kind: :string, default: "500KB",
                                  description: "size cap for `read` calls; suffix-aware (KB/MB)"
+        field :"auto-pull", kind: :string,
+                            description: "background `git pull` cadence (duration like `5m`); the daemon's scheduler runs the pull, never blocking calls"
 
         call_field :call, kind: :enum, enum: CALL_KINDS, required: true,
                           description: "which subcommand to run"

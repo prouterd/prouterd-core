@@ -78,10 +78,17 @@ module Prouterd
       def tick(now: Time.now)
         document = @store.load_running
         cron_interfaces = document.interfaces.select { |i| i.cron? && !i.shutdown }
-        return if cron_interfaces.empty?
-
         cron_interfaces.each do |iface|
           fire_if_due(iface, document, now)
+        end
+
+        # Phase 38c: background `git pull` for `interface local_repo`
+        # entries that declare `auto-pull <duration>`. Failures are
+        # logged and never block — the next tick retries.
+        document.interfaces.each do |iface|
+          next unless iface.type == "local_repo" && !iface.shutdown
+
+          maybe_auto_pull(iface, now)
         end
       end
 
@@ -109,6 +116,59 @@ module Prouterd
           break if next_at == last # safety
         end
         @last_fired[iface.name] = last
+      end
+
+      # Background `git pull` for `interface local_repo` ifaces with
+      # auto-pull set. Spaced per-iface using the same `@last_fired`
+      # bookkeeping cron uses, but keyed under `local_repo:<name>` so
+      # the namespaces don't collide.
+      def maybe_auto_pull(iface, now)
+        cadence = iface.type_fields["auto-pull"]
+        return unless cadence && !cadence.to_s.empty?
+
+        cadence_ms = begin
+          Util::DurationParser.parse(cadence)
+        rescue ArgumentError
+          unless @auto_pull_warned&.[](iface.name)
+            @logger.warn("scheduler: invalid auto-pull duration",
+                         interface: iface.name, cadence: cadence)
+            (@auto_pull_warned ||= {})[iface.name] = true
+          end
+          return
+        end
+
+        key  = "local_repo:#{iface.name}"
+        last = @last_fired[key]
+        return if last && (now - last) < (cadence_ms / 1000.0)
+
+        @last_fired[key] = now
+        Thread.new { run_auto_pull(iface) }
+      end
+
+      def run_auto_pull(iface)
+        root      = iface.type_fields["root"].to_s
+        whitelist = (iface.type_fields["whitelist"] || "").split(",").map(&:strip).reject(&:empty?)
+        return if root.empty? || whitelist.empty?
+
+        whitelist.each do |repo|
+          repo_dir = File.expand_path(repo, File.expand_path(root))
+          unless File.directory?(File.join(repo_dir, ".git"))
+            @logger.warn("auto-pull: not a git checkout", interface: iface.name, repo: repo)
+            next
+          end
+          out, err, status = Open3.capture3("git", "-C", repo_dir, "pull", "--ff-only")
+          if status.success?
+            @logger.info("auto-pull: ok", interface: iface.name, repo: repo, summary: out.lines.first.to_s.chomp)
+          else
+            @logger.warn("auto-pull: failed",
+                         interface: iface.name, repo: repo,
+                         exit: status.exitstatus,
+                         stderr: err.lines.first.to_s.chomp)
+          end
+        end
+      rescue StandardError => e
+        @logger.error("auto-pull error",
+                      interface: iface.name, error: e.class.name, message: e.message)
       end
 
       def parse_cron(iface)

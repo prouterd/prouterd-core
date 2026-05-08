@@ -587,6 +587,58 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
     end
   end
 
+  describe "config-mutation events" do
+    let(:events) { Prouterd::Events.new }
+    let(:app) do
+      Prouterd::API::App.new(
+        store: store, runner: runner, jobs: jobs,
+        in_flight: in_flight, metrics: metrics, admin_token: nil,
+        events: events
+      )
+    end
+
+    def captured_config_changes
+      out = []
+      events.subscribe(:config_changed) { |_, payload| out << payload }
+      yield
+      out
+    end
+
+    it "publishes :config_changed on commit-apply, rollback, save-boot" do
+      # commit
+      changes = captured_config_changes do
+        post "/v1/config/apply", "router demo\nexit\n"
+      end
+      expect(changes.size).to eq(1)
+      expect(changes.first[:reason]).to eq("commit")
+      expect(changes.first[:running_commit]).to be_a(Integer)
+
+      # rollback (back to the original commit, id 1)
+      original = store.list_commits(limit: 100).last.id
+      changes = captured_config_changes do
+        post "/v1/config/rollback", JSON.dump(commit_id: original),
+             { "CONTENT_TYPE" => "application/json" }
+      end
+      expect(changes.size).to eq(1)
+      expect(changes.first[:reason]).to eq("rollback")
+
+      # save_boot
+      changes = captured_config_changes do
+        post "/v1/config/save-boot"
+      end
+      expect(changes.size).to eq(1)
+      expect(changes.first[:reason]).to eq("save_boot")
+    end
+
+    it "no-ops when events: nil (V1 still wired through HTTP-only mode)" do
+      v1 = Prouterd::API::V1.new(
+        store: store, runner: runner, secret_resolver: nil,
+        in_flight: in_flight, metrics: metrics, jobs: jobs
+      )
+      expect { v1.send(:publish_config_changed, "commit") }.not_to raise_error
+    end
+  end
+
   describe "admin auth" do
     let(:app) do
       Prouterd::API::App.new(

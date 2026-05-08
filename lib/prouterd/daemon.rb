@@ -1,5 +1,6 @@
 require_relative "../prouterd"
 require_relative "bootstrap"
+require_relative "daemon/lock"
 
 module Prouterd
   module Daemon
@@ -44,6 +45,18 @@ module Prouterd
         unless store
           @stderr.puts "prouterd: requires --db (the daemon needs persistent state)"
           return 2
+        end
+
+        # Single-daemon mutex on the DB path. Two daemons against one
+        # DB would race jobs and Recovery.sweep would mark each other's
+        # in-flight runs as failed. Released automatically by the
+        # kernel on process exit.
+        db_path = opts[:db_path] || ENV["PROUTERD_DB"] || Prouterd::Storage::DB::DEFAULT_PATH
+        begin
+          @lock_fd = Lock.acquire(db_path)
+        rescue LockError => e
+          @stderr.puts "prouterd: #{e.message}"
+          return 3
         end
 
         logger = Prouterd::Logger.build(@stdout)

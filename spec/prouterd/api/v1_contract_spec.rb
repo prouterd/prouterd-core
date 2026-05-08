@@ -186,6 +186,7 @@ RSpec.describe "Phase 36a /v1 contract freeze" do
                   thread_id: NilClass,
                   tokens_in: a_kind_of(Integer),
                   tokens_out: a_kind_of(Integer),
+                  cost_usd: a_kind_of(Numeric),
                   duration_ms: a_kind_of(Integer),
                   started_at: a_kind_of(String),
                   finished_at: a_kind_of(String),

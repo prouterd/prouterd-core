@@ -766,7 +766,7 @@ module Prouterd
             error_message: redactor.redact(result.error_message),
             output_json: scrubbed_output ? JSON.dump(scrubbed_output) : nil
           )
-          accumulate_run_usage(run, scrubbed_output)
+          accumulate_run_usage(run, scrubbed_output, iface, document)
         end
         @events.publish(:step_updated, step: finished_step, run_id: run.id, run_uid: run.uid) if finished_step
 
@@ -1013,7 +1013,7 @@ module Prouterd
             error_message: redactor.redact(outcome[:error_message]),
             output_json: scrubbed ? JSON.dump(scrubbed) : nil
           )
-          accumulate_run_usage(run, scrubbed)
+          accumulate_run_usage(run, scrubbed, iface, document)
         end
 
         if outcome[:ok]
@@ -1140,21 +1140,41 @@ module Prouterd
         )
       end
 
-      # Accumulate per-run LLM token usage when the attempt's output_json
-      # carries the canonical `usage` envelope (LlmCaller normalises both
-      # Anthropic and OpenAI providers to {input_tokens, output_tokens}).
+      # Accumulate per-run LLM token usage + USD cost when the
+      # attempt's output_json carries the canonical `usage` envelope
+      # (LlmCaller normalises both Anthropic and OpenAI providers to
+      # {input_tokens, output_tokens}). Cost is computed against the
+      # `prices <provider>` table for the iface's provider+model;
+      # missing entries record 0 cost (token usage still bumped).
       # Caller must hold db_mutex.
-      def accumulate_run_usage(run, output_json)
+      def accumulate_run_usage(run, output_json, iface = nil, document = nil)
         return unless output_json.is_a?(Hash)
 
         usage = output_json["usage"]
         return unless usage.is_a?(Hash)
 
-        @runs.add_run_usage(
-          run.id,
-          tokens_in:  (usage["input_tokens"]  || usage["prompt_tokens"]    || 0).to_i,
-          tokens_out: (usage["output_tokens"] || usage["completion_tokens"] || 0).to_i
-        )
+        tokens_in  = (usage["input_tokens"]  || usage["prompt_tokens"]    || 0).to_i
+        tokens_out = (usage["output_tokens"] || usage["completion_tokens"] || 0).to_i
+        cost = price_for_call(iface, output_json["model"], document, tokens_in, tokens_out)
+        @runs.add_run_usage(run.id, tokens_in: tokens_in, tokens_out: tokens_out, cost_usd: cost)
+      end
+
+      # Look up `prices <provider>` for the iface's provider, find the
+      # matching `model <name>` entry, and compute USD cost. Returns 0.0
+      # when any piece is missing — token telemetry still records, the
+      # operator sees missing cost in `runs.cost_usd` and adds the
+      # entry.
+      def price_for_call(iface, model, document, tokens_in, tokens_out)
+        return 0.0 unless iface && document && model
+        provider = iface.type_fields["provider"]
+        return 0.0 unless provider
+
+        table = document.prices.find { |p| p.provider == provider }
+        return 0.0 unless table
+        entry = table.entries.find { |e| e.model == model }
+        return 0.0 unless entry
+
+        ((tokens_in.to_f * entry.price_in) + (tokens_out.to_f * entry.price_out)) / 1_000_000.0
       end
 
       def build_input_payload(run, block, context)

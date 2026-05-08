@@ -144,6 +144,33 @@ RSpec.describe Prouterd::Config::Parser do
       expect(fbs.map(&:into)).to eq(%w[feedback score])
     end
 
+    it "parses a top-level `prices <provider>` table" do
+      doc = parse(<<~SRC)
+        prices anthropic
+         model claude-haiku-4-5-20251001  in 0.25  out 1.25
+         model claude-opus-4-7            in 15.00 out 75.00
+        exit
+      SRC
+      expect(doc.prices.length).to eq(1)
+      tbl = doc.prices.first
+      expect(tbl.provider).to eq("anthropic")
+      expect(tbl.entries.length).to eq(2)
+      expect(tbl.entries.first.model).to eq("claude-haiku-4-5-20251001")
+      expect(tbl.entries.first.price_in).to be_within(0.001).of(0.25)
+      expect(tbl.entries.first.price_out).to be_within(0.001).of(1.25)
+    end
+
+    it "rejects duplicate model in a `prices` block" do
+      expect {
+        parse(<<~SRC)
+          prices anthropic
+           model x in 1 out 1
+           model x in 2 out 2
+          exit
+        SRC
+      }.to raise_error(Prouterd::Config::ParseError, /duplicate model 'x'/)
+    end
+
     it "rejects `retry feedback` without an `into` clause" do
       expect do
         parse(<<~SRC)

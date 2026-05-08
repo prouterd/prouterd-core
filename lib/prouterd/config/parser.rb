@@ -47,6 +47,7 @@ module Prouterd
           when "route"     then doc.global_routes << parse_global_route(line)
           when "contract"  then doc.contracts << parse_contract(line)
           when "tool"      then doc.tools << parse_tool(line)
+          when "prices"    then doc.prices << parse_prices(line)
           when "exit"
             raise ParseError.new("unexpected 'exit' at top level", line: line.number)
           else
@@ -981,6 +982,42 @@ module Prouterd
         node
       end
 
+      # `prices <provider> ... exit` — body lines look like
+      #   model <name>  in <usd>  out <usd>
+      # Rates are per-million-token. Stored on doc.prices for the
+      # runtime cost accumulator.
+      def parse_prices(header)
+        expect_token_count(header, 2, "prices <provider>")
+        provider = expect_word(header.tokens[1], "prices provider")
+        node = AST::Prices.new(provider: provider, line: header.number)
+        advance
+
+        each_body_line("prices #{provider}") do |line|
+          unless line.head.value == "model"
+            raise ParseError.new("unknown directive '#{line.head.value}' in prices (expected 'model')", line: line.number)
+          end
+          unless line.tokens.length == 6 &&
+                 line.tokens[2].value == "in" &&
+                 line.tokens[4].value == "out"
+            raise ParseError.new(
+              "syntax: model <name> in <usd-per-1M-input> out <usd-per-1M-output>",
+              line: line.number
+            )
+          end
+          model_name = expect_word_or_string(line.tokens[1], "model name")
+          price_in   = expect_decimal(line.tokens[3], "in price")
+          price_out  = expect_decimal(line.tokens[5], "out price")
+          if node.entries.any? { |e| e.model == model_name }
+            raise ParseError.new("duplicate model '#{model_name}' in prices '#{provider}'", line: line.number)
+          end
+          node.entries << AST::Prices::Entry.new(
+            model: model_name, price_in: price_in, price_out: price_out, line: line.number
+          )
+        end
+
+        node
+      end
+
       def parse_contract(header)
         expect_token_count(header, 2, "contract <name>")
         name = expect_identifier(header.tokens[1], "contract name")
@@ -1290,6 +1327,14 @@ module Prouterd
         Util::DurationParser.parse(value)
       rescue ArgumentError => e
         raise ParseError.new("invalid #{label}: #{e.message}", line: token.line, column: token.column)
+      end
+
+      def expect_decimal(token, label)
+        value = expect_word(token, label)
+        unless value.match?(/\A-?\d+(?:\.\d+)?\z/)
+          raise ParseError.new("expected decimal for #{label}, got '#{value}'", line: token.line, column: token.column)
+        end
+        value.to_f
       end
 
       def expect_context_path(token, label)

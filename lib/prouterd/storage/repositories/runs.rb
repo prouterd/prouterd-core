@@ -48,16 +48,17 @@ module Prouterd
           get_run(id)
         end
 
-        # Atomically accumulate token usage onto a run. Used by the
-        # orchestrator after each attempt that surfaces an `usage` shape
-        # in its output_json (LLM blocks). Both inputs default to 0 so
-        # callers don't have to ternary on missing keys.
-        def add_run_usage(id, tokens_in: 0, tokens_out: 0)
-          return if tokens_in.zero? && tokens_out.zero?
+        # Atomically accumulate token usage + USD cost onto a run.
+        # Used by the orchestrator after each attempt that surfaces a
+        # `usage` envelope in its output_json (LLM blocks). All inputs
+        # default to 0 so callers don't have to ternary on missing keys.
+        def add_run_usage(id, tokens_in: 0, tokens_out: 0, cost_usd: 0.0)
+          return if tokens_in.zero? && tokens_out.zero? && cost_usd.zero?
 
           @db.execute(
-            "UPDATE runs SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ?",
-            [tokens_in.to_i, tokens_out.to_i, id]
+            "UPDATE runs SET tokens_in = tokens_in + ?, " \
+            "tokens_out = tokens_out + ?, cost_usd = cost_usd + ? WHERE id = ?",
+            [tokens_in.to_i, tokens_out.to_i, cost_usd.to_f, id]
           )
         end
 
@@ -233,7 +234,7 @@ module Prouterd
         def run_columns
           "id, uid, process_name, process_config_commit_id, interface_name, status, " \
             "input_event_json, context_json, error_summary, started_at, finished_at, " \
-            "created_at, parent_run_id, replay_of_run_id, thread_id, tokens_in, tokens_out"
+            "created_at, parent_run_id, replay_of_run_id, thread_id, tokens_in, tokens_out, cost_usd"
         end
 
         # Same fields as run_columns, prefixed with `r.` and tail-appended
@@ -244,7 +245,7 @@ module Prouterd
           "r.id, r.uid, r.process_name, r.process_config_commit_id, r.interface_name, r.status, " \
             "r.input_event_json, r.context_json, r.error_summary, r.started_at, r.finished_at, " \
             "r.created_at, r.parent_run_id, r.replay_of_run_id, r.thread_id, " \
-            "r.tokens_in, r.tokens_out, parent.uid AS replay_of_uid"
+            "r.tokens_in, r.tokens_out, r.cost_usd, parent.uid AS replay_of_uid"
         end
 
         def step_columns
@@ -253,8 +254,9 @@ module Prouterd
         end
 
         def row_to_run(r)
-          # `replay_of_uid` is appended only by run_columns_with_parent; the
-          # run_columns variant ends at tokens_out (index 16) and r[17] is nil.
+          # `replay_of_uid` is appended only by run_columns_with_parent;
+          # the run_columns variant ends at cost_usd (index 17) and r[18]
+          # is nil.
           Run.new(
             id: r[0], uid: r[1], process_name: r[2], process_config_commit_id: r[3],
             interface_name: r[4], status: r[5], input_event_json: r[6], context_json: r[7],
@@ -263,7 +265,8 @@ module Prouterd
             thread_id: r[14],
             tokens_in: r[15] || 0,
             tokens_out: r[16] || 0,
-            replay_of_uid: r[17]
+            cost_usd: r[17] || 0.0,
+            replay_of_uid: r[18]
           )
         end
 

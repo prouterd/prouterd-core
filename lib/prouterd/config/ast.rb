@@ -2,6 +2,24 @@ module Prouterd
   module Config
     module AST
       # Root of the parsed config. Top-level sections live here in declaration order.
+      # `prices <provider>` — top-level USD pricing table for an LLM
+      # provider. Each entry is per-million-token rate for input /
+      # output. The runtime cost accumulator multiplies the per-attempt
+      # usage envelope against the matching entry to bump
+      # `runs.cost_usd`.
+      class Prices
+        attr_accessor :provider, :line
+        attr_reader :entries
+
+        Entry = Struct.new(:model, :price_in, :price_out, :line, keyword_init: true)
+
+        def initialize(provider:, line:)
+          @provider = provider
+          @line = line
+          @entries = []
+        end
+      end
+
       # `tool <name>` — top-level declaration of a callable an agentic
       # LLM block can request. The runtime translates the tool to the
       # underlying provider's native tool-use API and dispatches each
@@ -23,7 +41,7 @@ module Prouterd
 
       class Document
         attr_accessor :router
-        attr_reader :secrets, :policies, :queues, :interfaces, :processes, :global_routes, :contracts, :tools
+        attr_reader :secrets, :policies, :queues, :interfaces, :processes, :global_routes, :contracts, :tools, :prices
 
         def initialize
           @router = nil
@@ -35,6 +53,7 @@ module Prouterd
           @global_routes = []
           @contracts = []
           @tools = []
+          @prices = []
         end
       end
 

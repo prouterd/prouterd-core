@@ -22,6 +22,7 @@ module Prouterd
       :thread_id,
       :tokens_in,
       :tokens_out,
+      :cost_usd,
       keyword_init: true
     ) do
       def success?; status == "success"; end

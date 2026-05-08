@@ -29,6 +29,7 @@ module Prouterd
         @doc.queues.each    { |q| blank; render_queue(q) }
         @doc.contracts.each { |c| blank; render_contract(c) }
         @doc.tools.each     { |t| blank; render_tool(t) }
+        @doc.prices.each    { |pr| blank; render_prices(pr) }
         @doc.interfaces.each { |i| blank; render_interface(i) }
         @doc.processes.each { |p| blank; render_process(p) }
         @doc.global_routes.each { |r| blank; render_global_route(r) }
@@ -276,6 +277,24 @@ module Prouterd
         emit(0, "route interface #{route.interface_name} process #{route.process_name}")
         route.matches.each { |m| emit(1, render_match(m)) }
         emit(0, "exit")
+      end
+
+      def render_prices(pr)
+        emit(0, "prices #{pr.provider}")
+        pr.entries.each do |e|
+          emit(1, "model #{e.model} in #{format_price(e.price_in)} out #{format_price(e.price_out)}")
+        end
+        emit(0, "exit")
+      end
+
+      def format_price(v)
+        # Round-trip stable: emit integer-valued prices without trailing
+        # `.0`, but keep two decimals when the user wrote them. We can't
+        # tell apart `0.25` from `0.250` after parse, so we just trim
+        # trailing zeros while always keeping at least one fractional
+        # digit when the value isn't whole.
+        return v.to_i.to_s if v == v.to_i
+        ("%.4f" % v).sub(/0+\z/, "").sub(/\.\z/, ".0")
       end
 
       def render_tool(tool)

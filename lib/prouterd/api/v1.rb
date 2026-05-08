@@ -579,6 +579,7 @@ module Prouterd
           thread_id: r.thread_id,
           tokens_in: r.tokens_in.to_i,
           tokens_out: r.tokens_out.to_i,
+          cost_usd: r.cost_usd.to_f.round(6),
           started_at: r.started_at,
           finished_at: r.finished_at,
           created_at: r.created_at,

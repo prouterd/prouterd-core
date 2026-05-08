@@ -165,6 +165,16 @@ module Prouterd
               db.execute("ALTER TABLE runs ADD COLUMN tokens_out INTEGER NOT NULL DEFAULT 0")
             end
           end
+        ),
+        Migration.new(
+          version: "0006",
+          description: "runs.cost_usd for per-run LLM USD accumulator",
+          up: lambda do |db|
+            cols = db.execute("PRAGMA table_info(runs)").map { |row| row[1] }
+            unless cols.include?("cost_usd")
+              db.execute("ALTER TABLE runs ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0.0")
+            end
+          end
         )
       ].freeze
 

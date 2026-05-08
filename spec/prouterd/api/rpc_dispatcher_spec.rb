@@ -106,6 +106,18 @@ RSpec.describe Prouterd::API::RpcDispatcher do
       expect(r[:payload]).to have_key("data")
     end
 
+    it "mcp.list returns an empty array when no mcp interfaces are declared" do
+      r = dispatcher.call("mcp.list", {})
+      expect(r[:type]).to eq("reply")
+      expect(r[:payload]["data"]).to eq([])
+    end
+
+    it "local_repo.status returns an empty array when no local_repo iface declares auto-pull" do
+      r = dispatcher.call("local_repo.status", {})
+      expect(r[:type]).to eq("reply")
+      expect(r[:payload]["data"]).to eq([])
+    end
+
     it "runs.resume_by_thread → not_found when thread has no paused run" do
       r = dispatcher.call("runs.resume_by_thread", { "thread_id" => "nope", "value" => {} })
       expect(r[:type]).to eq("error")

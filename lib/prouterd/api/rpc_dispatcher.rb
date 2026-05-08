@@ -53,6 +53,8 @@ module Prouterd
         when "policies.list"      then forward_json { @v1.get_policies(req(args)) }
         when "secrets.list"       then forward_json { @v1.get_secrets(req(args)) }
         when "tools.list"         then forward_json { @v1.get_tools(req(args)) }
+        when "mcp.list"           then forward_json { @v1.get_mcp(req(args)) }
+        when "local_repo.status"  then forward_json { @v1.get_local_repo_status(req(args)) }
 
         when "runs.list"          then forward_json { @v1.get_runs(req(args)) }
         when "runs.get"           then forward_json { @v1.get_run(req(args), str(args, "uid")) }

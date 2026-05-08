@@ -113,7 +113,8 @@ RSpec.describe "Phase 36a /v1 contract freeze" do
                   retry_policy: NilClass, contract: NilClass,
                   secret_names: ["API_TOKEN"], shutdown: FalseClass,
                   skip_when: NilClass, vars: Hash, fan_out: NilClass,
-                  agentic: NilClass, pause_reason: NilClass, barrier: NilClass)
+                  agentic: NilClass, pause_reason: NilClass, barrier: NilClass,
+                  max_cost_usd: NilClass)
     end
   end
 
@@ -140,6 +141,7 @@ RSpec.describe "Phase 36a /v1 contract freeze" do
                   retry_max_delay_ms: NilClass,
                   retry_when: a_kind_of(Array),
                   retry_feedback: a_kind_of(Array),
+                  retry_stop: a_kind_of(Array),
                   timeout_ms: NilClass)
       expect(policy["retry_when"].first).to include(
         "path" => "error_type",

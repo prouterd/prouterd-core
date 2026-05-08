@@ -467,7 +467,13 @@ module Prouterd
           shutdown: b.shutdown,
           skip_when: b.skip_when ? match_summary(b.skip_when) : nil,
           vars: b.vars,
-          fan_out: b.fan_out? ? { from: b.fan_out_from, into: b.fan_out_into } : nil,
+          fan_out: b.fan_out? ? {
+            from: b.fan_out_from,
+            into: b.fan_out_into,
+            maps: b.fan_out_maps,
+            dedupe: b.fan_out_dedupe,
+            rate_limit: b.fan_out_rate_limit
+          } : nil,
           agentic: b.agentic ? {
             allowed_tools: b.allowed_tools,
             tool_call_limit: b.tool_call_limit
@@ -476,7 +482,8 @@ module Prouterd
           barrier: b.barrier? ? {
             for: b.barrier_for,
             join_strategy: b.barrier_join_strategy
-          } : nil
+          } : nil,
+          max_cost_usd: b.max_cost_usd
         }
       end
 
@@ -521,6 +528,7 @@ module Prouterd
           retry_max_delay_ms:     p.retry_max_delay_ms,
           retry_when:             p.retry_when_matches.map { |m| match_summary(m) },
           retry_feedback:         p.retry_feedbacks.map { |f| { from: f.from, into: f.into } },
+          retry_stop:             p.retry_stop_matches.map { |m| match_summary(m) },
           timeout_ms:             p.timeout_ms
         }
       end

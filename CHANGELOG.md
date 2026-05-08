@@ -1545,10 +1545,159 @@ drivers.
 propagation, HTTP non-2xx) + 2 orchestrator integration specs.
 742 / 0.
 
+### Phase 38a: `prices <provider>` + per-run `cost_usd` accumulator
+
+New top-level declaration carries per-million-token rates per
+model:
+
+```
+prices anthropic
+ model claude-haiku-4-5-20251001 in 0.25  out 1.25
+ model claude-opus-4-7           in 15.00 out 75.00
+exit
+```
+
+After each LLM block attempt the orchestrator looks up the matching
+{provider, model} in the document's prices tables and bumps
+`runs.cost_usd` (migration 0006) alongside `tokens_in` /
+`tokens_out`. Missing prices table or model → 0 cost; token
+telemetry still records.
+
+Surface: `/v1` `run_summary` gains `cost_usd` (rounded to 6
+decimals); contract spec updated. AST::Prices + Entry; parser +
+renderer round-trip. New `expect_decimal` helper.
+
+3 specs (parser + runtime accumulator). 769 / 0.
+
+### Phase 38b: cost guardrails
+
+Two cost-aware kill switches built on Phase 38a's accumulator.
+
+- Block-level `max-cost-usd <decimal>`: after each attempt, refresh
+  `runs.cost_usd`; if it crossed the cap, reshape the result into a
+  terminal failure with `error_type=cost_cap_exceeded`. Retries
+  don't keep burning budget.
+- Policy-level `retry stop-on <path> <op> <value>`: kill switch
+  evaluated against live run state after every attempt. Today the
+  exposed namespace is `run.{cost_usd, tokens_in, tokens_out}`.
+  Match → break the retry loop regardless of attempts left.
+
+```
+policy budget_aware
+ retry attempts 5
+ retry when output.flag eq "fail"
+ retry stop-on run.cost_usd gt 2.50
+exit
+```
+
+Both refresh the run row from the DB so cost_usd reflects this
+attempt's accumulator bump.
+
+2 runtime specs. 771 / 0.
+
+### Phase 38c: `prouter validate` lint alias + `mcp_tool` sugar
+
+`prouter validate <file>` without `--against` falls through to the
+existing `prouter check` lint path — the canonical CLI verb for
+docs and CI hooks. `--against running` keeps the deeper diff form
+unchanged.
+
+`mcp_tool <name> ... exit` is parser sugar for the common case
+where an integration is one shell-script with an `op` discriminator
+and JSON I/O. Three declaration blocks at the top of an .prc
+collapse into one:
+
+```
+mcp_tool jira
+ description "Jira API microservice."
+ args op, key, jql, max
+ exec "./integrations/jira-api.sh"
+ cwd /opt/atp
+exit
+```
+
+Expands at parse time into an `interface shell jira` + `tool jira`
+pair pointing at it. No new runtime. 772 / 0.
+
+### Phase 38d: `fan-out` enrichment — map / dedupe / rate-limit
+
+Phase 37i shipped the minimum primitive (one child per array
+element). Phase 38d adds projection, idempotency, and back-pressure
+on the same line:
+
+```
+fan-out from issues into analyze_ticket
+ map ticket from issue.key
+ map labels from issue.labels filter starts-with("repo:") strip-prefix
+ dedupe by ticket window 24h when prior-run.status eq "success"
+ rate-limit 1/5s
+exit
+```
+
+`fan-out from X into Y` opens an optional sub-section. Body:
+
+- `map <name> from <path> [filter starts-with("<prefix>") strip-prefix]`
+  projects fields onto the child event. With no maps the element
+  passes through (Hash) or wraps `{value, index}`. With maps, only
+  projected fields appear — per-child events stay minimal.
+- `dedupe by <field> window <duration> [when prior-run.status eq <s>]`
+  skips a child when an earlier run of the same target process with
+  the same `thread_id` ran within the window. Honours the existing
+  `thread_id_template` / fan-out thread-id derivation.
+- `rate-limit N/window` spaces children N-per-window via the
+  durable jobs queue's `available_at`.
+
+The orchestrator now also enqueues an `execute` job per child run
+(previously fan-out only created run rows; the worker pool would
+never pick them up without a job).
+
+Renderer round-trips the long form with body when any enrichment
+clause is set, falling back to the single-line form otherwise.
+
+774 / 0.
+
+### Phase 38e: `auto-pull` for `interface local_repo`
+
+`auto-pull <duration>` declares a background `git pull --ff-only`
+cadence per whitelist entry. The Scheduler tick walks local_repo
+ifaces, fires the pull on a detached thread when cadence elapses.
+Failures logged, never block — the next tick retries.
+
+Operator perspective: drop the external cron, declare cadence once
+in the .prc, fleet-deploy without a separate stretchy contract.
+
+777 / 0.
+
+### Phase 38f: `agentic on` for codex_cli / claude_cli
+
+`Iface::LlmAgentic.run` now dispatches by provider:
+
+- **HTTP (anthropic)** — existing `/v1/messages` tools loop.
+- **Subprocess (codex_cli / claude_cli)** — single persistent
+  process per agentic block, JSONL over stdin/stdout:
+
+      in:  {"role":"user","content":"<prompt>","tools":[...],"system":"..."}
+      out: {"type":"item.completed","item":{"type":"message",...}}      → text
+      out: {"type":"item.completed","item":{"type":"function_call",...}}→ tool
+      in:  {"type":"function_call_output","call_id":"...","output":"..."}
+      out: {"type":"turn.completed","usage":{...},"stop_reason":"..."}  → end
+
+Same dispatcher closure used by both transports — tool dispatch
+goes through the orchestrator's existing CallRunner. Per-run token
+usage accumulator (Phase 38a) sees both transports. Validator +
+`execute_agentic_block` allow-list now includes the subprocess
+providers; OpenAI HTTP function-calling deferred (different shape).
+
+Recogniser methods `extract_event_text`, `extract_event_function_call`,
+`turn_completed?` are split out so the JSONL shape can be widened
+when the real CLI protocol shifts.
+
+5 driver specs (added subprocess loop with fake CLI). 778 / 0.
+
 ## Status
 
-- 36 phases shipped, one git commit per phase
-- 671 RSpec specs, 0 failures
+- 38 phases shipped, one git commit per phase
+- 778 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

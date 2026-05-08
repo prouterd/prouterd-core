@@ -174,6 +174,11 @@ worked recipe.
   fields (`retry when output.verify eq "fail"`). `retry feedback
   output.notes into feedback` carries notes forward as
   `{{previous.feedback}}` — reflection loops, no boilerplate.
+- **Cost-aware budgets.** A top-level `prices <provider>` table
+  feeds a per-run `cost_usd` accumulator. Block-level `max-cost-usd`
+  fails the block if it crosses the cap; policy-level `retry stop-on
+  run.cost_usd gt N` breaks a runaway retry loop on cost regardless
+  of attempts left.
 - **Replay.** Re-run a finished run with the same input + same config
   commit, or start mid-pipeline from a chosen block.
 - **Pause + resume.** A `pause "<reason>"` block halts the run with
@@ -183,9 +188,11 @@ worked recipe.
   block fetch_slack ... exit` runs siblings concurrently with
   `all-required` or `all-best-effort` join semantics — routing flows
   in/out of the group as if it were one block.
-- **Fan-out.** `fan-out from issues into analyze_ticket` — one child
-  run per upstream-block's array element, lineage queryable via
-  `parent_run_id`.
+- **Fan-out with `map` / `dedupe` / `rate-limit`.** `fan-out from
+  issues into analyze_ticket` opens a sub-section: project upstream
+  fields onto child events, skip dupes inside a window keyed by
+  `thread_id`, space child enqueue via the durable jobs queue.
+  Lineage queryable via `parent_run_id`.
 - **Per-entity scoping.** `thread-id "{{event.ticket}}"` on a process
   pins each run to a stable id; list / replay / cancel queries filter
   by it.
@@ -202,6 +209,12 @@ worked recipe.
   block with `status="skipped"`, downstream still routes through.
 - **Local-repo access.** `interface local_repo` — whitelisted,
   sandboxed read-only git for code-aware pipelines. No raw shell.
+  Optional `auto-pull <duration>` keeps checkouts fresh from the
+  daemon, no external cron required.
+- **`mcp_tool <name>` sugar.** Collapses the
+  `interface shell` + `tool` + `implementation` triplet into one
+  declaration for shell-script integrations. Pure parser-time
+  expansion, no new runtime.
 - **Output contracts.** Declare expected JSON shape, validate at
   runtime, fail / retry / warn on violation.
 - **Typed artifacts.** `produces model.pkl`, `input from
@@ -246,7 +259,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 
 ## Status
 
-Production-ready core. 742 specs, 0 failures. End-to-end smoke-tested
+Production-ready core. 778 specs, 0 failures. End-to-end smoke-tested
 against real Docker, Puma, cron, and shell exec. Web console
 (`prouterd-web`) ships separately and talks to the daemon over `/v1`
 HTTP + `/v1/events` WS.
@@ -258,7 +271,7 @@ idempotency keys. Storage is SQLite, by design — single binary, no
 external DB dependency.
 
 See [CHANGELOG.md](CHANGELOG.md) for the per-version breakdown
-(37 phases shipped).
+(38 phases shipped).
 
 ## License
 

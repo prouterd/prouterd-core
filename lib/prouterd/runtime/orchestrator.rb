@@ -1056,10 +1056,11 @@ module Prouterd
         end
 
         provider = (iface.type_fields["provider"] || "").to_s
-        unless provider == "anthropic"
+        agentic_providers = %w[anthropic codex_cli claude_cli]
+        unless agentic_providers.include?(provider)
           return invalid_agentic(
             block,
-            "agentic mode currently supports provider=anthropic only (got '#{provider}'); switch the interface or `agentic off`"
+            "agentic mode supports providers #{agentic_providers.join('/')} (got '#{provider}'); switch the interface or `agentic off`"
           )
         end
 
@@ -1109,9 +1110,13 @@ module Prouterd
         end
 
         outcome = Iface::LlmAgentic.run(
+          provider:   provider,
           model:      model,
           base_url:   base_url,
           api_key:    api_key,
+          binary:     templated_iface["binary"],
+          home:       templated_iface["home"],
+          sandbox:    templated_iface["sandbox"],
           prompt:     prompt,
           system_msg: system_m,
           max_tokens: max_tokens,

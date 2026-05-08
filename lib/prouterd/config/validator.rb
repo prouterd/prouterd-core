@@ -239,15 +239,16 @@ module Prouterd
           end
           if block.agentic
             iface_ref = block.interface_ref
+            agentic_providers = %w[anthropic codex_cli claude_cli]
             if iface_ref && iface_ref.type == "llm"
-              # Runtime currently drives Anthropic only. Catch other
-              # providers at apply time so the operator doesn't ship a
-              # config that fails on first trigger.
+              # Runtime supports Anthropic HTTP + Codex/Claude CLI
+              # subprocess providers. OpenAI HTTP function-calling shape
+              # is wired in a follow-up.
               iface = @doc.interfaces.find { |i| i.type == "llm" && i.name == iface_ref.name }
               provider = iface&.type_fields&.[]("provider")
-              if iface && provider != "anthropic"
+              if iface && !agentic_providers.include?(provider)
                 @result.error(
-                  "block '#{process.name}/#{block.name}': `agentic on` requires provider 'anthropic' on the referenced interface (got '#{provider}')",
+                  "block '#{process.name}/#{block.name}': `agentic on` supports providers #{agentic_providers.join('/')} on the referenced interface (got '#{provider}')",
                   line: block.line
                 )
               end

@@ -152,6 +152,57 @@ RSpec.describe Prouterd::Iface::LlmAgentic do
     expect(tr["content"]).to include("boom")
   end
 
+  it "drives a multi-turn subprocess loop for codex_cli (tool_call → tool_result → text)" do
+    require "tempfile"
+    # Fake CLI: read all stdin lines, emit canned events to stdout. The
+    # script dispatches based on what arrives on stdin: first message
+    # triggers a function_call event; once function_call_output arrives
+    # we emit a final text + turn.completed.
+    f = Tempfile.create(["fake-agentic-", ".sh"])
+    f.write(<<~'BASH')
+      #!/bin/sh
+      # First turn: emit a tool_use, then turn.completed (no usage yet).
+      read -r _first_msg
+      printf '%s\n' '{"type":"item.completed","item":{"type":"function_call","id":"call_1","name":"search","arguments":"{\"query\":\"q\"}"}}'
+      printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}'
+      # Wait for function_call_output, then emit a final message.
+      read -r _tool_output
+      printf '%s\n' '{"type":"item.completed","item":{"type":"message","content":[{"type":"text","text":"Done."}]}}'
+      printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":15,"output_tokens":3},"stop_reason":"end_turn"}'
+    BASH
+    f.close
+    File.chmod(0o755, f.path)
+
+    tool = Prouterd::Config::AST::Tool.new(name: "search", line: 1)
+    tool.args.replace(%w[query])
+    dispatched = []
+    dispatcher = ->(name:, input:) {
+      dispatched << [name, input]
+      { output_json: { "hits" => 3 } }
+    }
+
+    outcome = described_class.run(
+      provider: "codex_cli", model: "gpt-5-codex",
+      binary: f.path, home: nil, sandbox: nil,
+      prompt: "find x", system_msg: "be brief",
+      max_tokens: 256, max_turns: 5,
+      tools: [tool], dispatcher: dispatcher,
+      timeout_ms: 5_000
+    )
+
+    expect(outcome[:ok]).to be true
+    out = outcome[:output_json]
+    expect(out["text"]).to eq("Done.")
+    expect(out["stop_reason"]).to eq("end_turn")
+    expect(out["tool_calls"].length).to eq(1)
+    expect(out["tool_calls"].first["name"]).to eq("search")
+    expect(out["tool_calls"].first["input"]).to eq("query" => "q")
+    expect(dispatched).to eq([["search", { "query" => "q" }]])
+    # Both turns' usage summed.
+    expect(out["usage"]).to eq("input_tokens" => 25, "output_tokens" => 8)
+    File.unlink(f.path)
+  end
+
   it "surfaces an HTTP non-2xx as llm_error without leaking the body" do
     error_body = { "error" => { "type" => "overloaded", "message" => "too many requests" } }
     allow(Prouterd::Iface::HttpClient).to receive(:request) do |**_|

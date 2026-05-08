@@ -48,9 +48,10 @@ module Prouterd
         containers = sweep_orphan_containers
 
         if (runs + steps + jobs + containers).positive?
-          @logger.info("recovery: swept abandoned state on boot",
-                       requeued_jobs: jobs, failed_runs: runs, failed_steps: steps,
-                       containers_killed: containers, lock_timeout_s: @lock_timeout)
+          @logger.notice("swept abandoned state on boot",
+                         facility: "RECOV", mnemonic: "SWEPT",
+                         requeued_jobs: jobs, failed_runs: runs, failed_steps: steps,
+                         containers_killed: containers, lock_timeout_s: @lock_timeout)
         end
 
         Result.new(runs_swept: runs, steps_swept: steps, containers_killed: containers)
@@ -179,7 +180,8 @@ module Prouterd
         end
         kill_count
       rescue StandardError => e
-        @logger.warn("recovery: orphan-container sweep failed",
+        @logger.warn("orphan-container sweep failed",
+                     facility: "RECOV", mnemonic: "ORPHAN_FAIL",
                      error: e.class.name, message: e.message)
         0
       end

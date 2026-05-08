@@ -13,25 +13,32 @@ module Prouterd
       STARTUP = "startup".freeze
 
       attr_reader :db
+      attr_accessor :logger
 
-      def initialize(db)
+      def initialize(db, logger: nil)
         @db = db
         @configs = Storage::Repositories::Configs.new(db)
+        @logger = logger || Prouterd::NullLogger.new
       end
 
       # Persist a candidate as a new commit and update the running pointer.
       # Returns the saved Commit. Caller must have validated the document.
       def commit(document, author: nil, message: nil)
         rendered = Config::Renderer.render(document)
-        @db.transaction do
-          commit = @configs.save_commit(
+        committed = @db.transaction do
+          c = @configs.save_commit(
             rendered_config: rendered,
             author: author,
             message: message
           )
-          @configs.set_pointer(RUNNING, commit.id)
-          commit
+          @configs.set_pointer(RUNNING, c.id)
+          c
         end
+        @logger.notice("running config applied",
+                       facility: "CONFIG", mnemonic: "APPLIED",
+                       commit_id: committed.id, author: author,
+                       message: message, bytes: rendered.bytesize)
+        committed
       end
 
       # Bless the running commit as the startup configuration. Returns the
@@ -41,7 +48,11 @@ module Prouterd
         raise ConfigStoreError, "no running config to save" unless running
 
         @configs.set_pointer(STARTUP, running.commit_id)
-        @configs.get_commit(running.commit_id)
+        commit = @configs.get_commit(running.commit_id)
+        @logger.notice("startup config saved",
+                       facility: "CONFIG", mnemonic: "SAVED",
+                       commit_id: commit&.id)
+        commit
       end
 
       # Move the running pointer back to a previous commit. Does NOT delete
@@ -51,6 +62,9 @@ module Prouterd
         raise ConfigStoreError, "no such commit #{commit_id}" unless commit
 
         @configs.set_pointer(RUNNING, commit_id)
+        @logger.notice("running config rolled back",
+                       facility: "CONFIG", mnemonic: "ROLLBACK",
+                       commit_id: commit_id)
         commit
       end
 

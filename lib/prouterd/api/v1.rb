@@ -392,7 +392,8 @@ module Prouterd
               Runner::DockerStop.force_stop(container)
               killed << cid
             rescue StandardError => e
-              @logger.warn("v1: cancel container failed",
+              @logger.warn("cancel: container kill failed",
+                           facility: "API", mnemonic: "CANCEL_KILL_FAIL",
                            run_uid: run.uid, container: cid,
                            error: e.class.name, message: e.message)
             end

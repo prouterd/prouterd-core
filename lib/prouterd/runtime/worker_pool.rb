@@ -37,7 +37,9 @@ module Prouterd
       end
 
       def run
-        @logger.info("worker-pool: starting", workers: @workers)
+        @logger.info("worker-pool starting",
+                     facility: "WORK", mnemonic: "STARTING",
+                     workers: @workers)
         @workers.times do |i|
           @threads << Thread.new { worker_loop("#{@worker_id_prefix}-#{i}") }
         end
@@ -61,7 +63,8 @@ module Prouterd
               sleep POLL_INTERVAL
             end
           rescue StandardError => e
-            @logger.error("worker-pool: claim error",
+            @logger.error("claim error",
+                          facility: "WORK", mnemonic: "CLAIM_ERR",
                           worker: worker_id, error: e.class.name, message: e.message)
             sleep POLL_INTERVAL
           end
@@ -99,7 +102,8 @@ module Prouterd
         orchestrator.execute_run(run, document, **kwargs)
         jobs.complete(job.id)
       rescue StandardError => e
-        @logger.error("worker-pool: run crashed",
+        @logger.error("run crashed",
+                      facility: "WORK", mnemonic: "RUN_CRASHED",
                       worker: worker_id, run_id: job.run_id,
                       error: e.class.name, message: e.message)
         runs_repo&.update_run(

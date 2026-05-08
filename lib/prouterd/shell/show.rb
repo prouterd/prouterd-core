@@ -29,7 +29,7 @@ module Prouterd
         when "version"           then show_version(out)
         when "status"            then show_status(session, out)
         when "clock"             then show_clock(out)
-        when "logging"           then show_logging(out)
+        when "logging"           then show_logging(rest, out)
         when "history"           then show_history(out)
         when "running-config"    then show_running(session, out)
         when "candidate-config"  then show_candidate(session, out)
@@ -106,14 +106,59 @@ module Prouterd
         out.puts Time.now.utc.strftime("%H:%M:%S.%3N UTC %a %b %e %Y")
       end
 
-      def show_logging(out)
-        level = ENV["PROUTERD_LOG_LEVEL"] || "info"
-        capture_cap = ENV["PROUTERD_LOG_CAPTURE_BYTES"] || "1048576"
-        out.puts "Logging configuration:"
-        out.puts "  level:        #{level} (override via PROUTERD_LOG_LEVEL)"
-        out.puts "  format:       <ts> <LEVEL> prouterd: <message> k=v ..."
-        out.puts "  destination:  stdout (capture via journald / docker logs / k8s sidecar)"
-        out.puts "  capture cap:  #{capture_cap} bytes per container stream (override via PROUTERD_LOG_CAPTURE_BYTES)"
+      # `show logging` with no args prints the configuration summary.
+      # With any of `last <N>`, `severity <0-7>`, `facility <NAME>` it
+      # tails the in-memory ring buffer (Prouterd::Logger.ring) — same
+      # buffer the daemon writes to as it emits the structured log lines. The
+      # ring is process-local and lossy; for durable audit, capture
+      # stdout via journald/docker logs.
+      def show_logging(rest, out)
+        if rest.empty?
+          level = ENV["PROUTERD_LOG_LEVEL"] || "info"
+          capture_cap = ENV["PROUTERD_LOG_CAPTURE_BYTES"] || "1048576"
+          ring = Prouterd::Logger.ring
+          out.puts "Logging configuration:"
+          out.puts "  level:        #{level} (override via PROUTERD_LOG_LEVEL)"
+          out.puts "  format:       <ts>: %FACILITY-SEV-MNEMONIC: msg k=v ..."
+          out.puts "  destination:  stdout (capture via journald / docker logs / k8s sidecar)"
+          out.puts "  capture cap:  #{capture_cap} bytes per container stream (override via PROUTERD_LOG_CAPTURE_BYTES)"
+          out.puts "  ring buffer:  #{ring.tail.length} entries cached for 'show logging last <N>'"
+          return
+        end
+
+        n = nil
+        severity = nil
+        facility = nil
+        i = 0
+        while i < rest.length
+          case rest[i]
+          when "last"
+            raise CommandError, "syntax: show logging [last <N>] [severity <0-7>] [facility <NAME>]" unless rest[i + 1]
+            n = Integer(rest[i + 1]) rescue (raise CommandError, "last: '#{rest[i + 1]}' is not an integer")
+            i += 2
+          when "severity"
+            raise CommandError, "syntax: show logging [last <N>] [severity <0-7>] [facility <NAME>]" unless rest[i + 1]
+            severity = Integer(rest[i + 1]) rescue (raise CommandError, "severity: '#{rest[i + 1]}' is not an integer 0-7")
+            unless (0..7).cover?(severity)
+              raise CommandError, "severity must be 0-7 (0=emergency, 7=debug)"
+            end
+            i += 2
+          when "facility"
+            raise CommandError, "syntax: show logging [last <N>] [severity <0-7>] [facility <NAME>]" unless rest[i + 1]
+            facility = rest[i + 1].to_s.upcase
+            i += 2
+          else
+            raise CommandError, "syntax: show logging [last <N>] [severity <0-7>] [facility <NAME>]"
+          end
+        end
+
+        n ||= 50
+        rows = Prouterd::Logger.ring.tail(n, severity: severity, facility: facility)
+        if rows.empty?
+          out.puts "(no log entries match — ring is empty or filters too tight)"
+          return
+        end
+        rows.each { |entry| out.puts entry[:line] }
       end
 
       def show_history(out)

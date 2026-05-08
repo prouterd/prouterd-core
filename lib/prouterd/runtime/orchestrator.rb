@@ -167,6 +167,10 @@ module Prouterd
         seed = JSON.parse(run.context_json || "{}")
         seed[block.name] = output_json
         @runs.update_run(run.id, status: "running", context_json: JSON.dump(seed))
+        @logger.notice("run resumed",
+                       facility: "RUN", mnemonic: "RESUMED",
+                       run_uid: run.uid, process: run.process_name,
+                       block: block.name)
 
         downstream = downstream_blocks(process, block.name)
         if downstream.empty?
@@ -1360,6 +1364,12 @@ module Prouterd
           # Resolved value may be nil if the host env var is unset; we still
           # forward an empty string so the container side can detect absence
           # without crashing on missing-key.
+          if value.nil? || value.to_s.empty?
+            @logger.warn("secret resolved to empty value",
+                         facility: "SECRET", mnemonic: "MISSING",
+                         secret: secret_name, source: secret.source_type,
+                         block: block.name, run_uid: run.uid)
+          end
           env[secret_name] = value.to_s
         end
         # Interface-declared auth secret — outbound callers (HttpCaller,
@@ -1450,6 +1460,28 @@ module Prouterd
           error_summary: error
         )
         @events.publish(:run_updated, run: finalized) if finalized
+
+        # Daemon-level run-completion log line. Per-run system_logs in
+        # the DB carry the full timeline; this is the single line the
+        # operator sees on stdout / `show logging` when grepping for
+        # "what's recently failed".
+        if finalized
+          mnemonic = case status
+                     when "success"   then "COMPLETED"
+                     when "failed"    then "FAILED"
+                     when "canceled"  then "CANCELED"
+                     else                  "DONE"
+                     end
+          severity_method = (status == "failed") ? :error : :info
+          @logger.public_send(
+            severity_method, "run #{status}",
+            facility: "RUN", mnemonic: mnemonic,
+            run_uid: run.uid, process: run.process_name,
+            duration_ms: finalized.duration_ms,
+            error: error
+          )
+        end
+
         finalized
       end
 
@@ -1508,6 +1540,10 @@ module Prouterd
           run.id,
           status: "paused"
         )
+        @logger.notice("run paused",
+                       facility: "RUN", mnemonic: "PAUSED",
+                       run_uid: run.uid, process: run.process_name,
+                       block: block.name, reason: block.pause_reason)
         @events.publish(:run_updated, run: paused) if paused
         @events.publish(:step_updated, step: step, run_id: run.id, run_uid: run.uid) if step
         paused

@@ -195,6 +195,42 @@ RSpec.describe "Phase 18 router-CLI compatibility" do
       expect(out).to include("PROUTERD_LOG_LEVEL")
     end
 
+    it "show logging last N tails the in-memory ring buffer" do
+      Prouterd::Logger.build(StringIO.new).info("greeting",
+                                                facility: "TEST", mnemonic: "HELLO",
+                                                user: "alice")
+      _, out, err = drive("enable\nshow logging last 5")
+      expect(err).to be_empty
+      expect(out).to match(/%TEST-6-HELLO: greeting user=alice/)
+    end
+
+    it "show logging severity filters by level" do
+      Prouterd::Logger.build(StringIO.new).debug("noisy",
+                                                 facility: "TEST", mnemonic: "DBG")
+      Prouterd::Logger.build(StringIO.new).error("loud",
+                                                  facility: "TEST", mnemonic: "ERR")
+      _, out, err = drive("enable\nshow logging last 50 severity 3")
+      expect(err).to be_empty
+      expect(out).to include("%TEST-3-ERR")
+      expect(out).not_to include("%TEST-7-DBG")
+    end
+
+    it "show logging facility filters by facility name" do
+      Prouterd::Logger.build(StringIO.new).info("a",
+                                                facility: "ALPHA", mnemonic: "A")
+      Prouterd::Logger.build(StringIO.new).info("b",
+                                                facility: "BETA", mnemonic: "B")
+      _, out, err = drive("enable\nshow logging last 50 facility alpha")
+      expect(err).to be_empty
+      expect(out).to include("%ALPHA-6-A")
+      expect(out).not_to include("%BETA-6-B")
+    end
+
+    it "show logging rejects bad severity" do
+      _, _, err = drive("enable\nshow logging last 10 severity 99")
+      expect(err).to include("severity must be 0-7")
+    end
+
     it "show history works (or politely declines without Reline)" do
       _, out, err = drive("enable\nshow history")
       expect(err).to be_empty

@@ -349,6 +349,9 @@ module Prouterd
               block process P B        single block detail
               routes [process N]       global routes (and optionally per-process)
               diff                     candidate vs running diff
+              logging                  logging configuration summary
+              logging last <N> [severity <0-7>] [facility <NAME>]
+                                       tail the in-memory log ring buffer
           HELP
           :handled
         end

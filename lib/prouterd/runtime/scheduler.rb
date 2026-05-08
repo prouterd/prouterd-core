@@ -70,7 +70,9 @@ module Prouterd
             tick
             sleep(@tick_seconds)
           rescue StandardError => e
-            @logger.error("scheduler: tick error", error: e.class.name, message: e.message)
+            @logger.error("tick error",
+                          facility: "SCHED", mnemonic: "TICK_ERR",
+                          error: e.class.name, message: e.message)
           end
         end
       end
@@ -131,7 +133,8 @@ module Prouterd
           Util::DurationParser.parse(cadence)
         rescue ArgumentError
           unless @auto_pull_warned&.[](iface.name)
-            @logger.warn("scheduler: invalid auto-pull duration",
+            @logger.warn("invalid auto-pull duration",
+                         facility: "SCHED", mnemonic: "AUTOPULL_BAD",
                          interface: iface.name, cadence: cadence)
             (@auto_pull_warned ||= {})[iface.name] = true
           end
@@ -154,14 +157,20 @@ module Prouterd
         whitelist.each do |repo|
           repo_dir = File.expand_path(repo, File.expand_path(root))
           unless File.directory?(File.join(repo_dir, ".git"))
-            @logger.warn("auto-pull: not a git checkout", interface: iface.name, repo: repo)
+            @logger.warn("auto-pull skipped: not a git checkout",
+                         facility: "SCHED", mnemonic: "NOT_GIT",
+                         interface: iface.name, repo: repo)
             next
           end
           out, err, status = Open3.capture3("git", "-C", repo_dir, "pull", "--ff-only")
           if status.success?
-            @logger.info("auto-pull: ok", interface: iface.name, repo: repo, summary: out.lines.first.to_s.chomp)
+            @logger.info("auto-pull ok",
+                         facility: "SCHED", mnemonic: "PULL_OK",
+                         interface: iface.name, repo: repo,
+                         summary: out.lines.first.to_s.chomp)
           else
-            @logger.warn("auto-pull: failed",
+            @logger.warn("auto-pull failed",
+                         facility: "SCHED", mnemonic: "PULL_FAILED",
                          interface: iface.name, repo: repo,
                          exit: status.exitstatus,
                          stderr: err.lines.first.to_s.chomp)
@@ -169,6 +178,7 @@ module Prouterd
         end
       rescue StandardError => e
         @logger.error("auto-pull error",
+                      facility: "SCHED", mnemonic: "PULL_ERR",
                       interface: iface.name, error: e.class.name, message: e.message)
       end
 
@@ -178,7 +188,8 @@ module Prouterd
 
         unless self.class.fugit_available?
           unless @fugit_warned
-            @logger.warn("scheduler: 'fugit' gem not installed; cron interfaces disabled (gem install fugit)")
+            @logger.warn("'fugit' gem not installed; cron interfaces disabled (gem install fugit)",
+                         facility: "SCHED", mnemonic: "FUGIT_MISSING")
             @fugit_warned = true
           end
           return nil
@@ -191,7 +202,8 @@ module Prouterd
         expr = timezone ? "#{schedule} #{timezone}" : schedule
         Fugit.parse_cron(expr)
       rescue StandardError
-        @logger.warn("scheduler: invalid cron expression",
+        @logger.warn("invalid cron expression",
+                     facility: "SCHED", mnemonic: "CRON_INVALID",
                      interface: iface.name, schedule: iface.type_fields["schedule"].inspect)
         nil
       end
@@ -199,12 +211,15 @@ module Prouterd
       def dispatch(iface, document, fired_at)
         route = document.global_routes.find { |r| r.interface_name == iface.name }
         unless route
-          @logger.warn("scheduler: cron has no global route — skipping fire", interface: iface.name)
+          @logger.warn("cron has no global route — skipping fire",
+                       facility: "SCHED", mnemonic: "CRON_UNROUTED",
+                       interface: iface.name)
           return
         end
         process = document.processes.find { |p| p.name == route.process_name }
         unless process
-          @logger.warn("scheduler: cron targets unknown process",
+          @logger.warn("cron targets unknown process",
+                       facility: "SCHED", mnemonic: "CRON_UNKNOWN_PROC",
                        interface: iface.name, process: route.process_name)
           return
         end
@@ -224,7 +239,8 @@ module Prouterd
           commit_id: @store.running_commit&.id
         )
         @metrics&.increment(:cron_fires_total, interface: iface.name)
-        @logger.info("scheduler: fired cron",
+        @logger.info("fired cron",
+                     facility: "SCHED", mnemonic: "CRON_FIRED",
                      interface: iface.name, run_id: run.uid, fired_at: fired_at.utc.iso8601(0))
 
         @jobs.enqueue(run_id: run.id, kind: "execute")

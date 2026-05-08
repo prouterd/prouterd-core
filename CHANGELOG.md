@@ -1694,10 +1694,40 @@ when the real CLI protocol shifts.
 
 5 driver specs (added subprocess loop with fake CLI). 778 / 0.
 
+### Phase 38h: syslog-style daemon logging
+
+Replaces the ad-hoc `<ts> LEVEL prouterd: <msg> k=v` format with
+the canonical syslog shape:
+
+    May  8 14:23:01.234: %DAEMON-6-STARTING: daemon starting bind=127.0.0.1 port=8080
+
+Every emit() supplies a `facility` (uppercase grep key — `DAEMON`,
+`RUN`, `STORE`, `SCHED`, `WORK`, `WEBHOOK`, `RECOV`, `CONFIG`,
+`SECRET`, `API`) and a `mnemonic` (short uppercase tag — `STARTING`,
+`HMAC_FAIL`, `ACCEPTED`, `RUN_CRASHED`, etc). Severity is the standard
+0–7 syslog scale; new `notice` (5) level added for config / lifecycle
+events that aren't errors but matter.
+
+Process-singleton ring buffer caches the last 1000 entries.
+`show logging last <N> [severity <0-7>] [facility <NAME>]` reads from
+it — same surface as router-CLI `show logging`. The same line goes to stdout
+for journald / `docker logs` capture.
+
+New lifecycle/security log lines: `WEBHOOK-ACCEPTED`,
+`WEBHOOK-HMAC_FAIL`, `RUN-COMPLETED`, `RUN-FAILED`, `RUN-CANCELED`,
+`RUN-PAUSED`, `RUN-RESUMED`, `SECRET-MISSING`, `CONFIG-APPLIED`,
+`CONFIG-SAVED`, `CONFIG-ROLLBACK`. Existing 24 callsites migrated to
+the new format with stable facility/mnemonic pairs.
+
+Mnemonic catalog at `docs/log-messages.md` documents every emitted
+line: severity, format template, meaning, action.
+
+794 / 0.
+
 ## Status
 
 - 38 phases shipped, one git commit per phase
-- 778 RSpec specs, 0 failures
+- 794 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

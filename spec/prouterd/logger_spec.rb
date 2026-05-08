@@ -5,37 +5,47 @@ RSpec.describe Prouterd::Logger do
   let(:io) { StringIO.new }
   let(:log) { described_class.build(io, level: "debug") }
 
-  it "writes a single line per call with timestamp + level + message" do
-    log.info("hello")
+  it "writes a single syslog-style line per call: <ts>: %<FAC>-<SEV>-<MNEMO>: <msg>" do
+    log.info("hello", facility: "TEST", mnemonic: "HELLO")
     line = io.string
-    expect(line).to match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z INFO {2}prouterd: hello\n\z/)
+    expect(line).to match(/\A\w{3} +\d{1,2} \d{2}:\d{2}:\d{2}\.\d{3}: %TEST-6-HELLO: hello\n\z/)
   end
 
   it "renders kv-pairs after the message" do
-    log.warn("worker stalled", worker: "w-01", run_id: "run_123", attempts: 3)
-    expect(io.string).to include("worker stalled worker=w-01 run_id=run_123 attempts=3")
+    log.warn("worker stalled", facility: "WORK", mnemonic: "STALL",
+             worker: "w-01", run_id: "run_123", attempts: 3)
+    expect(io.string).to include("%WORK-4-STALL: worker stalled worker=w-01 run_id=run_123 attempts=3")
   end
 
   it "quotes values containing spaces or =" do
-    log.info("x", path: "/tmp/with space", expr: "a=b")
+    log.info("x", facility: "T", mnemonic: "Q", path: "/tmp/with space", expr: "a=b")
     expect(io.string).to include("path=\"/tmp/with space\"")
     expect(io.string).to include("expr=\"a=b\"")
   end
 
   it "honors level — debug suppressed at info" do
     quiet = described_class.build(io, level: "info")
-    quiet.debug("hidden")
-    quiet.info("shown")
+    quiet.debug("hidden", facility: "T", mnemonic: "D")
+    quiet.info("shown",   facility: "T", mnemonic: "I")
     expect(io.string).not_to include("hidden")
     expect(io.string).to include("shown")
   end
 
   it "with(...) merges baseline context into every call" do
     sub = log.with(run_id: "run_42")
-    sub.info("started")
-    sub.error("crashed", reason: "oom")
+    sub.info("started", facility: "RUN", mnemonic: "STARTED")
+    sub.error("crashed", facility: "RUN", mnemonic: "CRASHED", reason: "oom")
     expect(io.string).to include("started run_id=run_42")
     expect(io.string).to include("crashed run_id=run_42 reason=oom")
+  end
+
+  it "appends every entry to the process-global ring buffer for `show logging`" do
+    Prouterd::Logger.ring.tail(1000) # drain residue from earlier tests
+    log.info("a", facility: "RUN", mnemonic: "A")
+    log.warn("b", facility: "RUN", mnemonic: "B")
+    rows = Prouterd::Logger.ring.tail(50, facility: "RUN")
+    expect(rows.last(2).map { |e| e[:mnemonic] }).to eq(%w[A B])
+    expect(rows.last(2).map { |e| e[:severity] }).to eq([6, 4])
   end
 
   it "NullLogger is a no-op safe to call" do

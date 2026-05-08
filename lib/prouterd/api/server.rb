@@ -58,11 +58,14 @@ module Prouterd
           ctx.cert = @ssl_cert
           ctx.key  = @ssl_key
           server.add_ssl_listener(@bind, @port, ctx)
-          @logger.info("daemon: listening (TLS)",
+          @logger.info("listening (TLS)",
+                       facility: "DAEMON", mnemonic: "LISTENING",
                        url: "https://#{@bind}:#{@port}", cert: @ssl_cert)
         else
           server.add_tcp_listener(@bind, @port)
-          @logger.info("daemon: listening", url: "http://#{@bind}:#{@port}")
+          @logger.info("listening",
+                       facility: "DAEMON", mnemonic: "LISTENING",
+                       url: "http://#{@bind}:#{@port}")
         end
 
         install_signal_handlers(server)
@@ -72,12 +75,14 @@ module Prouterd
 
         @stop_pipe_r.read(1)
 
-        @logger.info("daemon: shutdown signal received; refusing new state-changing requests")
+        @logger.notice("shutdown signal received; refusing new state-changing requests",
+                       facility: "DAEMON", mnemonic: "SHUTDOWN_SIGNAL")
         @app.stop_accepting if @app.respond_to?(:stop_accepting)
 
         drain_in_flight if @in_flight
 
-        @logger.info("daemon: stopping HTTP listener")
+        @logger.notice("stopping HTTP listener",
+                       facility: "DAEMON", mnemonic: "LISTENER_STOP")
         server.stop(true)
       end
 
@@ -95,13 +100,16 @@ module Prouterd
 
           if Time.now >= deadline
             uids = @in_flight.in_flight_uids
-            @logger.warn("daemon: drain timed out",
+            @logger.warn("drain timed out",
+                         facility: "DAEMON", mnemonic: "DRAIN_TIMEOUT",
                          remaining: remaining, run_uids: uids.join(","))
             break
           end
 
           if (Time.now.to_i % 5).zero?
-            @logger.info("daemon: draining in-flight runs", remaining: remaining)
+            @logger.info("draining in-flight runs",
+                         facility: "DAEMON", mnemonic: "DRAINING",
+                         remaining: remaining)
           end
           sleep 0.2
         end

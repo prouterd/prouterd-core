@@ -47,9 +47,12 @@ module Prouterd
         end
 
         logger = Prouterd::Logger.build(@stdout)
-        logger.info("daemon: starting", bind: opts[:bind], port: opts[:port],
-                                        db: opts[:db_path], workers: opts[:workers],
-                                        runner: opts[:runner_kind])
+        store.logger = logger
+        logger.info("daemon starting",
+                    facility: "DAEMON", mnemonic: "STARTING",
+                    bind: opts[:bind], port: opts[:port],
+                    db: opts[:db_path], workers: opts[:workers],
+                    runner: opts[:runner_kind])
 
         in_flight = Prouterd::Runtime::InFlightRegistry.new
         metrics = Prouterd::API::Metrics.new(in_flight: in_flight)
@@ -58,7 +61,8 @@ module Prouterd
 
         admin_token = ENV["PROUTERD_ADMIN_TOKEN"]
         if admin_token.nil? || admin_token.empty?
-          logger.warn("daemon: PROUTERD_ADMIN_TOKEN not set; /v1/* endpoints are open")
+          logger.warn("PROUTERD_ADMIN_TOKEN not set; /v1/* endpoints are open",
+                      facility: "DAEMON", mnemonic: "OPEN_AUTH")
         end
 
         # Crash recovery: any run/step left in `running`/`queued` from a previous
@@ -100,7 +104,7 @@ module Prouterd
           app.stop_storage_probe
           scheduler.stop
           worker_pool.stop
-          logger.info("daemon: stopped")
+          logger.info("daemon stopped", facility: "DAEMON", mnemonic: "STOPPED")
         end
         0
       ensure

@@ -69,6 +69,9 @@ module Prouterd
           raw_body = read_raw_body(request)
           secret = resolve_secret(document, sig.secret_name)
           if secret.nil? || secret.empty?
+            @logger.error("hmac-sha256 secret unresolved",
+                          facility: "SECRET", mnemonic: "MISSING",
+                          interface: interface_name, secret: sig.secret_name)
             return json_error(500, "hmac-sha256: secret '#{sig.secret_name}' not resolved")
           end
           provided = request.get_header("HTTP_" + sig.header.upcase.tr("-", "_")).to_s
@@ -77,6 +80,9 @@ module Prouterd
           expected = OpenSSL::HMAC.hexdigest("sha256", secret, raw_body)
           unless secure_equal?(provided.downcase, expected.downcase)
             @metrics&.increment(:webhooks_received_total, interface: interface_name, code: 401)
+            @logger.warn("hmac signature mismatch",
+                         facility: "WEBHOOK", mnemonic: "HMAC_FAIL",
+                         interface: interface_name, header: sig.header)
             return json_error(401, "invalid hmac signature")
           end
         end
@@ -116,6 +122,9 @@ module Prouterd
           @jobs.enqueue(run_id: run.id, kind: "execute")
         end
         @metrics&.increment(:webhooks_received_total, interface: interface_name, code: 202)
+        @logger.info("webhook accepted",
+                     facility: "WEBHOOK", mnemonic: "ACCEPTED",
+                     interface: interface_name, process: process.name, run_uid: run.uid)
 
         body = JSON.dump(
           run_id: run.uid,

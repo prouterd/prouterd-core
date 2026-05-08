@@ -114,13 +114,17 @@ module Prouterd
             healthy = @store.db.healthy?
             if healthy && !@accepting
               @accepting = true
-              @logger.info("storage: writes recovered, accepting requests")
+              @logger.info("writes recovered, accepting requests",
+                           facility: "STORE", mnemonic: "RECOVERED")
             elsif !healthy && @accepting
               @accepting = false
-              @logger.warn("storage: writes failing, rejecting state-changing requests")
+              @logger.warn("writes failing, rejecting state-changing requests",
+                           facility: "STORE", mnemonic: "FAILING")
             end
           rescue StandardError => e
-            @logger.error("storage probe error", error: e.class.name, message: e.message)
+            @logger.error("storage probe error",
+                          facility: "STORE", mnemonic: "PROBE_ERR",
+                          error: e.class.name, message: e.message)
           end
         end
       end
@@ -173,10 +177,12 @@ module Prouterd
         # probe re-enables accepting once writes recover.
         @accepting = false
         @logger.error("storage unavailable",
+                      facility: "STORE", mnemonic: "UNAVAILABLE",
                       error: e.class.name, message: e.message)
         json_response(503, error: "storage unavailable", error_type: "storage_unavailable")
       rescue StandardError => e
-        @logger.error("API error",
+        @logger.error("internal API error",
+                      facility: "API", mnemonic: "INTERNAL",
                       error: e.class.name, message: e.message,
                       backtrace: e.backtrace.first(5).join(" | "))
         json_response(500, error: "internal server error")

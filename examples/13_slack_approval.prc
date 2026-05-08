@@ -17,13 +17,6 @@
 !      approver's choice. The original `access_request` resumes from
 !      the block immediately downstream of `wait`.
 !
-! What's needed before this works:
-!   - `interface webhook` hmac-sha256 field (planned)
-!   - `prouter resume run-by-thread <id>` (planned, ~1h after hmac)
-!
-! Until then the same shape works with a manual `prouter resume run
-! <run_uid> --value '{"decision":"approve"}'` call.
-!
 ! Setup:
 !   $ export SLACK_BOT_TOKEN="xoxb-..."           # from your Slack app
 !   $ export SLACK_SIGNING_SECRET="abc123..."     # signing secret
@@ -82,12 +75,10 @@ exit
 interface webhook slack_in
  path /slack_in
  method POST
- ! TODO once `hmac-sha256` ships on `interface webhook`:
- !   hmac-sha256 secret SLACK_SIGNING_SECRET header x-slack-signature
- !
- ! Until then guard with bearer auth from a network-side reverse
- ! proxy, or accept the small replay-risk window for a private demo:
- auth bearer secret SLACK_SIGNING_SECRET
+ ! Slack signs the body with the app's signing secret. The handler
+ ! HMAC-verifies before triggering this process; `v0=` (Slack) /
+ ! `sha256=` (GitHub) prefixes are stripped automatically.
+ hmac-sha256 secret SLACK_SIGNING_SECRET header x-slack-signature
 exit
 
 interface shell host

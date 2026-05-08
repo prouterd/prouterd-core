@@ -163,6 +163,77 @@ RSpec.describe Prouterd::API::App do
     end
   end
 
+  describe "POST /i/<webhook> with hmac-sha256 verification" do
+    let(:hmac_config) do
+      parse(<<~PRC)
+        router demo
+        exit
+        secret SLACK_SIGNING
+         source env SLACK_SIGNING
+        exit
+        interface webhook slack_in
+         path /slack_in
+         method POST
+         hmac-sha256 secret SLACK_SIGNING header x-slack-signature
+        exit
+        interface manual cli
+         no shutdown
+        exit
+        interface shell host
+        exit
+        process p
+         block ok
+          interface shell host
+          exec "true"
+         exit
+        exit
+        route interface slack_in process p
+        exit
+      PRC
+    end
+
+    before do
+      ENV["SLACK_SIGNING"] = "shh"
+      commit(hmac_config)
+      runner.default(&Prouterd::Runner::StubRunner.success)
+    end
+    after { ENV.delete("SLACK_SIGNING") }
+
+    def hex_signature(body)
+      require "openssl"
+      OpenSSL::HMAC.hexdigest("sha256", "shh", body)
+    end
+
+    it "rejects requests without the HMAC header" do
+      header "content-type", "application/json"
+      post "/i/slack_in", "{}"
+      expect(last_response.status).to eq(401)
+    end
+
+    it "rejects requests with a wrong digest" do
+      header "content-type", "application/json"
+      header "x-slack-signature", "v0=" + ("0" * 64)
+      post "/i/slack_in", "{}"
+      expect(last_response.status).to eq(401)
+    end
+
+    it "accepts requests with the correct hex digest, prefix-stripped" do
+      body = JSON.dump(type: "click")
+      header "content-type", "application/json"
+      header "x-slack-signature", "v0=" + hex_signature(body)
+      post "/i/slack_in", body
+      expect(last_response.status).to eq(202)
+    end
+
+    it "accepts requests where the header carries no `<scheme>=` prefix" do
+      body = JSON.dump(type: "click")
+      header "content-type", "application/json"
+      header "x-slack-signature", hex_signature(body)
+      post "/i/slack_in", body
+      expect(last_response.status).to eq(202)
+    end
+  end
+
   describe "async dispatch via JobQueue + WorkerPool" do
     it "returns 202 immediately and the worker pool drives the run to success" do
       commit(config_with_webhook)

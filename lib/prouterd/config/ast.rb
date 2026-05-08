@@ -159,6 +159,27 @@ module Prouterd
         end
       end
 
+      # `hmac-sha256 secret <NAME> header <header-name>` on an inbound
+      # interface — verify that requests carry a HMAC-SHA256 hex digest
+      # of the raw body in the named header, signed with the resolved
+      # secret. Body-only signing; provider-specific schemes that wrap
+      # the body with a timestamp / version prefix (Slack `v0:...`,
+      # Stripe) need a follow-up `payload_template` field — until then,
+      # operator handles the prefix at the proxy or accepts replay risk
+      # on a private deployment.
+      class HmacSignature
+        attr_accessor :algorithm, :secret_name, :header, :line
+
+        ALGORITHMS = %w[sha256].freeze
+
+        def initialize(algorithm:, secret_name:, header:, line:)
+          @algorithm = algorithm
+          @secret_name = secret_name
+          @header = header
+          @line = line
+        end
+      end
+
       class Process
         attr_accessor :name, :description, :queue_name, :shutdown, :timeout_ms,
                       :thread_id_template, :line

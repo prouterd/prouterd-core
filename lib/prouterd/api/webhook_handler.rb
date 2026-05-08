@@ -59,7 +59,29 @@ module Prouterd
           return json_error(*err) if err
         end
 
-        event = parse_body(request)
+        # HMAC-SHA256 body signature verification (Phase 38g). Reads
+        # the raw body once, computes the digest, compares against the
+        # named header. Some providers (Slack `v0=<hex>`, GitHub
+        # `sha256=<hex>`) prefix the digest with a versioned scheme tag
+        # — strip up to and including the first `=` before comparing.
+        raw_body = nil
+        if (sig = interface.type_fields["hmac-sha256"])
+          raw_body = read_raw_body(request)
+          secret = resolve_secret(document, sig.secret_name)
+          if secret.nil? || secret.empty?
+            return json_error(500, "hmac-sha256: secret '#{sig.secret_name}' not resolved")
+          end
+          provided = request.get_header("HTTP_" + sig.header.upcase.tr("-", "_")).to_s
+          provided = provided.split("=", 2).last if provided.include?("=")
+          require "openssl"
+          expected = OpenSSL::HMAC.hexdigest("sha256", secret, raw_body)
+          unless secure_equal?(provided.downcase, expected.downcase)
+            @metrics&.increment(:webhooks_received_total, interface: interface_name, code: 401)
+            return json_error(401, "invalid hmac signature")
+          end
+        end
+
+        event = parse_body(request, prefetched_body: raw_body)
         return event if event.is_a?(Array) # Already a [status, body] error tuple
 
         route = document.global_routes.find { |r| r.interface_name == interface_name }
@@ -111,13 +133,32 @@ module Prouterd
         @secret_resolver.resolve(secret)
       end
 
-      def parse_body(request)
-        raw = request.body&.read.to_s
+      def parse_body(request, prefetched_body: nil)
+        raw = prefetched_body || read_raw_body(request)
         return {} if raw.empty?
 
         JSON.parse(raw)
       rescue JSON::ParserError => e
         json_error(400, "request body is not valid JSON: #{e.message}")
+      end
+
+      def read_raw_body(request)
+        body_io = request.body
+        return "" unless body_io
+
+        # Body IO is a one-shot reader; cache the bytes so HMAC verify
+        # and JSON parse don't fight over it.
+        body_io.rewind if body_io.respond_to?(:rewind)
+        body_io.read.to_s
+      end
+
+      def secure_equal?(a, b)
+        return false if a.bytesize != b.bytesize
+
+        # constant-time comparison to avoid timing leaks on the hex
+        # digest. OpenSSL.fixed_length_secure_compare exists on Ruby
+        # 2.5+; we're on >=3.2.
+        OpenSSL.fixed_length_secure_compare(a, b)
       end
 
       def json_error(status, message, headers: {})

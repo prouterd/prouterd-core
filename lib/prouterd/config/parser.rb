@@ -335,6 +335,29 @@ module Prouterd
           secret_name = expect_env_name(line.tokens[3], "secret name")
           node.type_fields[field.storage_key] =
             AST::Auth.new(scheme: scheme, secret_name: secret_name, line: line.number)
+        when :hmac_signature
+          # `<keyword> secret <NAME> header <header-name>` — algorithm
+          # comes from the dsl_keyword itself (e.g. "hmac-sha256"
+          # → algorithm = "sha256").
+          expect_token_count(line, 5, "#{field.dsl_keyword} secret <NAME> header <header-name>")
+          unless line.tokens[1].value == "secret"
+            raise ParseError.new("expected 'secret' in #{field.dsl_keyword}", line: line.number)
+          end
+          secret_name = expect_env_name(line.tokens[2], "secret name")
+          unless line.tokens[3].value == "header"
+            raise ParseError.new("expected 'header' in #{field.dsl_keyword}", line: line.number)
+          end
+          header_name = expect_word_or_string(line.tokens[4], "header name").downcase
+          algorithm = field.dsl_keyword.sub(/\Ahmac-/, "")
+          unless AST::HmacSignature::ALGORITHMS.include?(algorithm)
+            raise ParseError.new(
+              "unsupported hmac algorithm '#{algorithm}' (allowed: #{AST::HmacSignature::ALGORITHMS.join(', ')})",
+              line: line.number
+            )
+          end
+          node.type_fields[field.storage_key] = AST::HmacSignature.new(
+            algorithm: algorithm, secret_name: secret_name, header: header_name, line: line.number
+          )
         when :command
           expect_min_tokens(line, 2, "#{field.dsl_keyword} <args...>")
           node.type_fields[field.storage_key] = line.tokens[1..].map(&:value).join(" ")

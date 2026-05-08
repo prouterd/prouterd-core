@@ -22,6 +22,8 @@ module Prouterd
                        description: "HTTP method"
         field :auth,   kind: :auth_bearer,
                        description: "auth bearer secret <NAME>"
+        field :"hmac-sha256", kind: :hmac_signature,
+                              description: "verify body via HMAC-SHA256 hex digest in <header> signed with <secret>"
 
         # The renderer consults `field.kind` to render. Auth and path are
         # rendered specially; method only emits when set non-default.
@@ -32,6 +34,15 @@ module Prouterd
               result.error(
                 "interface '#{iface.name}' references unknown secret '#{secret_name}'",
                 line: iface.type_fields["auth"].line
+              )
+            end
+          end
+          if iface.type_fields["hmac-sha256"]
+            secret_name = iface.type_fields["hmac-sha256"].secret_name
+            unless document.secrets.any? { |s| s.name == secret_name }
+              result.error(
+                "interface '#{iface.name}' references unknown secret '#{secret_name}' (hmac-sha256)",
+                line: iface.type_fields["hmac-sha256"].line
               )
             end
           end

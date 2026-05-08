@@ -107,6 +107,8 @@ module Prouterd
           emit(level, "#{field.dsl_keyword} #{value}")
         when :auth_bearer
           emit(level, "#{field.dsl_keyword} #{value.scheme} secret #{value.secret_name}")
+        when :hmac_signature
+          emit(level, "#{field.dsl_keyword} secret #{value.secret_name} header #{value.header}")
         when :command
           emit(level, "#{field.dsl_keyword} #{quote_string(value)}")
         when :env_pair

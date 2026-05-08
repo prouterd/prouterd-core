@@ -65,7 +65,8 @@ module Prouterd
             trigger process <name> input <file>
                                                Synchronously run a process for the given event
             replay  run <uid>                  Re-execute a previous run with the same event + commit
-            resume  run <uid> [--value <json>] Resume a paused run with the given output value
+            resume  run <uid>            [--value <json>] Resume a paused run with the given output value
+            resume  run-by-thread <id>   [--value <json>] Resume the latest paused run carrying that thread_id
             cancel  run <uid>                  Soft-cancel an in-flight run
             trace   event <file>               Static routing analysis (no execution)
             diff    <file>                     Show changes if file were applied vs running config
@@ -452,12 +453,21 @@ module Prouterd
       # `prouter resume run <uid> [--value <json>]` — resume a paused
       # run, supplying the JSON output for the paused block. Defaults
       # to {} if --value is omitted.
+      #
+      # `prouter resume run-by-thread <thread_id> [--value <json>]` —
+      # resolve to the most recent paused run carrying that thread_id
+      # (Phase 38h). Useful when an external system (Slack interaction
+      # webhook, signed callback) only knows the thread_id, not the
+      # internal run uid. Errors with a clear message if no paused run
+      # matches.
       def cmd_resume
-        unless @argv.length >= 2 && @argv[0] == "run"
+        unless @argv.length >= 2 && %w[run run-by-thread].include?(@argv[0])
           @stderr.puts "prouter resume: usage: resume run <uid> [--value <json>] [--db PATH] [--runner KIND]"
+          @stderr.puts "                or:    resume run-by-thread <thread_id> [--value <json>]"
           return 2
         end
-        run_uid = @argv[1]
+        mode = @argv[0]
+        key  = @argv[1]
         @argv = @argv[2..]
 
         value = nil
@@ -485,11 +495,18 @@ module Prouterd
         return 1 if runner == :error
 
         repo = Prouterd::Storage::Repositories::Runs.new(store.db)
-        run = repo.get_run_by_uid(run_uid)
+        run =
+          if mode == "run"
+            repo.get_run_by_uid(key)
+          else
+            paused = repo.list_runs(limit: 200, status: "paused", thread_id: key)
+            paused.first  # list_runs orders DESC by id → first is latest
+          end
         unless run
-          @stderr.puts "prouter resume: no such run '#{run_uid}'"
+          @stderr.puts "prouter resume: no #{mode == 'run' ? 'run' : 'paused run for thread'} '#{key}'"
           return 1
         end
+        run_uid = run.uid
         unless run.process_config_commit_id
           @stderr.puts "prouter resume: run '#{run_uid}' has no pinned commit; cannot resume"
           return 1

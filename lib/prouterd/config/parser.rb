@@ -184,6 +184,12 @@ module Prouterd
           # result. Reuses the route-match parser by skipping the leading
           # `retry` token and treating `when` as if it were `match`.
           node.retry_when_matches << parse_match_at(line, 1)
+        when "stop-on"
+          # `retry stop-on <path> <op> <value>` — kill switch evaluated
+          # against current run state (run.cost_usd, etc.) after every
+          # attempt. Reuses the route-match parser by pretending the
+          # leading `retry` token is the section keyword.
+          node.retry_stop_matches << parse_match_at(line, 1)
         when "feedback"
           # `retry feedback <output-path> into <local>` — copy a path out
           # of the failed attempt's output_json into the next attempt's
@@ -559,6 +565,11 @@ module Prouterd
           value = expect_integer(line.tokens[1], "tool-call-limit")
           raise ParseError.new("tool-call-limit must be >= 1", line: line.number) if value < 1
           node.tool_call_limit = value
+        when "max-cost-usd"
+          expect_token_count(line, 2, "max-cost-usd <decimal>")
+          value = expect_decimal(line.tokens[1], "max-cost-usd")
+          raise ParseError.new("max-cost-usd must be > 0", line: line.number) unless value.positive?
+          node.max_cost_usd = value
         when "fan-out"
           # `fan-out from <path> into <process>` — after this block
           # succeeds, walk the named array path in output_json and

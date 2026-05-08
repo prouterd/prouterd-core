@@ -82,7 +82,7 @@ module Prouterd
       class Policy
         attr_accessor :name, :retry_attempts, :retry_backoff, :retry_initial_delay_ms,
                       :retry_max_delay_ms, :timeout_ms, :line
-        attr_reader :retry_when_matches, :retry_feedbacks
+        attr_reader :retry_when_matches, :retry_feedbacks, :retry_stop_matches
 
         BACKOFF_TYPES = %w[fixed linear exponential].freeze
 
@@ -107,6 +107,11 @@ module Prouterd
           # output_json, so reflection loops can fire on success too.
           @retry_when_matches = []
           @retry_feedbacks = []
+          # `retry stop-on <path> <op> <value>` — kill switches checked
+          # AFTER each attempt against the current run state. Path
+          # `run.cost_usd` is the canonical guard; matches force the
+          # block to terminate as failed regardless of attempts left.
+          @retry_stop_matches = []
         end
       end
 
@@ -215,7 +220,8 @@ module Prouterd
                       :timeout_ms, :retry_policy_name, :contract_name,
                       :interface_ref, :skip_when, :pause_reason,
                       :fan_out_from, :fan_out_into,
-                      :barrier_for, :barrier_join_strategy
+                      :barrier_for, :barrier_join_strategy,
+                      :max_cost_usd
         attr_reader :secret_names, :produces, :artifact_inputs, :vars
 
         # Per-call args keyed by the interface plugin's call_field
@@ -265,6 +271,10 @@ module Prouterd
           @agentic = false
           @allowed_tools = []
           @tool_call_limit = nil
+          # Per-block hard cost cap. When the per-attempt cost would
+          # push runs.cost_usd above this value, the block fails with
+          # error_type="cost_cap_exceeded".
+          @max_cost_usd = nil
         end
 
         attr_accessor :agentic, :tool_call_limit

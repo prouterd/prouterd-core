@@ -111,6 +111,90 @@ RSpec.describe "per-run token usage accumulator" do
     expect(fetched.tokens_out).to eq(500_000)
   end
 
+  it "fails the block with cost_cap_exceeded when max-cost-usd is crossed" do
+    cap_doc = Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(<<~PRC))
+      router demo
+      exit
+      prices anthropic
+       model m in 100 out 100
+      exit
+      interface llm chat
+       provider anthropic
+       model m
+      exit
+      process p
+       block ask
+        interface llm chat
+        prompt "ping"
+        max-cost-usd 0.01
+       exit
+      exit
+    PRC
+    allow(Prouterd::Iface::HttpClient).to receive(:request) do |**_|
+      Prouterd::Iface::HttpClient::Response.new(
+        status: 200, body_text: "{}", body_json: {
+          "content" => [{ "type" => "text", "text" => "x" }],
+          "model" => "m",
+          "usage" => { "input_tokens" => 1_000_000, "output_tokens" => 0 }
+        }
+      )
+    end
+
+    real_runner = Prouterd::Runner::CallRunner.new
+    orch = Prouterd::Runtime::Orchestrator.new(db: db, runner: real_runner)
+    run = orch.trigger(cap_doc, "p", input_event: {})
+    expect(run.status).to eq("failed")
+    expect(run.error_summary).to include("cost_cap_exceeded")
+  end
+
+  it "honours `retry stop-on run.cost_usd gt N` after an attempt" do
+    # Each attempt is a "successful" LLM call with fail-flagged output,
+    # so retry-when keeps firing. Each attempt also bumps cost by
+    # 1M * $1.00 / 1M = $1.00. With cap 2.50 USD, stop-on triggers
+    # before max-attempts (5) are exhausted — expect ≤ 4 attempts.
+    stop_doc = Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(<<~PRC))
+      router demo
+      exit
+      prices anthropic
+       model m in 1.0 out 0.0
+      exit
+      policy budget_aware
+       retry attempts 5
+       retry backoff fixed
+       retry initial-delay 1ms
+       retry when output.text eq "fail"
+       retry stop-on run.cost_usd gt 2.50
+      exit
+      interface llm chat
+       provider anthropic
+       model m
+      exit
+      process p
+       block ask
+        interface llm chat
+        prompt "ping"
+        retry budget_aware
+       exit
+      exit
+    PRC
+    allow(Prouterd::Iface::HttpClient).to receive(:request) do |**_|
+      Prouterd::Iface::HttpClient::Response.new(
+        status: 200, body_text: "{}", body_json: {
+          "content" => [{ "type" => "text", "text" => "fail" }],
+          "model" => "m",
+          "usage" => { "input_tokens" => 1_000_000, "output_tokens" => 0 }
+        }
+      )
+    end
+    real_runner = Prouterd::Runner::CallRunner.new
+    orch = Prouterd::Runtime::Orchestrator.new(db: db, runner: real_runner)
+    run = orch.trigger(stop_doc, "p", input_event: {})
+    fetched = repo.get_run_by_uid(run.uid)
+    expect(fetched.cost_usd).to be > 2.50
+    steps = repo.list_steps(run.id).select { |s| s.block_name == "ask" }
+    expect(steps.length).to be <= 4
+  end
+
   it "leaves tokens at 0 when no block produces a usage envelope" do
     runner.program("a", &Prouterd::Runner::StubRunner.success(output: { "ok" => 1 }))
     runner.program("b", &Prouterd::Runner::StubRunner.success(output: { "ok" => 2 }))

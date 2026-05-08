@@ -379,6 +379,9 @@ module Prouterd
             run, process, block, attempt, context, document,
             db_mutex, ctx_mutex, redactor, template_overlay: overlay
           )
+          if retry_stop_triggered?(policy, run, db_mutex, block)
+            break
+          end
           break unless retry_should_fire?(policy, result, db_mutex, run, block)
           break unless RetryCalculator.more_attempts?(policy, attempt)
 
@@ -433,6 +436,37 @@ module Prouterd
           end
         end
         passes
+      end
+
+      # `retry stop-on <path> <op> <val>` — kill switch evaluated
+      # against current run state after each attempt. Today the only
+      # exposed namespace is `run.{cost_usd, tokens_in, tokens_out}`
+      # (refreshed from the DB so cost_usd reflects this attempt's
+      # accumulator bump).
+      def retry_stop_triggered?(policy, run, db_mutex, block)
+        return false if policy.nil? || policy.retry_stop_matches.empty?
+
+        refreshed = db_mutex.synchronize { @runs.get_run(run.id) }
+        return false unless refreshed
+
+        synthetic = {
+          "run" => {
+            "cost_usd"   => refreshed.cost_usd.to_f,
+            "tokens_in"  => refreshed.tokens_in.to_i,
+            "tokens_out" => refreshed.tokens_out.to_i
+          }
+        }
+        ctx = OverlayContext.new({}, synthetic)
+        triggered = policy.retry_stop_matches.any? { |m| MatchEvaluator.evaluate(m, ctx) }
+        if triggered
+          db_mutex.synchronize do
+            @runs.append_log(
+              run_id: run.id, stream: "system",
+              content: "block '#{block.name}' retry stop-on triggered (run cost_usd=#{refreshed.cost_usd}); aborting retry loop"
+            )
+          end
+        end
+        triggered
       end
 
       # Evaluate the policy's retry-when matches against the unified
@@ -769,6 +803,26 @@ module Prouterd
           accumulate_run_usage(run, scrubbed_output, iface, document)
         end
         @events.publish(:step_updated, step: finished_step, run_id: run.id, run_uid: run.uid) if finished_step
+
+        # Post-attempt cost guardrail: if the block declares
+        # max-cost-usd and accumulated run cost crossed it, reshape
+        # the result into a terminal failure so retries don't keep
+        # burning budget.
+        if block.max_cost_usd
+          refreshed = db_mutex.synchronize { @runs.get_run(run.id) }
+          if refreshed && refreshed.cost_usd.to_f > block.max_cost_usd.to_f
+            result = Runner::ExecutionResult.new(
+              exit_code:     result.exit_code,
+              stdout:        result.stdout, stderr: result.stderr,
+              output_json:   result.output_json,
+              artifacts:     result.artifacts,
+              error_type:    "cost_cap_exceeded",
+              error_message: "block exceeded max-cost-usd #{block.max_cost_usd} (run cost_usd=#{refreshed.cost_usd})",
+              duration_ms:   result.duration_ms,
+              started_at:    result.started_at, finished_at: result.finished_at
+            )
+          end
+        end
 
         if result.success?
           ctx_mutex.synchronize { update_context_with_output(block, context, scrubbed_output) }

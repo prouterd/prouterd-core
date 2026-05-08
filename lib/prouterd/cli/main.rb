@@ -58,8 +58,9 @@ module Prouterd
           Usage: prouter <command> [args]
 
           Commands:
-            check   <file>                     Parse and validate a .prc config file
-            render  <file>                     Parse and print canonical config to stdout
+            check    <file>                    Parse and validate a .prc config file (alias: validate)
+            validate <file> [--against running] Lint a .prc, or semantic-diff vs the running config
+            render   <file>                    Parse and print canonical config to stdout
             apply   <file>                     Validate + commit a .prc file as a new commit
             trigger process <name> input <file>
                                                Synchronously run a process for the given event
@@ -698,8 +699,18 @@ module Prouterd
         store = nil
         path = @argv.shift
         unless path
-          @stderr.puts "prouter validate: usage: validate <file> --against running [--db PATH]"
+          @stderr.puts "prouter validate: usage: validate <file> [--against running [--db PATH]]"
           return 2
+        end
+
+        # `prouter validate <file>` without `--against` is the lint /
+        # dry-run form: parse + validate the file against itself, no
+        # daemon state touched. Equivalent to `prouter check <file>`,
+        # surfaced under the more-canonical `validate` verb so docs +
+        # CI hooks have the obvious command to call.
+        if @argv.empty?
+          @argv.unshift(path)
+          return cmd_check
         end
 
         # The only `--against` value we support today is `running`. Accept

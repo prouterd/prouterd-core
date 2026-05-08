@@ -48,6 +48,7 @@ module Prouterd
           when "contract"  then doc.contracts << parse_contract(line)
           when "tool"      then doc.tools << parse_tool(line)
           when "prices"    then doc.prices << parse_prices(line)
+          when "mcp_tool"  then parse_mcp_tool(doc, line)
           when "exit"
             raise ParseError.new("unexpected 'exit' at top level", line: line.number)
           else
@@ -991,6 +992,78 @@ module Prouterd
         end
 
         node
+      end
+
+      # `mcp_tool <name> ... exit` — pure parser sugar for the common
+      # case where an integration is one shell-script with an `op`
+      # discriminator and JSON I/O. Expands at parse time into:
+      #
+      #   interface shell <name>     ! one per mcp_tool
+      #    cwd <body.cwd>            ! optional
+      #   exit
+      #
+      #   tool <name>
+      #    description "<body.description>"
+      #    args <body.args>
+      #    implementation interface shell <name> call exec
+      #   exit
+      #
+      # Body keys: description, args, exec, cwd. `exec` becomes the
+      # interface's call_field default at runtime — but since we model
+      # tools as call_name="exec" against the shell iface, the actual
+      # exec line is supplied by the LLM-generated args at dispatch
+      # time. Carrying `exec` here is for completeness when the operator
+      # wants a fixed prefix.
+      def parse_mcp_tool(doc, header)
+        expect_token_count(header, 2, "mcp_tool <name>")
+        name = expect_identifier(header.tokens[1], "mcp_tool name")
+        if doc.interfaces.any? { |i| i.name == name } || doc.tools.any? { |t| t.name == name }
+          raise ParseError.new("name '#{name}' is already declared", line: header.number)
+        end
+        advance
+
+        body = { description: nil, args: [], exec: nil, cwd: nil }
+        each_body_line("mcp_tool #{name}") do |line|
+          head = line.head.value
+          case head
+          when "description"
+            if line.tokens.length < 2
+              raise ParseError.new("description requires text", line: line.number)
+            end
+            body[:description] = line.tokens[1..].map(&:value).join(" ")
+          when "args"
+            expect_min_tokens(line, 2, "args <name>[, <name>...]")
+            raw = line.tokens[1..].map(&:value).join(" ")
+            args = raw.split(",").map(&:strip).reject(&:empty?)
+            args.each do |a|
+              unless a.match?(IDENT_RE)
+                raise ParseError.new("invalid arg name '#{a}'", line: line.number)
+              end
+            end
+            body[:args] = args
+          when "exec"
+            expect_min_tokens(line, 2, "exec <command>")
+            body[:exec] = line.tokens[1..].map(&:value).join(" ")
+          when "cwd"
+            expect_token_count(line, 2, "cwd <path>")
+            body[:cwd] = expect_word_or_string(line.tokens[1], "cwd")
+          else
+            raise ParseError.new("unknown directive '#{head}' in mcp_tool", line: line.number)
+          end
+        end
+
+        # Synthesize: interface shell <name> + tool <name>.
+        iface = AST::Interface.new(type: "shell", name: name, line: header.number)
+        iface.type_fields["cwd"] = body[:cwd] if body[:cwd]
+        doc.interfaces << iface
+
+        tool = AST::Tool.new(name: name, line: header.number)
+        tool.description = body[:description]
+        tool.args.replace(body[:args])
+        tool.implementation = AST::Tool::Implementation.new(
+          iface_type: "shell", iface_name: name, call_name: "exec"
+        )
+        doc.tools << tool
       end
 
       # `prices <provider> ... exit` — body lines look like

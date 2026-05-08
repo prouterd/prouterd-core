@@ -160,6 +160,26 @@ RSpec.describe Prouterd::Config::Parser do
       expect(tbl.entries.first.price_out).to be_within(0.001).of(1.25)
     end
 
+    it "expands `mcp_tool <name>` into an interface shell + tool pair" do
+      doc = parse(<<~SRC)
+        mcp_tool jira
+         description "Jira API microservice."
+         args op, key, jql
+         cwd /opt/atp
+        exit
+      SRC
+      expect(doc.interfaces.map(&:name)).to include("jira")
+      expect(doc.interfaces.first.type).to eq("shell")
+      expect(doc.interfaces.first.type_fields["cwd"]).to eq("/opt/atp")
+
+      tool = doc.tools.first
+      expect(tool.name).to eq("jira")
+      expect(tool.args).to eq(%w[op key jql])
+      expect(tool.implementation.iface_type).to eq("shell")
+      expect(tool.implementation.iface_name).to eq("jira")
+      expect(tool.implementation.call_name).to eq("exec")
+    end
+
     it "rejects duplicate model in a `prices` block" do
       expect {
         parse(<<~SRC)

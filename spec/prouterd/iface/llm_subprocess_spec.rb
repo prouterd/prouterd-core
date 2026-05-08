@@ -84,7 +84,7 @@ RSpec.describe Prouterd::Iface::LlmSubprocess do
     File.unlink(bin)
   end
 
-  it "builds the real Claude Code argv (-p / --output-format / --bare / --model)" do
+  it "builds the real Claude Code argv (-p / --output-format / --model / --system-prompt)" do
     captured = nil
     allow(Open3).to receive(:popen3).and_wrap_original do |original, *args, &blk|
       env = args.first.is_a?(Hash) ? args.shift : {}
@@ -106,9 +106,10 @@ RSpec.describe Prouterd::Iface::LlmSubprocess do
       timeout_ms: 5_000
     )
 
-    expect(captured).to include(bin, "-p", "what is 2+2?", "--output-format", "json", "--bare",
+    expect(captured).to include(bin, "-p", "what is 2+2?", "--output-format", "json",
                                 "--model", "claude-sonnet-4-6",
                                 "--system-prompt", "you are terse")
+    expect(captured).not_to include("--bare")
     File.unlink(bin)
   end
 

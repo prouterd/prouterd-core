@@ -128,17 +128,15 @@ module Prouterd
 
       # Real Claude Code CLI 2.1.x invocation:
       #   claude -p "<prompt>" --output-format json --model <model>
-      #          [--system-prompt "<system>"] [--bare]
+      #          [--system-prompt "<system>"]
       #
-      # `--bare` skips auto-loading hooks/skills/MCP/CLAUDE.md from the
-      # operator's machine — what we want for clean LLM-block use that
-      # behaves the same on every host (CI vs dev). `--system-prompt`
-      # FULLY replaces Claude Code's default agent system prompt; that's
-      # what we want for `interface llm` blocks (no Claude-Code-agent
-      # baggage). Without `system_msg` we omit the flag and let Claude
-      # Code apply its default — usually fine for one-shot prompts.
+      # `--system-prompt` FULLY replaces Claude Code's default agent
+      # system prompt; that's what we want for `interface llm` blocks
+      # (no Claude-Code-agent baggage). Without `system_msg` we omit
+      # the flag and let Claude Code apply its default — usually fine
+      # for one-shot prompts.
       def build_argv_claude(bin, model, prompt, system_msg)
-        argv = [bin, "-p", prompt.to_s, "--output-format", "json", "--bare"]
+        argv = [bin, "-p", prompt.to_s, "--output-format", "json"]
         argv += ["--model", model] unless model.to_s.empty?
         argv += ["--system-prompt", system_msg] if system_msg && !system_msg.to_s.empty?
         argv

@@ -36,14 +36,14 @@ module Prouterd
 
       def get_config_startup(_request)
         commit = @store.startup_commit
-        return json(404, error: "startup-config not set") unless commit
+        return json_error(404, "not_found", "startup-config not set") unless commit
 
         plain(200, commit.rendered_config)
       end
 
       def post_config_check(request)
-        body = read_body(request) or return json(400, error: "missing body")
-        document = parse_dsl_or_error(body) or return json(400, error: "could not parse")
+        body = read_body(request) or return json_error(400, "missing_body", "missing body")
+        document = parse_dsl_or_error(body) or return json_error(400, "invalid_dsl", "could not parse")
         result = Config::Validator.validate(document)
         json(result.valid? ? 200 : 422, {
           valid: result.valid?,
@@ -51,35 +51,38 @@ module Prouterd
           warnings: result.warnings.map { |w| { line: w.line, message: w.message } }
         })
       rescue Config::ConfigError => e
-        json(400, error: e.message, line: e.line)
+        json_error(400, "invalid_dsl", e.message, details: { line: e.line })
       end
 
       def post_config_apply(request)
-        body = read_body(request) or return json(400, error: "missing body")
+        body = read_body(request) or return json_error(400, "missing_body", "missing body")
         author = request.get_header("HTTP_X_AUTHOR") || ENV["USER"]
         message = request.get_header("HTTP_X_COMMIT_MESSAGE") || "apply via /v1"
 
-        document = parse_dsl_or_error(body) or return json(400, error: "could not parse")
+        document = parse_dsl_or_error(body) or return json_error(400, "invalid_dsl", "could not parse")
         result = Config::Validator.validate(document)
-        return json(422, error: "validation failed", details: result.errors.map(&:message)) unless result.valid?
+        unless result.valid?
+          return json_error(422, "validation_failed", "validation failed",
+                            details: result.errors.map(&:message))
+        end
 
         commit = @store.commit(document, author: author, message: message)
         publish_config_changed("commit")
         json(201, data: { commit_id: commit.id, checksum: commit.checksum })
       rescue Config::ConfigError => e
-        json(400, error: e.message, line: e.line)
+        json_error(400, "invalid_dsl", e.message, details: { line: e.line })
       end
 
       def post_config_rollback(request)
-        body = parse_json_body(request) or return json(400, error: "expected JSON body")
+        body = parse_json_body(request) or return json_error(400, "bad_json", "expected JSON body")
         commit_id = body["commit_id"]
-        return json(400, error: "missing commit_id") unless commit_id.is_a?(Integer)
+        return json_error(400, "invalid_argument", "missing commit_id") unless commit_id.is_a?(Integer)
 
         commit = @store.rollback(commit_id)
         publish_config_changed("rollback")
         json(200, data: { commit_id: commit.id, checksum: commit.checksum })
       rescue ControlPlane::ConfigStoreError => e
-        json(404, error: e.message)
+        json_error(404, "not_found", e.message)
       end
 
       # Mark the running config as the boot config (router CLI's `write memory`).
@@ -90,7 +93,7 @@ module Prouterd
         publish_config_changed("save_boot")
         json(200, data: { commit_id: commit.id, checksum: commit.checksum })
       rescue ControlPlane::ConfigStoreError => e
-        json(409, error: e.message)
+        json_error(409, "conflict", e.message)
       end
 
       def get_config_commits(_request)
@@ -102,7 +105,7 @@ module Prouterd
 
       def get_config_commit(_request, id)
         commit = @store.get_commit(id.to_i)
-        return json(404, error: "no such commit") unless commit
+        return json_error(404, "not_found", "no such commit") unless commit
 
         json(200, data: commit_summary(commit).merge(rendered_config: commit.rendered_config))
       end
@@ -144,7 +147,7 @@ module Prouterd
 
       def get_process(_request, name)
         process = @store.load_running.processes.find { |p| p.name == name }
-        return json(404, error: "no such process '#{name}'") unless process
+        return json_error(404, "not_found", "no such process '#{name}'") unless process
 
         json(200, data: process_detail(process))
       end
@@ -157,7 +160,7 @@ module Prouterd
       def post_process_trigger(request, name)
         document = @store.load_running
         process = document.processes.find { |p| p.name == name }
-        return json(404, error: "no such process '#{name}'") unless process
+        return json_error(404, "not_found", "no such process '#{name}'") unless process
 
         event = parse_json_body(request) || {}
         orchestrator = build_orchestrator
@@ -195,14 +198,14 @@ module Prouterd
       end
 
       def get_run(_request, uid)
-        run = run_by_uid(uid) or return json(404, error: "no such run")
+        run = run_by_uid(uid) or return json_error(404, "not_found", "no such run")
         repo = Storage::Repositories::Runs.new(@store.db)
         steps = repo.list_steps(run.id).map { |s| step_summary(s) }
         json(200, data: run_summary(run).merge(steps: steps))
       end
 
       def get_run_logs(request, uid)
-        run = run_by_uid(uid) or return json(404, error: "no such run")
+        run = run_by_uid(uid) or return json_error(404, "not_found", "no such run")
         block = request.params["block"]
         stream = request.params["stream"]
 
@@ -210,7 +213,7 @@ module Prouterd
         step_id = nil
         if block
           step = repo.list_steps(run.id).find { |s| s.block_name == block }
-          return json(404, error: "no such block '#{block}' in run") unless step
+          return json_error(404, "not_found", "no such block '#{block}' in run") unless step
 
           step_id = step.id
         end
@@ -227,8 +230,8 @@ module Prouterd
       def get_artifact_download(_request, id)
         repo = Storage::Repositories::Runs.new(@store.db)
         artifact = repo.get_artifact(id.to_i)
-        return json(404, error: "no such artifact") unless artifact
-        return json(410, error: "artifact bytes no longer on disk") unless File.file?(artifact.path)
+        return json_error(404, "not_found", "no such artifact") unless artifact
+        return json_error(410, "gone", "artifact bytes no longer on disk") unless File.file?(artifact.path)
 
         headers = {
           "content-type"        => artifact.content_type || "application/octet-stream",
@@ -258,21 +261,21 @@ module Prouterd
       end
 
       def get_run_artifacts(_request, uid)
-        run = run_by_uid(uid) or return json(404, error: "no such run")
+        run = run_by_uid(uid) or return json_error(404, "not_found", "no such run")
         repo = Storage::Repositories::Runs.new(@store.db)
         json(200, data: repo.list_artifacts(run.id).map { |a| artifact_summary(a) })
       end
 
       def post_run_replay(request, uid)
-        original = run_by_uid(uid) or return json(404, error: "no such run")
+        original = run_by_uid(uid) or return json_error(404, "not_found", "no such run")
         unless original.process_config_commit_id
-          return json(422, error: "run not pinned to a commit")
+          return json_error(422, "unprocessable", "run not pinned to a commit")
         end
         body = parse_json_body(request) || {}
         from_block = body["from_block"]
 
         commit = @store.get_commit(original.process_config_commit_id)
-        return json(410, error: "config commit no longer exists") unless commit
+        return json_error(410, "gone", "config commit no longer exists") unless commit
 
         document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
         orchestrator = build_orchestrator
@@ -282,7 +285,7 @@ module Prouterd
         if from_block
           repo = Storage::Repositories::Runs.new(@store.db)
           target_step = repo.list_steps(original.id).find { |s| s.block_name == from_block }
-          return json(404, error: "block '#{from_block}' did not run in original") unless target_step
+          return json_error(404, "not_found", "block '#{from_block}' did not run in original") unless target_step
           payload = JSON.parse(target_step.input_json || "{}")
           seed = payload["context"] || {}
 
@@ -314,12 +317,12 @@ module Prouterd
       end
 
       def post_run_resume(request, uid)
-        run = run_by_uid(uid) or return json(404, error: "no such run")
-        return json(409, error: "run is not paused (status=#{run.status})") unless run.status == "paused"
-        return json(422, error: "run not pinned to a commit") unless run.process_config_commit_id
+        run = run_by_uid(uid) or return json_error(404, "not_found", "no such run")
+        return json_error(409, "conflict", "run is not paused (status=#{run.status})") unless run.status == "paused"
+        return json_error(422, "unprocessable", "run not pinned to a commit") unless run.process_config_commit_id
 
         commit = @store.get_commit(run.process_config_commit_id)
-        return json(410, error: "config commit no longer exists") unless commit
+        return json_error(410, "gone", "config commit no longer exists") unless commit
 
         body = parse_json_body(request) || {}
         value = body["value"]
@@ -329,7 +332,7 @@ module Prouterd
         finished = orchestrator.resume_run(uid, document, value: value)
         json(202, data: { run_id: finished.uid, status: finished.status })
       rescue Runtime::TriggerError => e
-        json(409, error: e.message)
+        json_error(409, "conflict", e.message)
       end
 
       # POST /v1/runs/by-thread/:thread_id/resume — resume the most
@@ -343,11 +346,11 @@ module Prouterd
         repo = Storage::Repositories::Runs.new(@store.db)
         paused = repo.list_runs(limit: 200, status: "paused", thread_id: thread_id)
         run = paused.first   # list_runs orders DESC by id → first is latest
-        return json(404, error: "no paused run for thread '#{thread_id}'") unless run
-        return json(422, error: "run not pinned to a commit") unless run.process_config_commit_id
+        return json_error(404, "not_found", "no paused run for thread '#{thread_id}'") unless run
+        return json_error(422, "unprocessable", "run not pinned to a commit") unless run.process_config_commit_id
 
         commit = @store.get_commit(run.process_config_commit_id)
-        return json(410, error: "config commit no longer exists") unless commit
+        return json_error(410, "gone", "config commit no longer exists") unless commit
 
         body = parse_json_body(request) || {}
         value = body["value"]
@@ -357,13 +360,13 @@ module Prouterd
         finished = orchestrator.resume_run(run.uid, document, value: value)
         json(202, data: { run_id: finished.uid, status: finished.status, thread_id: thread_id })
       rescue Runtime::TriggerError => e
-        json(409, error: e.message)
+        json_error(409, "conflict", e.message)
       end
 
       def post_run_cancel(_request, uid)
-        run = run_by_uid(uid) or return json(404, error: "no such run")
+        run = run_by_uid(uid) or return json_error(404, "not_found", "no such run")
         if %w[success failed canceled].include?(run.status)
-          return json(409, error: "run already #{run.status}")
+          return json_error(409, "conflict", "run already #{run.status}")
         end
 
         repo = Storage::Repositories::Runs.new(@store.db)
@@ -709,6 +712,21 @@ module Prouterd
 
       def json(status, payload)
         [status, { "content-type" => "application/json" }, [JSON.dump(payload)]]
+      end
+
+      # Canonical error envelope, frozen by `v1_contract_spec`:
+      #
+      #   { "error": { "code": "<stable_string>", "message": "<human>",
+      #                "details": [...] } }
+      #
+      # `code` is a stable identifier clients can branch on — never
+      # renamed without a /v1 break. `message` is for humans.
+      # `details` is optional and shape-flexible (validation errors,
+      # parse-error line numbers, etc).
+      def json_error(status, code, message, details: nil)
+        body = { code: code, message: message }
+        body[:details] = details unless details.nil?
+        json(status, error: body)
       end
 
       def plain(status, text)

@@ -632,7 +632,7 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
       post "/v1/runs/by-thread/no-such-tid/resume", JSON.dump({}),
            { "CONTENT_TYPE" => "application/json" }
       expect(last_response.status).to eq(404)
-      expect(JSON.parse(last_response.body)["error"]).to include("no paused run")
+      expect(JSON.parse(last_response.body)["error"]["message"]).to include("no paused run")
     end
 
     it "artifact_summary exposes step_id so step-scoped UIs can filter" do

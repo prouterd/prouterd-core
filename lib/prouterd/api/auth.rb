@@ -40,15 +40,16 @@ module Prouterd
         token
       end
 
-      # Returns nil on success, or a [status, message] tuple to refuse with.
-      # Reads the token via `token_from` so header and query are equivalent.
+      # Returns nil on success, or a [status, code, message] tuple to
+      # refuse with. The triple feeds the canonical error envelope
+      # `{error: {code, message}}` — see API.json_error.
       def check_bearer(request, expected_token)
         provided = token_from(request)
-        return [401, "missing bearer token"] if provided.nil? || provided.empty?
-        return [503, "auth secret not configured"] if expected_token.nil? || expected_token.empty?
+        return [401, "unauthorized", "missing bearer token"] if provided.nil? || provided.empty?
+        return [503, "unavailable", "auth secret not configured"] if expected_token.nil? || expected_token.empty?
 
         ok = Rack::Utils.secure_compare(provided, expected_token)
-        ok ? nil : [403, "bearer token rejected"]
+        ok ? nil : [403, "forbidden", "bearer token rejected"]
       end
 
       # ----- cookie-session auth (POST /v1/login + HttpOnly cookie) -----

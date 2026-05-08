@@ -196,4 +196,100 @@ RSpec.describe "Phase 36a /v1 contract freeze" do
                   error_summary: NilClass)
     end
   end
+
+  # ----- error envelope freeze -----
+  #
+  # Every 4xx/5xx response body is `{"error": {"code": "<stable>",
+  # "message": "<human>", "details"?: <any>}}`. `code` is the
+  # contract-stable identifier clients can branch on; `message` is for
+  # humans; `details` is optional and shape-flexible.
+  #
+  # If a future change loses `code`, surfaces strings instead of
+  # objects, or adds a sibling key alongside `error` — these specs
+  # fail loud. Add new endpoints by adding new `it` blocks with the
+  # right code + status; never reshape existing entries without a /v1
+  # break note in CHANGELOG.
+  describe "error envelope" do
+    def error_body
+      JSON.parse(last_response.body)["error"]
+    end
+
+    it "404 → not_found on unknown process" do
+      get "/v1/processes/no-such-process"
+      expect(last_response.status).to eq(404)
+      expect_keys(error_body,
+                  code: "not_found",
+                  message: a_string_matching(/no such process/))
+    end
+
+    it "404 → not_found on unknown run" do
+      get "/v1/runs/run_does_not_exist"
+      expect(last_response.status).to eq(404)
+      expect_keys(error_body, code: "not_found", message: a_kind_of(String))
+    end
+
+    it "400 → invalid_dsl with details.line on parse failure" do
+      post "/v1/config/check", "router demo\n  bogus_directive\nexit\n",
+           { "CONTENT_TYPE" => "application/octet-stream" }
+      expect(last_response.status).to eq(400)
+      expect_keys(error_body,
+                  code: "invalid_dsl",
+                  message: a_kind_of(String),
+                  details: a_hash_including("line"))
+    end
+
+    it "422 → validation_failed with details array on validator errors" do
+      # Process references an interface that wasn't declared.
+      # Parses fine, fails validation.
+      bad = <<~PRC
+        router demo
+        exit
+        process p
+         block b
+          interface shell undefined_iface
+          exec "true"
+         exit
+        exit
+      PRC
+      post "/v1/config/apply", bad, { "CONTENT_TYPE" => "application/octet-stream" }
+      expect(last_response.status).to eq(422)
+      expect_keys(error_body,
+                  code: "validation_failed",
+                  message: a_kind_of(String),
+                  details: a_kind_of(Array))
+    end
+
+    it "400 → bad_json on rollback with non-JSON body" do
+      post "/v1/config/rollback", "not json", { "CONTENT_TYPE" => "application/json" }
+      expect(last_response.status).to eq(400)
+      expect_keys(error_body, code: "bad_json", message: a_kind_of(String))
+    end
+
+    it "400 → invalid_argument on rollback with missing commit_id" do
+      post "/v1/config/rollback", JSON.dump(other: 1),
+           { "CONTENT_TYPE" => "application/json" }
+      expect(last_response.status).to eq(400)
+      expect_keys(error_body,
+                  code: "invalid_argument",
+                  message: a_kind_of(String))
+    end
+
+    it "404 → not_found on the daemon's catch-all /v1 route" do
+      get "/v1/no/such/path"
+      expect(last_response.status).to eq(404)
+      expect_keys(error_body, code: "not_found", message: a_kind_of(String))
+    end
+
+    it "401 → unauthorized when admin_token is set but not provided" do
+      tokened_app = Prouterd::API::App.new(
+        store: store, runner: runner, jobs: jobs,
+        in_flight: in_flight, metrics: metrics, admin_token: "secret"
+      )
+      tokened_session = Rack::Test::Session.new(Rack::MockSession.new(tokened_app))
+      tokened_session.get "/v1/processes"
+      body = JSON.parse(tokened_session.last_response.body)["error"]
+      expect(tokened_session.last_response.status).to eq(401)
+      expect_keys(body, code: "unauthorized", message: a_kind_of(String))
+    end
+  end
 end

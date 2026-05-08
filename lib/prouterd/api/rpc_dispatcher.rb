@@ -129,7 +129,9 @@ module Prouterd
       end
 
       # Converts a JSON Rack triple into a `reply` payload. Status >= 400
-      # produces an `error` frame with a code derived from the status.
+      # produces an `error` frame with a code derived from the V1
+      # envelope (`{error: {code, message, details?}}`) or the HTTP
+      # status as a fallback.
       def forward_json
         status, _headers, body = yield
         text = read_rack_body(body)
@@ -143,10 +145,20 @@ module Prouterd
           ok(payload)
         else
           payload = (JSON.parse(text) rescue {})
-          code    = ERROR_FOR_STATUS[status] || "internal"
-          msg     = payload["error"] || "rpc error (status #{status})"
-          out     = { code: code, message: msg }
-          out[:details] = payload["details"] if payload["details"]
+          inner = payload["error"]
+          if inner.is_a?(Hash)
+            # New envelope: V1 owns the code; HTTP status is a fallback.
+            out = {
+              code:    inner["code"]    || ERROR_FOR_STATUS[status] || "internal",
+              message: inner["message"] || "rpc error (status #{status})"
+            }
+            out[:details] = inner["details"] if inner["details"]
+          else
+            out = {
+              code:    ERROR_FOR_STATUS[status] || "internal",
+              message: inner.to_s.empty? ? "rpc error (status #{status})" : inner.to_s
+            }
+          end
           { type: "error", payload: out }
         end
       end

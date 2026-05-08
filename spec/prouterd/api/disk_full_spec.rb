@@ -77,7 +77,7 @@ RSpec.describe "Phase 34a disk-unavailable handling" do
 
     expect(last_response.status).to eq(503)
     body = JSON.parse(last_response.body)
-    expect(body["error_type"]).to eq("storage_unavailable")
+    expect(body["error"]["code"]).to eq("storage_unavailable")
 
     # No orphan run row.
     expect(runs_repo.list_runs).to be_empty

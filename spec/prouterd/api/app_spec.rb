@@ -75,7 +75,7 @@ RSpec.describe Prouterd::API::App do
       commit(config_with_webhook)
       post "/i/ghost"
       expect(last_response.status).to eq(404)
-      expect(JSON.parse(last_response.body)["error"]).to include("ghost")
+      expect(JSON.parse(last_response.body)["error"]["message"]).to include("ghost")
     end
   end
 

@@ -1724,10 +1724,53 @@ line: severity, format template, meaning, action.
 
 794 / 0.
 
+### Phase 38i: BREAKING — `/v1` error envelope frozen
+
+Every 4xx/5xx response from `/v1`, `/i/<webhook>`, and the routing
+layer now returns the canonical shape:
+
+    { "error": { "code": "<stable_string>",
+                 "message": "<human>",
+                 "details"?: <any> } }
+
+Previously, three forms coexisted: bare `{error: "..."}`,
+`{error: msg, line: N}`, and `{error: "...", details: [...]}`. The
+`v1_contract_spec` froze happy paths only — error shapes drifted
+silently. New `error envelope` describe-block in that spec asserts
+exact shape on the most common error paths (404 not_found, 400
+invalid_dsl/bad_json/invalid_argument, 422 validation_failed/
+unprocessable, 401 unauthorized, …).
+
+`code` is the contract-stable identifier clients should branch on;
+the daemon will never rename one without a /v1 break note here.
+`message` is human-readable. `details` is optional and shape-flexible
+(the validator emits an Array of strings; the parser emits a Hash
+with `line`).
+
+Stable codes today: `not_found`, `invalid_dsl`, `validation_failed`,
+`bad_json`, `invalid_argument`, `missing_body`, `unauthorized`,
+`forbidden`, `conflict`, `gone`, `payload_too_large`, `rate_limited`,
+`internal_error`, `unavailable`, `storage_unavailable`,
+`method_not_allowed`, `unprocessable`, `secret_unresolved`, `bad_path`.
+
+`Auth.check_bearer` now returns `[status, code, message]` triples
+(was `[status, message]`); call sites updated.
+
+The canonical helper lives in V1 / App / WebhookHandler:
+`json_error(status, code, message, details: nil, headers: nil)`.
+
+Migration impact: any client (curl scripts, prouterd-web adapters,
+custom dashboards) that read `body["error"]` as a string must now
+read `body["error"]["message"]`. The `prouterd-web` adapter already
+handles the new shape via `RpcDispatcher#forward_json`'s envelope
+parsing, but external integrations need a one-line fix.
+
+834 / 0 (was 826 + 8 new error-envelope contract specs).
+
 ## Status
 
 - 38 phases shipped, one git commit per phase
-- 794 RSpec specs, 0 failures
+- 834 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

@@ -33,16 +33,17 @@ module Prouterd
         document = @store.load_running
 
         interface = document.interfaces.find { |i| i.name == interface_name }
-        return json_error(404, "unknown interface '#{interface_name}'") unless interface
-        return json_error(404, "interface '#{interface_name}' is not a webhook") unless interface.webhook?
-        return json_error(503, "interface '#{interface_name}' is shutdown") if interface.shutdown
+        return json_error(404, "not_found", "unknown interface '#{interface_name}'") unless interface
+        return json_error(404, "not_found", "interface '#{interface_name}' is not a webhook") unless interface.webhook?
+        return json_error(503, "unavailable", "interface '#{interface_name}' is shutdown") if interface.shutdown
 
         # Method enforcement: webhook interfaces declare a `method`.
         # Default to POST when not declared so existing fixtures keep working.
         expected_method = (interface.type_fields["method"] || "POST").to_s.upcase
         actual_method = request.request_method.to_s.upcase
         if actual_method != expected_method
-          return json_error(405, "method '#{actual_method}' not allowed; interface accepts '#{expected_method}'",
+          return json_error(405, "method_not_allowed",
+                            "method '#{actual_method}' not allowed; interface accepts '#{expected_method}'",
                             headers: { "allow" => expected_method })
         end
 
@@ -50,7 +51,7 @@ module Prouterd
         # configured limit in the body so a client can back off intelligently.
         if @rate_limiter && !@rate_limiter.allow?(interface_name)
           @metrics&.increment(:webhooks_received_total, interface: interface_name, code: 429)
-          return json_error(429, "rate limit exceeded for interface '#{interface_name}'")
+          return json_error(429, "rate_limited", "rate limit exceeded for interface '#{interface_name}'")
         end
 
         if (auth = interface.type_fields["auth"])
@@ -72,7 +73,7 @@ module Prouterd
             @logger.error("hmac-sha256 secret unresolved",
                           facility: "SECRET", mnemonic: "MISSING",
                           interface: interface_name, secret: sig.secret_name)
-            return json_error(500, "hmac-sha256: secret '#{sig.secret_name}' not resolved")
+            return json_error(500, "secret_unresolved", "hmac-sha256: secret '#{sig.secret_name}' not resolved")
           end
           provided = request.get_header("HTTP_" + sig.header.upcase.tr("-", "_")).to_s
           provided = provided.split("=", 2).last if provided.include?("=")
@@ -83,7 +84,7 @@ module Prouterd
             @logger.warn("hmac signature mismatch",
                          facility: "WEBHOOK", mnemonic: "HMAC_FAIL",
                          interface: interface_name, header: sig.header)
-            return json_error(401, "invalid hmac signature")
+            return json_error(401, "unauthorized", "invalid hmac signature")
           end
         end
 
@@ -91,16 +92,16 @@ module Prouterd
         return event if event.is_a?(Array) # Already a [status, body] error tuple
 
         route = document.global_routes.find { |r| r.interface_name == interface_name }
-        return json_error(404, "no global route configured for interface '#{interface_name}'") unless route
+        return json_error(404, "not_found", "no global route configured for interface '#{interface_name}'") unless route
 
         ctx = Runtime::Context.new("event" => event)
         unless Runtime::MatchEvaluator.passes?(route.matches, ctx)
-          return json_error(422, "event did not match route conditions")
+          return json_error(422, "unprocessable", "event did not match route conditions")
         end
 
         process = document.processes.find { |p| p.name == route.process_name }
-        return json_error(500, "global route targets unknown process '#{route.process_name}'") unless process
-        return json_error(503, "process '#{process.name}' is shutdown") if process.shutdown
+        return json_error(500, "internal_error", "global route targets unknown process '#{route.process_name}'") unless process
+        return json_error(503, "unavailable", "process '#{process.name}' is shutdown") if process.shutdown
 
         orchestrator = Runtime::Orchestrator.new(
           db: @store.db, runner: @runner, in_flight: @in_flight
@@ -148,7 +149,7 @@ module Prouterd
 
         JSON.parse(raw)
       rescue JSON::ParserError => e
-        json_error(400, "request body is not valid JSON: #{e.message}")
+        json_error(400, "bad_json", "request body is not valid JSON: #{e.message}")
       end
 
       def read_raw_body(request)
@@ -170,8 +171,15 @@ module Prouterd
         OpenSSL.fixed_length_secure_compare(a, b)
       end
 
-      def json_error(status, message, headers: {})
-        [status, { "content-type" => "application/json" }.merge(headers), [JSON.dump(error: message)]]
+      # Canonical `{error: {code, message, details?}}` envelope. `code`
+      # is a stable identifier clients can branch on. The signature is
+      # `(status, code, message, headers:, details:)` so call sites
+      # read like `json_error(404, "not_found", "unknown interface")`.
+      def json_error(status, code, message, headers: {}, details: nil)
+        body = { code: code, message: message }
+        body[:details] = details unless details.nil?
+        [status, { "content-type" => "application/json" }.merge(headers),
+         [JSON.dump(error: body)]]
       end
     end
   end

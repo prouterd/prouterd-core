@@ -46,7 +46,8 @@ module Prouterd
                      in_flight: nil, metrics: nil, admin_token: nil,
                      rate_limiter: nil,
                      events: Prouterd::Events.default,
-                     system_url: nil)
+                     system_url: nil,
+                     console_dir: nil)
         @store = store
         @runner = runner
         @secret_resolver = secret_resolver || Runtime::EnvSecretResolver.new
@@ -64,6 +65,10 @@ module Prouterd
         # browser operators that closes the XSS-leak surface around the
         # SPA's sessionStorage.
         @sessions = admin_token && !admin_token.empty? ? SessionStore.new : nil
+        # Same-origin SPA hosting. When set, /console/* is served from
+        # this directory. Lets the operator console run as one process
+        # with the daemon — no nginx, no CORS, cookie auth just works.
+        @console_dir = console_dir
 
         @webhook_handler = WebhookHandler.new(
           store: @store,
@@ -172,7 +177,7 @@ module Prouterd
         end
 
         if !@accepting && !readonly?(method, path)
-          return json_response(503, error: "daemon is shutting down — try again later")
+          return json_error(503, "unavailable", "daemon is shutting down — try again later")
         end
 
         # Reject oversized bodies before any handler reads them. Puma streams
@@ -182,6 +187,10 @@ module Prouterd
         # /v1/config/apply since DSL files can grow).
         if (err = enforce_body_limit(method, path, request))
           return err
+        end
+
+        if @console_dir && (path == "/console" || path.start_with?("/console/"))
+          return serve_console(method, path)
         end
 
         if path.start_with?("/v1/")
@@ -201,13 +210,13 @@ module Prouterd
         @logger.error("storage unavailable",
                       facility: "STORE", mnemonic: "UNAVAILABLE",
                       error: e.class.name, message: e.message)
-        json_response(503, error: "storage unavailable", error_type: "storage_unavailable")
+        json_error(503, "storage_unavailable", "storage unavailable")
       rescue StandardError => e
         @logger.error("internal API error",
                       facility: "API", mnemonic: "INTERNAL",
                       error: e.class.name, message: e.message,
                       backtrace: e.backtrace.first(5).join(" | "))
-        json_response(500, error: "internal server error")
+        json_error(500, "internal_error", "internal server error")
       end
 
       DEFAULT_MAX_BODY_BYTES = 1 * 1024 * 1024     # 1 MB for /i/* + most /v1
@@ -257,8 +266,8 @@ module Prouterd
         # body.read, but Rack exposes the header.)
         cl = request.content_length
         if cl && cl.to_i > cap
-          return json_response(413, error: "request body too large",
-                                    limit_bytes: cap, content_length: cl.to_i)
+          return json_error(413, "payload_too_large", "request body too large",
+                            details: { limit_bytes: cap, content_length: cl.to_i })
         end
         nil
       end
@@ -294,7 +303,7 @@ module Prouterd
             logger:      @logger
           )
         else
-          json_response(404, error: "no WS route for #{path}")
+          json_error(404, "not_found", "no WS route for #{path}")
         end
       end
 
@@ -350,7 +359,7 @@ module Prouterd
         when method == "GET" && segments.length == 4 && segments[0..1] == %w[v1 artifacts] && segments[3] == "download"
           @v1.get_artifact_download(request, segments[2])
         else
-          json_response(404, error: "no /v1 route for #{method} /#{segments.join('/')}")
+          json_error(404, "not_found", "no /v1 route for #{method} /#{segments.join('/')}")
         end
       end
 
@@ -363,10 +372,10 @@ module Prouterd
 
         # 2. Bearer token (Authorization header or ?token= query).
         provided = Auth.token_from(request)
-        return json_response(401, error: "missing bearer token") if provided.nil? || provided.empty?
+        return json_error(401, "unauthorized", "missing bearer token") if provided.nil? || provided.empty?
         return nil if Rack::Utils.secure_compare(provided, @admin_token)
 
-        json_response(403, error: "admin token rejected")
+        json_error(403, "forbidden", "admin token rejected")
       end
 
       # POST /v1/login — validate body {token} against admin_token,
@@ -398,7 +407,7 @@ module Prouterd
         body = parse_json_body(request) || {}
         provided = body["token"].to_s
         unless !provided.empty? && Rack::Utils.secure_compare(provided, @admin_token)
-          return json_response(401, error: "invalid token")
+          return json_error(401, "unauthorized", "invalid token")
         end
 
         sid = @sessions.create
@@ -428,6 +437,49 @@ module Prouterd
         nil
       end
 
+      # Serve the operator-console SPA from `@console_dir` at /console/*.
+      # Same-origin with /v1, so the cookie session set by /v1/login
+      # rides every fetch and WS handshake without CORS.
+      #
+      # Path is sanitised against directory traversal (any `..` segment
+      # rejects the request); the daemon never resolves `/console/../*`
+      # to anything outside the configured tree. `index.html` is served
+      # for `/console` and `/console/`.
+      MIME_BY_EXT = {
+        ".html" => "text/html; charset=utf-8",
+        ".js"   => "application/javascript",
+        ".mjs"  => "application/javascript",
+        ".css"  => "text/css; charset=utf-8",
+        ".json" => "application/json",
+        ".svg"  => "image/svg+xml",
+        ".png"  => "image/png",
+        ".ico"  => "image/x-icon"
+      }.freeze
+
+      def serve_console(method, path)
+        return [405, { "allow" => "GET, HEAD" }, []] unless %w[GET HEAD].include?(method)
+
+        rel = path.sub(%r{\A/console/?}, "")
+        rel = "index.html" if rel.empty?
+        # Refuse traversal attempts. Reject NUL, leading slash, and any
+        # `..` segment. After sanitisation, expand against console_dir
+        # and verify the result still lives under it.
+        return json_error(400, "bad_path", "bad path") if rel.include?("\0")
+        return json_error(400, "bad_path", "bad path") if rel.start_with?("/")
+        return json_error(400, "bad_path", "bad path") if rel.split("/").any? { |seg| seg == ".." }
+
+        full = File.expand_path(rel, @console_dir)
+        root = File.expand_path(@console_dir)
+        return json_error(400, "bad_path", "bad path") unless full.start_with?(root + File::SEPARATOR) || full == root
+        return json_error(404, "not_found", "not found") unless File.file?(full)
+
+        ext  = File.extname(full).downcase
+        ctype = MIME_BY_EXT[ext] || "application/octet-stream"
+        body  = File.read(full, mode: "rb")
+        headers = { "content-type" => ctype, "content-length" => body.bytesize.to_s }
+        [200, headers, method == "HEAD" ? [] : [body]]
+      end
+
       def request_is_https?(request)
         return true if request.env["HTTPS"] == "on"
         return true if request.env["rack.url_scheme"] == "https"
@@ -447,11 +499,19 @@ module Prouterd
       end
 
       def not_found
-        json_response(404, error: "no route for this request")
+        json_error(404, "not_found", "no route for this request")
       end
 
       def json_response(status, payload)
         [status, { "content-type" => "application/json" }, [JSON.dump(payload)]]
+      end
+
+      # Canonical `{error: {code, message, details?}}` envelope shared
+      # across /v1, webhook, and routing-layer error returns.
+      def json_error(status, code, message, details: nil)
+        body = { code: code, message: message }
+        body[:details] = details unless details.nil?
+        json_response(status, error: body)
       end
     end
   end

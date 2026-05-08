@@ -46,8 +46,9 @@ RSpec.describe "Prouterd::API::App body-size enforcement" do
     post "/i/anything", huge, { "CONTENT_TYPE" => "application/json" }
     expect(last_response.status).to eq(413)
     body = JSON.parse(last_response.body)
-    expect(body["error"]).to include("too large")
-    expect(body["limit_bytes"]).to eq(10_000)
+    expect(body["error"]["code"]).to eq("payload_too_large")
+    expect(body["error"]["message"]).to include("too large")
+    expect(body["error"]["details"]["limit_bytes"]).to eq(10_000)
   ensure
     ENV.delete("PROUTERD_MAX_BODY_BYTES")
   end

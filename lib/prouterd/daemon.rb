@@ -107,11 +107,24 @@ module Prouterd
         scheme = ENV["PROUTERD_SSL_CERT"].to_s.empty? ? "http" : "https"
         system_url = "#{scheme}://#{opts[:bind]}:#{opts[:port]}"
 
+        # When --console-dir points at the SPA repo, the daemon serves
+        # /console/* at same-origin. Cookie auth (set by /v1/login)
+        # rides every browser request without CORS plumbing.
+        console_dir = nil
+        if opts[:console_dir]
+          unless File.directory?(opts[:console_dir])
+            @stderr.puts "prouterd: --console-dir '#{opts[:console_dir]}' is not a directory"
+            return 2
+          end
+          console_dir = File.expand_path(opts[:console_dir])
+        end
+
         app = Prouterd::API::App.new(
           store: store, runner: runner, logger: logger,
           in_flight: in_flight, metrics: metrics,
           admin_token: admin_token, jobs: jobs, rate_limiter: rate_limiter,
-          system_url: system_url
+          system_url: system_url,
+          console_dir: console_dir
         )
         app.start_storage_probe
 
@@ -167,6 +180,9 @@ module Prouterd
             @argv.shift
             n = @argv.shift or return missing_arg("--workers")
             opts[:workers] = Integer(n) rescue (return invalid_arg("--workers must be an integer"))
+          when "--console-dir"
+            @argv.shift
+            opts[:console_dir] = @argv.shift or return missing_arg("--console-dir")
           when "--help", "-h"
             @argv.shift
             opts[:help] = true
@@ -205,6 +221,8 @@ module Prouterd
             --no-db             in-memory mode (rejected; daemon needs state)
             --runner KIND       real (default) | shell | stub (env: PROUTERD_RUNNER)
             --workers N         worker pool size (default: #{Prouterd::Runtime::WorkerPool::DEFAULT_WORKERS})
+            --console-dir PATH  serve operator SPA from PATH at /console/*
+                                (single-process deploy; cookie auth)
             --version, -v       print version
             --help, -h          show this help
 

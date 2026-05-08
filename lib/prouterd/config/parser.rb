@@ -532,10 +532,12 @@ module Prouterd
         barrier.barrier_join_strategy = group.join_strategy
         process_node.blocks << barrier
 
-        # Synthesize routes child -> barrier. all-best-effort needs
-        # on-failure=continue so a failed child doesn't abort the run
-        # before the barrier can pick up the survivors.
-        on_failure = group.join_strategy == "all-best-effort" ? "continue" : "stop"
+        # Synthesize routes child -> barrier. all-best-effort and
+        # merge-children both need on-failure=continue so a failed
+        # child doesn't abort the run before the barrier can pick up
+        # the survivors. all-required keeps the default `stop`.
+        best_effort_strategies = %w[all-best-effort merge-children]
+        on_failure = best_effort_strategies.include?(group.join_strategy) ? "continue" : "stop"
         group.member_block_names.each do |child_name|
           route = AST::ProcessRoute.new(from_block: child_name, to_block: name, line: header.number)
           route.on_failure = on_failure

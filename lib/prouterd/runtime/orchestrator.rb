@@ -1355,12 +1355,29 @@ module Prouterd
             succeeded << m unless value.nil?
           end
         end
-        output = {
-          "members"   => aggregated,
-          "succeeded" => succeeded,
-          "failed"    => members - succeeded,
-          "join_strategy" => block.barrier_join_strategy
-        }
+
+        if block.barrier_join_strategy == "merge-children"
+          # Shallow-merge every member's output Hash so the barrier's
+          # output is one flat object across all children. Lets a
+          # parallel group satisfy a single contract whose shape is
+          # the union of children's outputs (e.g. {jira, slack,
+          # sentry}). Non-Hash member outputs are skipped — they
+          # have no keys to merge. Later members win on key collision
+          # (members ordered as declared).
+          merged = {}
+          members.each do |m|
+            value = aggregated[m]
+            merged.merge!(value) if value.is_a?(Hash)
+          end
+          output = merged
+        else
+          output = {
+            "members"   => aggregated,
+            "succeeded" => succeeded,
+            "failed"    => members - succeeded,
+            "join_strategy" => block.barrier_join_strategy
+          }
+        end
         now = Time.now.utc.iso8601(3)
         db_mutex.synchronize do
           step = @runs.create_step(run_id: run.id, block_name: block.name, attempt: 1, image: nil)

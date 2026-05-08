@@ -213,7 +213,15 @@ module Prouterd
       # blocks + a synthesized barrier block on @blocks, plus synthetic
       # routes from each member to the barrier on @routes.
       class ParallelGroup
-        JOIN_STRATEGIES = %w[all-required all-best-effort].freeze
+        # all-required       fail the barrier if any member fails
+        # all-best-effort    barrier always succeeds; failed members
+        #                    show up in `failed:[...]` of output_json
+        # merge-children     all-best-effort + flatten: barrier
+        #                    output is the shallow-merge of every
+        #                    member's output_json (member-name keys
+        #                    NOT preserved). For contracts that want
+        #                    a single flat shape across N children.
+        JOIN_STRATEGIES = %w[all-required all-best-effort merge-children].freeze
 
         attr_accessor :name, :join_strategy, :line
         attr_reader :member_block_names

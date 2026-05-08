@@ -1767,10 +1767,82 @@ parsing, but external integrations need a one-line fix.
 
 834 / 0 (was 826 + 8 new error-envelope contract specs).
 
+### Phase 39: BREAKING — `interface mcp` client + `shell_tool` rename
+
+**Rename** `mcp_tool` → `shell_tool`. The Phase 38c sugar was
+misnamed — it doesn't speak the Model Context Protocol, it bundles
+the `interface shell` + `tool` + `implementation` triplet for
+shell-script integrations. With a real MCP client landing in this
+phase, freeing the `mcp_*` namespace was a blocker. No parser
+alias kept; `.prc` files using `mcp_tool` must be edited.
+
+**New: `interface mcp <name>`.** First-class JSON-RPC 2.0 client
+for [MCP servers](https://modelcontextprotocol.io). The daemon
+spawns one subprocess per declaration, runs the protocol handshake,
+discovers tools via `tools/list`, and routes namespaced tool calls
+(`<iface>.<tool>`) from agentic blocks through the existing
+LlmAgentic loop.
+
+DSL:
+
+    interface mcp atlassian
+     server npx "@atlassian/mcp-server@1.4.2"
+     cwd /opt/atp
+     env JIRA_URL "https://example.atlassian.net"
+     secret JIRA_TOKEN
+     timeout-tool-call 30s
+    exit
+
+    block triage
+     interface llm codex
+     agentic on
+     mcp atlassian
+     allowed-tools atlassian.search_issues, atlassian.get_issue
+     tool-call-limit 8
+    exit
+
+Server kinds: `npx` / `uvx` / `bin` / `raw` (shell-tokenised argv).
+Apply-time `prouter validate` checks that the chosen runner is on
+PATH (warnings, not hard errors — daemon may live on a different
+host).
+
+Subprocess concurrency: one Session per `interface mcp`, shared by
+all agentic blocks. Concurrent `tools/call` requests carry distinct
+JSON-RPC ids; the reader thread de-multiplexes responses to the
+right waiter. Mutex/ConditionVariable per request.
+
+Replay reproducibility: `runs.mcp_tools_json` snapshots
+`tools/list` per declared mcp iface at trigger time, so a replay
+catches drift if the server was upgraded between trigger and
+replay (`unknown_tool` instead of silent re-binding to a tool with
+a changed signature).
+
+Trust: the subprocess runs as the daemon user. For untrusted
+servers, isolate via `server raw "docker run --rm -i ..."`.
+prouterd does NOT add a sandbox layer. `server raw` validator
+forbids `{{...}}` templating — it would be a shell-injection
+vector; secrets thread through `env` / `secret` directives only.
+
+New files:
+  lib/prouterd/iface/plugins/mcp.rb            (DSL plugin)
+  lib/prouterd/iface/mcp/server_command.rb     (kind+spec → argv)
+  lib/prouterd/iface/mcp/session.rb            (JSON-RPC client)
+  lib/prouterd/iface/mcp/pool.rb               (process-singleton)
+  lib/prouterd/iface/mcp_tool_ref.rb           (live tool descriptor)
+  docs/mcp.md                                  (trust model + ops)
+  examples/14_mcp_filesystem.prc               (walkthrough)
+  spec/fixtures/fake_mcp_server.rb             (60-line test fixture)
+
+Out of scope (v0): `resources/*`, `prompts/*`, `sampling/*`,
+SSE/WebSocket transports, prouterd-as-MCP-server.
+
+870 / 0 (was 834 + 36 new specs across DSL, ServerCommand,
+Session, Pool, and end-to-end).
+
 ## Status
 
-- 38 phases shipped, one git commit per phase
-- 834 RSpec specs, 0 failures
+- 39 phases shipped, one git commit per phase
+- 870 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

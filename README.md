@@ -211,10 +211,18 @@ worked recipe.
   sandboxed read-only git for code-aware pipelines. No raw shell.
   Optional `auto-pull <duration>` keeps checkouts fresh from the
   daemon, no external cron required.
+- **MCP client.** `interface mcp <name>` connects to a [Model
+  Context Protocol] server subprocess (npx / uvx / bin / docker
+  raw). Tools auto-discovered via `tools/list`, exposed to agentic
+  blocks under `<iface>.<tool>`. Lifecycle owned by the daemon;
+  trust model documented in [docs/mcp.md](docs/mcp.md). Snapshots
+  tools/list at trigger time so replay survives a server upgrade.
 - **`shell_tool <name>` sugar.** Collapses the
   `interface shell` + `tool` + `implementation` triplet into one
   declaration for shell-script integrations. Pure parser-time
   expansion, no new runtime.
+
+[Model Context Protocol]: https://modelcontextprotocol.io/
 - **Output contracts.** Declare expected JSON shape, validate at
   runtime, fail / retry / warn on violation.
 - **Typed artifacts.** `produces model.pkl`, `input from

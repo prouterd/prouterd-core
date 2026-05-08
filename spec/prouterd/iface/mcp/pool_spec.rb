@@ -90,4 +90,42 @@ RSpec.describe Prouterd::Iface::Mcp::Pool do
   ensure
     pool&.stop
   end
+
+  it "auto-retries a degraded interface once a fix lets the spawn succeed" do
+    # Boot with a bad bin path; first spawn marks degraded.
+    pool = described_class.new(secret_resolver: secret_resolver)
+    bad_doc = doc(server_kind: "bin", spec: "/no/such/binary")
+    pool.start_or_reconcile(bad_doc)
+    expect(pool.health["fake"][:state]).to eq(:degraded)
+
+    # Force the next retry to fire immediately: rewrite the entry's
+    # next_retry_at + reconcile to the working spec. The retry tick
+    # respawns using the wanted-set, which we just updated.
+    pool.start_or_reconcile(doc)   # wanted-set now points at ruby fake server
+    pool.send(:tick)               # synchronous retry
+    deadline = Time.now + 5
+    sleep 0.05 while pool.health["fake"][:state] != :ready && Time.now < deadline
+
+    expect(pool.health["fake"][:state]).to eq(:ready)
+    expect(pool.health["fake"][:tools]).to eq(["echo"])
+  ensure
+    pool&.stop
+  end
+
+  it "exp-backoff escalates on repeated failures" do
+    pool = described_class.new(secret_resolver: secret_resolver)
+    pool.start_or_reconcile(doc(server_kind: "bin", spec: "/no/such/binary"))
+    first = pool.instance_variable_get(:@entries)["fake"].backoff_seconds
+    # tick before next_retry_at — no respawn, backoff unchanged.
+    pool.send(:tick)
+    expect(pool.instance_variable_get(:@entries)["fake"].backoff_seconds).to eq(first)
+    # force the entry due, tick, and the second failure should
+    # have escalated the backoff
+    pool.instance_variable_get(:@entries)["fake"].next_retry_at = Time.now - 1
+    pool.send(:tick)
+    second = pool.instance_variable_get(:@entries)["fake"].backoff_seconds
+    expect(second).to be > first
+  ensure
+    pool&.stop
+  end
 end

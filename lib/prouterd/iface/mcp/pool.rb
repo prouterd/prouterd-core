@@ -26,6 +26,7 @@ module Prouterd
         DEFAULT_TOOL_CALL_TIMEOUT_MS = 60_000
         BACKOFF_BASE_SECONDS = 1
         MAX_BACKOFF_SECONDS = 300
+        RETRY_TICK_SECONDS = 1
 
         Entry = Struct.new(:iface_name, :session, :state, :tools, :last_error,
                            :next_retry_at, :backoff_seconds, keyword_init: true)
@@ -34,7 +35,10 @@ module Prouterd
           @secret_resolver = secret_resolver
           @logger = logger
           @entries = {}              # iface_name => Entry
+          @wanted = {}               # iface_name => [iface_ast, document]
           @entries_lock = Mutex.new
+          @retry_thread = nil
+          @stopping = false
         end
 
         # Spawn one Session per `interface mcp <name>` in `document`.
@@ -48,6 +52,7 @@ module Prouterd
                          .each_with_object({}) { |i, h| h[i.name] = i }
 
           @entries_lock.synchronize do
+            @wanted = want.transform_values { |iface| [iface, document] }
             (@entries.keys - want.keys).each do |gone|
               stop_entry(@entries[gone])
               @entries.delete(gone)
@@ -59,12 +64,18 @@ module Prouterd
           want.each do |name, iface|
             spawn_or_keep(name, iface, document)
           end
+
+          ensure_retry_thread
         end
 
         def stop
+          @stopping = true
+          @retry_thread&.join(2)
+          @retry_thread = nil
           @entries_lock.synchronize do
             @entries.each_value { |e| stop_entry(e) }
             @entries.clear
+            @wanted.clear
           end
         end
 
@@ -149,6 +160,12 @@ module Prouterd
         end
 
         def spawn_session(name, iface, document)
+          # Carry the previous entry's backoff_seconds forward so
+          # repeated failures escalate (1s → 4s → 16s → ... → 300s).
+          # Fresh spawns (no prior entry) start at BASE.
+          previous = @entries_lock.synchronize { @entries[name] }
+          inherited_backoff = previous&.backoff_seconds || BACKOFF_BASE_SECONDS
+
           server_field = iface.type_fields["server"]
           argv =
             begin
@@ -165,7 +182,7 @@ module Prouterd
           session = Session.new(argv: argv, env: env, cwd: cwd, logger: @logger)
           entry = Entry.new(iface_name: name, session: session, state: :starting,
                             tools: [], last_error: nil,
-                            next_retry_at: nil, backoff_seconds: BACKOFF_BASE_SECONDS)
+                            next_retry_at: nil, backoff_seconds: inherited_backoff)
           @entries_lock.synchronize { @entries[name] = entry }
 
           begin
@@ -176,6 +193,8 @@ module Prouterd
               entry.state = :ready
               entry.tools = tools
               entry.last_error = nil
+              entry.backoff_seconds = BACKOFF_BASE_SECONDS
+              entry.next_retry_at = nil
             end
             @logger.info("mcp interface ready",
                          facility: "MCP", mnemonic: "READY",
@@ -213,14 +232,61 @@ module Prouterd
           end
         end
 
-        def record_failure(name, iface, _document, message)
+        def record_failure(name, _iface, _document, message)
           entry = Entry.new(iface_name: name, session: nil, state: :degraded,
                             tools: [], last_error: message,
-                            next_retry_at: nil, backoff_seconds: BACKOFF_BASE_SECONDS)
+                            next_retry_at: Time.now + BACKOFF_BASE_SECONDS,
+                            backoff_seconds: BACKOFF_BASE_SECONDS)
           @entries_lock.synchronize { @entries[name] = entry }
           @logger.error("mcp interface unresolvable",
                         facility: "MCP", mnemonic: "UNRESOLVABLE",
                         iface: name, message: message)
+        end
+
+        # Background tick: scan @entries for :degraded ones whose
+        # `next_retry_at` has come due and the iface is still
+        # wanted (in @wanted), and retry a spawn. Exponential
+        # backoff per-entry, bounded by MAX_BACKOFF_SECONDS.
+        # Started by `start_or_reconcile` and joined by `stop`.
+        def ensure_retry_thread
+          return if @retry_thread&.alive?
+
+          @retry_thread = Thread.new do
+            loop do
+              break if @stopping
+
+              tick
+              sleep RETRY_TICK_SECONDS
+            end
+          rescue StandardError => e
+            @logger.error("mcp retry thread crashed",
+                          facility: "MCP", mnemonic: "RETRY_CRASH",
+                          error: e.class.name, message: e.message)
+          end
+        end
+
+        def tick
+          # Snapshot due-now degraded entries under the lock; respawn
+          # outside the lock so a slow Open3.popen3 doesn't block
+          # call_tool / health.
+          due = @entries_lock.synchronize do
+            @entries.values.select do |e|
+              e.state == :degraded &&
+                e.next_retry_at &&
+                Time.now >= e.next_retry_at &&
+                @wanted.key?(e.iface_name)
+            end.map(&:iface_name)
+          end
+
+          due.each do |name|
+            iface, document = @entries_lock.synchronize { @wanted[name] }
+            next unless iface
+
+            @logger.info("mcp interface retry",
+                         facility: "MCP", mnemonic: "RETRY",
+                         iface: name)
+            spawn_session(name, iface, document)
+          end
         end
 
         # Pool keeps the original iface struct on the entry so we can

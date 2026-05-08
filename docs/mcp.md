@@ -157,6 +157,8 @@ upgrade, pin the server (`server bin "/path/to/old/binary"` or
 | `MCP-4-BAD_FRAME` | warn    | Server emitted non-JSON on stdout         |
 | `MCP-7-NOTIFY`   | debug    | Server pushed an unsolicited notification |
 | `MCP-7-STDERR`   | debug    | Server stderr line (last 100 cached)       |
+| `MCP-6-RETRY`    | info     | Retry tick respawning a degraded interface |
+| `MCP-3-RETRY_CRASH` | error | Retry thread itself raised                |
 
 ## Out of scope (v0)
 

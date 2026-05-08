@@ -336,6 +336,7 @@ module Prouterd
         when ["GET",    %w[v1 secrets]]          then @v1.get_secrets(request)
         when ["GET",    %w[v1 runs]]             then @v1.get_runs(request)
         when ["GET",    %w[v1 tools]]            then @v1.get_tools(request)
+        when ["GET",    %w[v1 mcp]]              then @v1.get_mcp(request)
         when ["POST",   %w[v1 trace]]            then @v1.post_trace(request)
         else
           dispatch_v1_dynamic(method, segments, request)

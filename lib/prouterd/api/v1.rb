@@ -157,6 +157,32 @@ module Prouterd
         json(200, data: document.tools.map { |t| tool_summary(t) })
       end
 
+      # GET /v1/mcp — per-iface declarations joined with live pool
+      # health (state ∈ starting | ready | degraded | stopped, the
+      # discovered tool list, last_error). When the daemon was
+      # started without an mcp pool (e.g. an in-process App built by
+      # tests), `state: "no_pool"` is returned for every iface.
+      def get_mcp(_request)
+        document = @store.load_running
+        ifaces = document.interfaces.select { |i| i.type == "mcp" }
+        health = @app&.mcp_pool&.health || {}
+        data = ifaces.map do |iface|
+          h = health[iface.name]
+          server = iface.type_fields["server"] || {}
+          {
+            name:       iface.name,
+            server:     { kind: server["kind"], spec: server["spec"] },
+            cwd:        iface.type_fields["cwd"],
+            secrets:    iface.type_fields["secret"] || [],
+            timeout_tool_call_ms: iface.type_fields["timeout-tool-call"],
+            state:      h ? h[:state].to_s : (@app&.mcp_pool ? "unknown" : "no_pool"),
+            tools:      h ? h[:tools] : [],
+            last_error: h ? h[:last_error] : nil
+          }
+        end
+        json(200, data: data)
+      end
+
       def post_process_trigger(request, name)
         document = @store.load_running
         process = document.processes.find { |p| p.name == name }

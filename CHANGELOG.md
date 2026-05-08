@@ -1839,10 +1839,52 @@ SSE/WebSocket transports, prouterd-as-MCP-server.
 870 / 0 (was 834 + 36 new specs across DSL, ServerCommand,
 Session, Pool, and end-to-end).
 
+### Phase 39a: MCP operational polish
+
+Closes the four operational gaps from the post-Phase-39 audit, all
+of which were "the runtime works but the operator can't see /
+respond to it" issues.
+
+1. **Auto-restart of degraded sessions.** Pool now runs a 1-second
+   tick that respawns degraded entries whose `next_retry_at` has
+   come due, with exponential backoff (1s → 4s → 16s → … → 300s)
+   that escalates per failure and resets to base on a successful
+   handshake. Previously, a crashed MCP server stayed dead until
+   the next config apply.
+
+2. **Live reconcile on `config apply`.** `Daemon::Main` now
+   subscribes to the `:config_changed` event the V1 layer
+   publishes after commit / rollback / save-boot. Adding a new
+   `interface mcp <name>` and applying takes effect without a
+   daemon restart; removed interfaces stop their subprocess.
+
+3. **Operator visibility surface.** `GET /v1/mcp` returns the
+   per-iface declaration joined with live pool health (state ∈
+   starting / ready / degraded / stopped, discovered tools list,
+   last error). `state: "no_pool"` when a non-daemon App built
+   it. Shell `show mcp` lists declared mcp interfaces with the
+   `warn_if_unresolvable` hint per server kind — operator sees at
+   apply time when `bin` points at a nonexistent path or `npx` /
+   `uvx` aren't on PATH.
+
+4. **`prouter check` apply-time warnings.** Same
+   `warn_if_unresolvable` runs against every `interface mcp` in
+   the file under check; warnings appear under the existing
+   "Warnings:" section. `raw` is reported as unverifiable (yellow)
+   rather than silently ignored.
+
+Two new `%MCP-*` mnemonics: `RETRY` (info) when the retry tick
+respawns a degraded interface, `RETRY_CRASH` (error) if the retry
+thread itself raises.
+
+877 / 0 (was 870 + 7 new specs across pool retry, /v1/mcp,
+show mcp, prouter-check warnings, and config_changed
+re-subscription).
+
 ## Status
 
 - 39 phases shipped, one git commit per phase
-- 870 RSpec specs, 0 failures
+- 877 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

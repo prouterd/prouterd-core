@@ -962,10 +962,19 @@ module Prouterd
         end
 
         @stdout.puts "Warnings:"
-        if result.warnings.empty?
+        warnings = result.warnings.dup
+        # Apply-time MCP runner check: each `interface mcp` carries a
+        # `server <kind> "<spec>"`. We can verify npx / uv / bin
+        # locally on the validating host. `raw` is unverifiable —
+        # reported anyway so the operator knows.
+        document.interfaces.select { |i| i.type == "mcp" }.each do |iface|
+          msg = Iface::Mcp::ServerCommand.warn_if_unresolvable(iface.type_fields["server"])
+          warnings << "interface mcp '#{iface.name}': #{msg}" if msg
+        end
+        if warnings.empty?
           @stdout.puts "  none"
         else
-          result.warnings.each { |w| @stdout.puts "  #{path}: #{w}" }
+          warnings.each { |w| @stdout.puts "  #{path}: #{w}" }
         end
       end
 

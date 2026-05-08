@@ -105,6 +105,21 @@ module Prouterd
                       error: e.class.name, message: e.message)
         end
 
+        # Live-reconcile on `config apply` / `rollback` / `save-boot`.
+        # V1#publish_config_changed fires on the default events bus
+        # after a successful commit/rollback; we re-spawn / drop /
+        # keep mcp sessions to match the new running config without
+        # restarting the daemon.
+        Prouterd::Events.subscribe(:config_changed) do |_topic, _payload|
+          begin
+            mcp_pool.start_or_reconcile(store.load_running)
+          rescue StandardError => e
+            logger.warn("mcp pool reconcile on config_changed failed",
+                        facility: "MCP", mnemonic: "RECONCILE_ERR",
+                        error: e.class.name, message: e.message)
+          end
+        end
+
         worker_pool = Prouterd::Runtime::WorkerPool.new(
           store: store, runner: runner, in_flight: in_flight, metrics: metrics,
           workers: opts[:workers], logger: logger,

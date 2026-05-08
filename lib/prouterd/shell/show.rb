@@ -19,6 +19,7 @@ module Prouterd
         policies policy queues queue secrets secret
         blocks block routes
         runs run logs artifacts dead-letter
+        mcp
       ].freeze
 
       def execute(args, session, out, _err)
@@ -58,6 +59,7 @@ module Prouterd
         when "logs"      then show_logs(rest, session, out)
         when "artifacts" then show_artifacts(rest, session, out)
         when "dead-letter" then show_dead_letter(rest, session, out)
+        when "mcp"       then show_mcp(session, out)
         else
           raise CommandError, "unknown show target '#{head}'"
         end
@@ -221,6 +223,33 @@ module Prouterd
             marker_str
           ]
         end
+      end
+
+      # ----- mcp -----
+      #
+      # Lists declared `interface mcp` entries from the running config
+      # and warns when the chosen `server <kind>` runner can't be
+      # found on the local PATH. Live daemon health (state / tools)
+      # comes from /v1/mcp — the shell process doesn't talk to the
+      # daemon's Pool directly.
+      def show_mcp(session, out)
+        ifaces = session.active_config.interfaces.select { |i| i.type == "mcp" }
+        if ifaces.empty?
+          out.puts "No `interface mcp` declarations in the running config."
+          return
+        end
+        out.puts "%-25s %-6s %-40s %s" % ["NAME", "KIND", "SPEC", "PATH/STATUS"]
+        ifaces.each do |i|
+          server = i.type_fields["server"] || {}
+          warn = Prouterd::Iface::Mcp::ServerCommand.warn_if_unresolvable(server)
+          status = warn ? "! #{warn}" : "ok"
+          out.puts "%-25s %-6s %-40s %s" % [
+            i.name, server["kind"] || "-",
+            (server["spec"] || "")[0, 40], status
+          ]
+        end
+        out.puts
+        out.puts "Live state from a running daemon: GET /v1/mcp."
       end
 
       # ----- dead-letter -----

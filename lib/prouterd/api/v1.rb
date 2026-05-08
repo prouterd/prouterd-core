@@ -157,6 +157,16 @@ module Prouterd
         json(200, data: document.tools.map { |t| tool_summary(t) })
       end
 
+      # GET /v1/local-repo/status — per-iface, per-whitelist-entry
+      # auto-pull state. `ok: true` and `summary` on the most recent
+      # successful pull; `ok: false` and `error` on the most recent
+      # failure. `checked_at` is the wall-clock timestamp of the last
+      # poll. Empty array if no pulls have happened yet (daemon just
+      # booted, or no `interface local_repo` declares `auto-pull`).
+      def get_local_repo_status(_request)
+        json(200, data: Iface::LocalRepoStatus.snapshot.map(&:to_h))
+      end
+
       # GET /v1/mcp — per-iface declarations joined with live pool
       # health (state ∈ starting | ready | degraded | stopped, the
       # discovered tool list, last_error). When the daemon was

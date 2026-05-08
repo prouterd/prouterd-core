@@ -19,7 +19,7 @@ module Prouterd
         policies policy queues queue secrets secret
         blocks block routes
         runs run logs artifacts dead-letter
-        mcp
+        mcp local-repo
       ].freeze
 
       def execute(args, session, out, _err)
@@ -60,6 +60,7 @@ module Prouterd
         when "artifacts" then show_artifacts(rest, session, out)
         when "dead-letter" then show_dead_letter(rest, session, out)
         when "mcp"       then show_mcp(session, out)
+        when "local-repo" then show_local_repo(session, out)
         else
           raise CommandError, "unknown show target '#{head}'"
         end
@@ -222,6 +223,39 @@ module Prouterd
             (c.message || "").to_s[0, 60],
             marker_str
           ]
+        end
+      end
+
+      # ----- local-repo -----
+      #
+      # Lists declared `interface local_repo` entries with the most
+      # recent auto-pull outcome per whitelisted repo. Entries that
+      # haven't been polled yet (daemon just booted, or `auto-pull`
+      # not declared) show "(no pull recorded)".
+      def show_local_repo(session, out)
+        ifaces = session.active_config.interfaces.select { |i| i.type == "local_repo" }
+        if ifaces.empty?
+          out.puts "No `interface local_repo` declarations in the running config."
+          return
+        end
+        statuses = Prouterd::Iface::LocalRepoStatus.snapshot
+        by_iface = statuses.group_by(&:iface_name)
+        ifaces.each do |iface|
+          out.puts "interface local_repo #{iface.name}"
+          out.puts "  auto-pull: #{iface.type_fields['auto-pull'] || '(none — pulls disabled)'}"
+          rows = by_iface[iface.name] || []
+          if rows.empty?
+            out.puts "  pulls:     (no pull recorded yet)"
+          else
+            out.puts "  pulls:"
+            rows.each do |r|
+              status_word = r.ok ? "ok" : "FAIL"
+              tail = r.ok ? r.summary.to_s : r.error.to_s
+              out.puts "    %-30s %-4s  %-19s  %s" % [
+                r.repo, status_word, r.checked_at.to_s[0, 19], tail[0, 70]
+              ]
+            end
+          end
         end
       end
 

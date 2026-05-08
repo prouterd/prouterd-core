@@ -160,26 +160,43 @@ module Prouterd
             @logger.warn("auto-pull skipped: not a git checkout",
                          facility: "SCHED", mnemonic: "NOT_GIT",
                          interface: iface.name, repo: repo)
+            Iface::LocalRepoStatus.record_pull(
+              iface_name: iface.name, repo: repo, ok: false,
+              error: "not a git checkout at #{repo_dir}"
+            )
             next
           end
           out, err, status = Open3.capture3("git", "-C", repo_dir, "pull", "--ff-only")
+          summary = out.lines.first.to_s.chomp
           if status.success?
             @logger.info("auto-pull ok",
                          facility: "SCHED", mnemonic: "PULL_OK",
                          interface: iface.name, repo: repo,
-                         summary: out.lines.first.to_s.chomp)
+                         summary: summary)
+            Iface::LocalRepoStatus.record_pull(
+              iface_name: iface.name, repo: repo, ok: true,
+              summary: summary
+            )
           else
+            stderr_first = err.lines.first.to_s.chomp
             @logger.warn("auto-pull failed",
                          facility: "SCHED", mnemonic: "PULL_FAILED",
                          interface: iface.name, repo: repo,
-                         exit: status.exitstatus,
-                         stderr: err.lines.first.to_s.chomp)
+                         exit: status.exitstatus, stderr: stderr_first)
+            Iface::LocalRepoStatus.record_pull(
+              iface_name: iface.name, repo: repo, ok: false,
+              error: "git pull exited #{status.exitstatus}: #{stderr_first}"
+            )
           end
         end
       rescue StandardError => e
         @logger.error("auto-pull error",
                       facility: "SCHED", mnemonic: "PULL_ERR",
                       interface: iface.name, error: e.class.name, message: e.message)
+        Iface::LocalRepoStatus.record_pull(
+          iface_name: iface.name, repo: "(all)", ok: false,
+          error: "#{e.class}: #{e.message}"
+        )
       end
 
       def parse_cron(iface)

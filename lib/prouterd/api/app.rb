@@ -75,7 +75,8 @@ module Prouterd
           in_flight: @in_flight,
           metrics: @metrics,
           logger: @logger,
-          jobs: @jobs
+          jobs: @jobs,
+          events: @events
         )
         @rpc_dispatcher = RpcDispatcher.new(v1: @v1, app: self, store: @store)
       end

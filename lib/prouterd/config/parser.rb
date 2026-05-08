@@ -572,9 +572,11 @@ module Prouterd
           raise ParseError.new("max-cost-usd must be > 0", line: line.number) unless value.positive?
           node.max_cost_usd = value
         when "fan-out"
-          # `fan-out from <path> into <process>` — after this block
-          # succeeds, walk the named array path in output_json and
-          # enqueue one run of <process> per element.
+          # `fan-out from <path> into <process>` opens either a one-line
+          # directive (no body) or a section (body = map / dedupe /
+          # rate-limit clauses). Section is detected by peek-ahead: if
+          # the next line's head looks like a fan-out body keyword,
+          # consume the body via each_body_line.
           unless line.tokens.length == 5 &&
                  line.tokens[1].value == "from" &&
                  line.tokens[3].value == "into"
@@ -588,6 +590,7 @@ module Prouterd
           end
           node.fan_out_from = expect_word_or_string(line.tokens[2], "fan-out path")
           node.fan_out_into = expect_identifier(line.tokens[4], "fan-out target process")
+          parse_fan_out_body(node)
         when "pause"
           if node.interface_ref
             raise ParseError.new(
@@ -992,6 +995,107 @@ module Prouterd
         end
 
         node
+      end
+
+      # Optional fan-out body (Phase 38b enrichment). Called after the
+      # `fan-out from X into Y` header is parsed; advances past the
+      # header, peeks for a body keyword, and consumes the body
+      # (including the closing `exit`) if present. No body → single-line
+      # form, just advance past the header.
+      FAN_OUT_BODY_HEADS = %w[map dedupe rate-limit].freeze
+
+      def parse_fan_out_body(node)
+        advance  # past the `fan-out from X into Y` line
+        nl = current_line
+        return unless nl && FAN_OUT_BODY_HEADS.include?(nl.head.value)
+
+        each_body_line("fan-out for block '#{node.name}'") do |line|
+          head = line.head.value
+          case head
+          when "map"        then parse_fan_out_map(node, line)
+          when "dedupe"     then parse_fan_out_dedupe(node, line)
+          when "rate-limit" then parse_fan_out_rate_limit(node, line)
+          else
+            raise ParseError.new("unknown directive '#{head}' in fan-out", line: line.number)
+          end
+        end
+      end
+
+      # `map <name> from <path> [filter starts-with("<prefix>") strip-prefix]`
+      def parse_fan_out_map(node, line)
+        unless line.tokens.length >= 4 && line.tokens[2].value == "from"
+          raise ParseError.new("syntax: map <name> from <path> [filter starts-with(\"<prefix>\") strip-prefix]", line: line.number)
+        end
+        name = expect_identifier(line.tokens[1], "map name")
+        from = expect_word_or_string(line.tokens[3], "map path")
+        entry = { "name" => name, "from" => from }
+        idx = 4
+        if line.tokens[idx]&.value == "filter"
+          # The lexer splits `starts-with("X")` into three tokens because
+          # `"` is a string delimiter — `starts-with(`, the quoted
+          # prefix, and `)`. Accept that shape; reject everything else.
+          unless line.tokens[idx + 1]&.value == "starts-with(" &&
+                 line.tokens[idx + 2] && line.tokens[idx + 3]&.value == ")"
+            raise ParseError.new('filter form: filter starts-with("<prefix>") [strip-prefix]', line: line.number)
+          end
+          entry["filter_prefix"] = line.tokens[idx + 2].value
+          idx += 4
+        end
+        if line.tokens[idx]&.value == "strip-prefix"
+          entry["strip_prefix"] = true
+          idx += 1
+        end
+        if line.tokens[idx]
+          raise ParseError.new("trailing tokens after map clause", line: line.number)
+        end
+        if node.fan_out_maps.any? { |m| m["name"] == name }
+          raise ParseError.new("duplicate map name '#{name}' in fan-out", line: line.number)
+        end
+        node.fan_out_maps << entry
+      end
+
+      # `dedupe by <field> window <duration> [when prior-run.status eq "success"]`
+      def parse_fan_out_dedupe(node, line)
+        unless line.tokens[1]&.value == "by" && line.tokens[3]&.value == "window"
+          raise ParseError.new("syntax: dedupe by <field> window <duration> [when prior-run.status eq \"success\"]", line: line.number)
+        end
+        field = expect_identifier(line.tokens[2], "dedupe by field")
+        window_ms = expect_duration(line.tokens[4], "dedupe window")
+        rec = { "by" => field, "window_ms" => window_ms }
+        if line.tokens[5]
+          unless line.tokens[5].value == "when" &&
+                 line.tokens[6]&.value == "prior-run.status" &&
+                 line.tokens[7]&.value == "eq" &&
+                 line.tokens[8]
+            raise ParseError.new('dedupe `when` clause: when prior-run.status eq "success"', line: line.number)
+          end
+          rec["when_status"] = expect_word_or_string(line.tokens[8], "dedupe status")
+        end
+        if node.fan_out_dedupe
+          raise ParseError.new("duplicate `dedupe` clause in fan-out", line: line.number)
+        end
+        node.fan_out_dedupe = rec
+      end
+
+      # `rate-limit <N>/<duration>`  e.g.  `rate-limit 1/5s`  →  one
+      # child enqueued every 5 seconds.
+      def parse_fan_out_rate_limit(node, line)
+        expect_token_count(line, 2, "rate-limit <N>/<duration>")
+        spec = line.tokens[1].value
+        unless spec =~ %r{\A(\d+)/(.+)\z}
+          raise ParseError.new("rate-limit must look like `1/5s`", line: line.number)
+        end
+        n = Regexp.last_match(1).to_i
+        raise ParseError.new("rate-limit N must be >= 1", line: line.number) if n < 1
+        window_ms = begin
+          Util::DurationParser.parse(Regexp.last_match(2))
+        rescue ArgumentError => e
+          raise ParseError.new("invalid rate-limit window: #{e.message}", line: line.number)
+        end
+        if node.fan_out_rate_limit
+          raise ParseError.new("duplicate `rate-limit` clause in fan-out", line: line.number)
+        end
+        node.fan_out_rate_limit = { "n" => n, "window_ms" => window_ms }
       end
 
       # `mcp_tool <name> ... exit` — pure parser sugar for the common

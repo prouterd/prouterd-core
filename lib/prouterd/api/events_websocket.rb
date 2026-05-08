@@ -13,10 +13,14 @@ module Prouterd
     #   "runs"          every run.created / run.updated, all processes
     #   "run:<uid>"     run + step events for that specific run
     #   "logs:<uid>"    log.appended for that run
+    #   "system"        config commits, rollbacks, save-as-boot — drives
+    #                   live refresh of every config-derived window
+    #                   (interfaces / blocks / routes / queues / policies
+    #                   / secrets / tools / config / diff)
     #
     # The internal `Prouterd::Events` topics (`:run_created`, `:step_updated`,
-    # `:log_appended`, …) are mapped to the wire topics here so external
-    # clients don't need to know about Storage::* objects.
+    # `:log_appended`, `:config_changed`, …) are mapped to the wire topics
+    # here so external clients don't need to know about Storage::* objects.
     #
     # Auth: same bearer-token rule as the rest of /v1. When PROUTERD_ADMIN_TOKEN
     # is unset, the endpoint is open (matches App's behaviour).
@@ -109,11 +113,12 @@ module Prouterd
 
       def attach_internal_subscribers
         @subs_mutex.synchronize do
-          @internal_subs << @events.subscribe(:run_created)  { |_, p| route_run("run.created", p) }
-          @internal_subs << @events.subscribe(:run_updated)  { |_, p| route_run("run.updated", p) }
-          @internal_subs << @events.subscribe(:step_created) { |_, p| route_step("step.created", p) }
-          @internal_subs << @events.subscribe(:step_updated) { |_, p| route_step("step.updated", p) }
-          @internal_subs << @events.subscribe(:log_appended) { |_, p| route_log(p) }
+          @internal_subs << @events.subscribe(:run_created)     { |_, p| route_run("run.created", p) }
+          @internal_subs << @events.subscribe(:run_updated)     { |_, p| route_run("run.updated", p) }
+          @internal_subs << @events.subscribe(:step_created)    { |_, p| route_step("step.created", p) }
+          @internal_subs << @events.subscribe(:step_updated)    { |_, p| route_step("step.updated", p) }
+          @internal_subs << @events.subscribe(:log_appended)    { |_, p| route_log(p) }
+          @internal_subs << @events.subscribe(:config_changed)  { |_, p| route_config_changed(p) }
         end
       end
 
@@ -206,6 +211,17 @@ module Prouterd
         return unless run_uid
 
         deliver_if_subscribed("logs:#{run_uid}", "log.appended", log_to_wire(payload))
+      end
+
+      def route_config_changed(payload)
+        deliver_if_subscribed(
+          "system", "config.changed",
+          {
+            reason:         payload[:reason],
+            running_commit: payload[:running_commit],
+            startup_commit: payload[:startup_commit]
+          }
+        )
       end
 
       def deliver_if_subscribed(topic, type, payload)

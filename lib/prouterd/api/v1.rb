@@ -15,7 +15,7 @@ module Prouterd
     #   { "error": "...", "details": [..] } on failure
     class V1
       def initialize(store:, runner:, secret_resolver:, in_flight:, metrics:, jobs:,
-                     logger: Prouterd::NullLogger.new)
+                     logger: Prouterd::NullLogger.new, events: nil)
         @store = store
         @runner = runner
         @secret_resolver = secret_resolver
@@ -23,6 +23,7 @@ module Prouterd
         @metrics = metrics
         @logger = logger
         @jobs = jobs
+        @events = events
       end
 
       # ----- /v1/config -----
@@ -62,6 +63,7 @@ module Prouterd
         return json(422, error: "validation failed", details: result.errors.map(&:message)) unless result.valid?
 
         commit = @store.commit(document, author: author, message: message)
+        publish_config_changed("commit")
         json(201, data: { commit_id: commit.id, checksum: commit.checksum })
       rescue Config::ConfigError => e
         json(400, error: e.message, line: e.line)
@@ -73,6 +75,7 @@ module Prouterd
         return json(400, error: "missing commit_id") unless commit_id.is_a?(Integer)
 
         commit = @store.rollback(commit_id)
+        publish_config_changed("rollback")
         json(200, data: { commit_id: commit.id, checksum: commit.checksum })
       rescue ControlPlane::ConfigStoreError => e
         json(404, error: e.message)
@@ -83,6 +86,7 @@ module Prouterd
       # running pointer to copy.
       def post_config_save_boot(_request)
         commit = @store.write_memory
+        publish_config_changed("save_boot")
         json(200, data: { commit_id: commit.id, checksum: commit.checksum })
       rescue ControlPlane::ConfigStoreError => e
         json(409, error: e.message)
@@ -632,6 +636,17 @@ module Prouterd
           warnings: result.warnings,
           error: result.error
         }
+      end
+
+      def publish_config_changed(reason)
+        return unless @events
+
+        @events.publish(
+          :config_changed,
+          reason:         reason,
+          running_commit: @store.running_commit&.id,
+          startup_commit: @store.startup_commit&.id
+        )
       end
 
       def parse_dsl_or_error(body)

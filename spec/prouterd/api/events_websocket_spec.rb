@@ -234,6 +234,20 @@ RSpec.describe Prouterd::API::EventsWebSocket do
       events.publish(:run_updated, run: run)
       expect(socket.sent).to be_empty
     end
+
+    it "fans 'config_changed' to the 'system' topic" do
+      conn.on_message(JSON.dump(id: "m1", type: "subscribe", payload: { topic: "system" }))
+      socket.sent.clear
+      events.publish(:config_changed, reason: "rollback",
+                                       running_commit: 42, startup_commit: 39)
+
+      msg = last_msg
+      expect(msg["topic"]).to eq("system")
+      expect(msg["type"]).to eq("config.changed")
+      expect(msg.dig("payload", "reason")).to eq("rollback")
+      expect(msg.dig("payload", "running_commit")).to eq(42)
+      expect(msg.dig("payload", "startup_commit")).to eq(39)
+    end
   end
 
   describe "ping / pong" do

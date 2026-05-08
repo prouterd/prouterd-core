@@ -220,6 +220,7 @@ module Prouterd
                       :timeout_ms, :retry_policy_name, :contract_name,
                       :interface_ref, :skip_when, :pause_reason,
                       :fan_out_from, :fan_out_into,
+                      :fan_out_maps, :fan_out_dedupe, :fan_out_rate_limit,
                       :barrier_for, :barrier_join_strategy,
                       :max_cost_usd
         attr_reader :secret_names, :produces, :artifact_inputs, :vars
@@ -258,6 +259,12 @@ module Prouterd
           # this run's id as parent_run_id so the lineage is queryable.
           @fan_out_from = nil
           @fan_out_into = nil
+          # Fan-out enrichment clauses (Phase 38b). Default: empty maps,
+          # no dedupe, no rate-limit — minimum primitive shape from
+          # Phase 37i still works.
+          @fan_out_maps        = []   # Array<{name, from, filter_prefix?, strip_prefix?}>
+          @fan_out_dedupe      = nil  # {by, window_ms, when_status?}
+          @fan_out_rate_limit  = nil  # {n, window_ms}
           # Synthesized barrier block — created by `parallel <name>`
           # expansion. Has no interface; the orchestrator special-cases
           # it as a no-op aggregator over its members' outputs. Honest

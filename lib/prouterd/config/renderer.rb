@@ -217,7 +217,22 @@ module Prouterd
           emit(level + 1, "exit")
         end
         if block.fan_out?
-          emit(level + 1, "fan-out from #{block.fan_out_from} into #{block.fan_out_into}")
+          enrichment = !block.fan_out_maps.empty? || block.fan_out_dedupe || block.fan_out_rate_limit
+          if enrichment
+            emit(level + 1, "fan-out from #{block.fan_out_from} into #{block.fan_out_into}")
+            block.fan_out_maps.each { |m| emit(level + 2, render_fan_out_map(m)) }
+            if (d = block.fan_out_dedupe)
+              line = "dedupe by #{d['by']} window #{Util::DurationParser.render(d['window_ms'])}"
+              line += " when prior-run.status eq #{quote_if_needed(d['when_status'])}" if d["when_status"]
+              emit(level + 2, line)
+            end
+            if (r = block.fan_out_rate_limit)
+              emit(level + 2, "rate-limit #{r['n']}/#{Util::DurationParser.render(r['window_ms'])}")
+            end
+            emit(level + 1, "exit")
+          else
+            emit(level + 1, "fan-out from #{block.fan_out_from} into #{block.fan_out_into}")
+          end
         end
         if block.agentic
           emit(level + 1, "agentic on")
@@ -289,6 +304,15 @@ module Prouterd
           emit(1, "model #{e.model} in #{format_price(e.price_in)} out #{format_price(e.price_out)}")
         end
         emit(0, "exit")
+      end
+
+      def render_fan_out_map(m)
+        parts = ["map #{m['name']} from #{m['from']}"]
+        if m["filter_prefix"]
+          parts << "filter starts-with(#{quote_string(m['filter_prefix'])})"
+        end
+        parts << "strip-prefix" if m["strip_prefix"]
+        parts.join(" ")
       end
 
       def format_price(v)

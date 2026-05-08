@@ -73,6 +73,90 @@ RSpec.describe "fan-out into another process" do
     expect(repo.list_runs(process_name: "analyze")).to be_empty
   end
 
+  it "applies `map` clauses to project + filter+strip-prefix item fields" do
+    map_doc = parse(<<~PRC)
+      router demo
+      exit
+      process poller
+       block search
+        interface docker img1
+        fan-out from issues into analyze
+         map ticket from issue.key
+         map labels from issue.labels filter starts-with("repo:") strip-prefix
+        exit
+       exit
+      exit
+      process analyze
+       block do
+        interface docker img1
+       exit
+      exit
+    PRC
+    runner.program("search") do |_req|
+      Prouterd::Runner::ExecutionResult.new(
+        exit_code: 0, stdout: "", stderr: "",
+        output_json: { "issues" => [
+          { "issue" => { "key" => "K-1", "labels" => ["repo:a", "team:x", "repo:b"] } },
+          { "issue" => { "key" => "K-2", "labels" => ["team:y"] } }
+        ] },
+        artifacts: [], error_type: nil, error_message: nil,
+        duration_ms: 1, started_at: nil, finished_at: nil
+      )
+    end
+
+    orchestrator.trigger(map_doc, "poller", input_event: {})
+    children = repo.list_runs(process_name: "analyze")
+    events = children.map { |r| JSON.parse(r.input_event_json) }.sort_by { |e| e["ticket"] }
+    expect(events.first).to include("ticket" => "K-1", "labels" => %w[a b])
+    expect(events.last).to include("ticket" => "K-2", "labels" => [])
+  end
+
+  it "skips a child when `dedupe` matches a recent prior-run by thread_id" do
+    dedupe_doc = parse(<<~PRC)
+      router demo
+      exit
+      process poller
+       block search
+        interface docker img1
+        fan-out from issues into analyze
+         map ticket from key
+         dedupe by ticket window 1h when prior-run.status eq "success"
+        exit
+       exit
+      exit
+      process analyze
+       thread-id "{{event.ticket}}"
+       block do
+        interface docker img1
+       exit
+      exit
+    PRC
+    runner.program("do",     &Prouterd::Runner::StubRunner.success)
+    runner.program("search") do |_req|
+      Prouterd::Runner::ExecutionResult.new(
+        exit_code: 0, stdout: "", stderr: "",
+        output_json: { "issues" => [{ "key" => "SCT-1" }, { "key" => "SCT-2" }] },
+        artifacts: [], error_type: nil, error_message: nil,
+        duration_ms: 1, started_at: nil, finished_at: nil
+      )
+    end
+
+    # Pre-seed a successful run for SCT-1 via direct repo create →
+    # dedupe should drop it next time.
+    repo.create_run(
+      process_name: "analyze",
+      input_event: { "ticket" => "SCT-1" },
+      thread_id: "SCT-1"
+    ).then do |seed|
+      repo.update_run(seed.id, status: "success", finished_at: Time.now.utc.iso8601(3))
+    end
+
+    orchestrator.trigger(dedupe_doc, "poller", input_event: {})
+    fresh_children = repo.list_runs(process_name: "analyze")
+                          .reject { |r| r.status == "success" }  # exclude the seed
+    expect(fresh_children.map(&:thread_id)).to contain_exactly("SCT-2")
+  end
+
   it "wraps scalar items into {value, index} when the array is non-Hash" do
     runner.program("search") do |_req|
       Prouterd::Runner::ExecutionResult.new(

@@ -2,6 +2,7 @@ require "json"
 require "time"
 require "set"
 require "thread"
+require "timeout"
 
 module Prouterd
   module Runtime
@@ -1511,14 +1512,29 @@ module Prouterd
         elapsed_ms > cap ? elapsed_ms : nil
       end
 
+      # Cap on the docker round-trip per container during a kill. The
+      # daemon-side socket call is normally millisecond-fast, but a
+      # docker daemon under pressure (or a torn-down socket) can hang
+      # indefinitely. Without this cap, the orchestrator thread driving
+      # the run-timeout sweep would itself wedge — exactly the scenario
+      # the timeout machinery exists to prevent.
+      KILL_DOCKER_TIMEOUT_SECONDS = 5
+
       # SIGTERM-then-SIGKILL every container the in-flight registry has
       # attached to this run. Used by Phase 35b run-timeout enforcement.
       def kill_in_flight_containers(run)
         return unless @in_flight && Runner::DockerRunner.docker_available?
 
         @in_flight.container_ids_for(run.uid).each do |cid|
-          container = Docker::Container.get(cid)
-          Runner::DockerStop.force_stop(container)
+          Timeout.timeout(KILL_DOCKER_TIMEOUT_SECONDS) do
+            container = Docker::Container.get(cid)
+            Runner::DockerStop.force_stop(container)
+          end
+        rescue Timeout::Error
+          @logger.warn("docker kill timed out",
+                       facility: "RUN", mnemonic: "KILL_TIMEOUT",
+                       run_uid: run.uid, container: cid,
+                       seconds: KILL_DOCKER_TIMEOUT_SECONDS)
         rescue StandardError
           # best-effort; orphan-container sweep on next boot will catch
           # anything we miss.

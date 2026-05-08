@@ -189,6 +189,15 @@ module Prouterd
       # the WS-RPC `status` method (RpcDispatcher) can reuse it.
       def status_payload
         document = @store.load_running
+        # `queued` is the count of runs in storage with status="queued" —
+        # accepted but not yet picked up by a worker. `in_flight` is what
+        # the runner pool is actively executing right now.
+        queued =
+          begin
+            Storage::Repositories::Runs.new(@store.db).count_runs_by_status("queued")
+          rescue StandardError
+            0
+          end
         {
           version: Prouterd::VERSION,
           router: document.router&.name,
@@ -198,7 +207,8 @@ module Prouterd
           running_commit: @store.running_commit&.id,
           startup_commit: @store.startup_commit&.id,
           accepting: @accepting,
-          in_flight: @in_flight&.in_flight_count
+          in_flight: @in_flight&.in_flight_count,
+          queued: queued
         }
       end
 

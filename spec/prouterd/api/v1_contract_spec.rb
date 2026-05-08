@@ -91,7 +91,7 @@ RSpec.describe "Phase 36a /v1 contract freeze" do
                   hostname: NilClass,
                   running_commit: Integer, startup_commit: NilClass,
                   interfaces: Integer, processes: Integer,
-                  in_flight: Integer, accepting: TrueClass)
+                  in_flight: Integer, queued: Integer, accepting: TrueClass)
     end
   end
 

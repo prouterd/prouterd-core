@@ -622,7 +622,8 @@ module Prouterd
 
       def artifact_summary(a)
         {
-          id: a.id, block_name: a.block_name, name: a.name, path: a.path,
+          id: a.id, step_id: a.step_id,
+          block_name: a.block_name, name: a.name, path: a.path,
           size_bytes: a.size_bytes, checksum: a.checksum, content_type: a.content_type,
           created_at: a.created_at
         }

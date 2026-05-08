@@ -62,6 +62,25 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
       expect(body["accepting"]).to be(true)
       expect(body["in_flight"]).to eq(0)
     end
+
+    it "exposes a `queued` count of runs not yet picked up by a worker" do
+      runs_repo = Prouterd::Storage::Repositories::Runs.new(db)
+      runs_repo.create_run(process_name: "pipeline", input_event: {})    # queued by default
+      runs_repo.create_run(process_name: "pipeline", input_event: {})
+
+      get "/v1/status"
+      payload = JSON.parse(last_response.body)
+      expect(payload["queued"]).to eq(2)
+    end
+
+    it "queued count drops as runs leave the queue" do
+      runs_repo = Prouterd::Storage::Repositories::Runs.new(db)
+      r = runs_repo.create_run(process_name: "pipeline", input_event: {})
+      runs_repo.update_run(r.id, status: "running")
+
+      get "/v1/status"
+      expect(JSON.parse(last_response.body)["queued"]).to eq(0)
+    end
   end
 
   describe "GET /metrics" do
@@ -534,6 +553,22 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
     it "404 on unknown run uid" do
       get "/v1/runs/run_deadbeef"
       expect(last_response.status).to eq(404)
+    end
+
+    it "artifact_summary exposes step_id so step-scoped UIs can filter" do
+      runs_repo = Prouterd::Storage::Repositories::Runs.new(db)
+      r = runs_repo.create_run(process_name: "pipeline", input_event: {})
+      step = runs_repo.create_step(run_id: r.id, block_name: "extract")
+      runs_repo.add_artifact(
+        run_id: r.id, step_id: step.id, block_name: "extract",
+        name: "out.json", path: "/tmp/x", size_bytes: 1, content_type: "application/json"
+      )
+
+      get "/v1/runs/#{r.uid}/artifacts"
+      expect(last_response.status).to eq(200)
+      art = JSON.parse(last_response.body)["data"].first
+      expect(art["step_id"]).to eq(step.id)
+      expect(art["block_name"]).to eq("extract")
     end
   end
 

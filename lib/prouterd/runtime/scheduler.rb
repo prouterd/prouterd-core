@@ -1,4 +1,5 @@
 require "time"
+require "open3"
 
 module Prouterd
   module Runtime

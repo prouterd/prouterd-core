@@ -255,12 +255,43 @@ module Prouterd
             else
               @result.error("block '#{process.name}/#{block.name}': `agentic on` requires `interface llm <name>`", line: block.line)
             end
-            block.allowed_tools.each do |tool_name|
-              unless @doc.tools.any? { |t| t.name == tool_name }
+            block.mcp_refs.each do |iface_name|
+              iface = @doc.interfaces.find { |i| i.name == iface_name }
+              if iface.nil? || iface.type != "mcp"
                 @result.error(
-                  "block '#{process.name}/#{block.name}' allowed-tools references undeclared tool '#{tool_name}'",
+                  "block '#{process.name}/#{block.name}' mcp references " \
+                  "undeclared interface '#{iface_name}' (must be `interface mcp <name>`)",
                   line: block.line
                 )
+              end
+            end
+            block.allowed_tools.each do |tool_name|
+              if tool_name.include?(".")
+                # Namespaced — head must be a declared `interface mcp`.
+                # Tail (the actual tool name) is forward-declared,
+                # validated at daemon connect when tools/list arrives.
+                ns = tool_name.split(".", 2).first
+                iface = @doc.interfaces.find { |i| i.name == ns }
+                if iface.nil? || iface.type != "mcp"
+                  @result.error(
+                    "block '#{process.name}/#{block.name}' allowed-tools '#{tool_name}': " \
+                    "namespace '#{ns}' is not a declared `interface mcp`",
+                    line: block.line
+                  )
+                elsif !block.mcp_refs.include?(ns)
+                  @result.error(
+                    "block '#{process.name}/#{block.name}' allowed-tools '#{tool_name}': " \
+                    "namespace '#{ns}' is not in this block's `mcp` list",
+                    line: block.line
+                  )
+                end
+              else
+                unless @doc.tools.any? { |t| t.name == tool_name }
+                  @result.error(
+                    "block '#{process.name}/#{block.name}' allowed-tools references undeclared tool '#{tool_name}'",
+                    line: block.line
+                  )
+                end
               end
             end
           end

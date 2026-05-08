@@ -115,6 +115,12 @@ module Prouterd
           value.each do |k, v|
             emit(level, "#{field.dsl_keyword} #{k} #{quote_if_needed(v)}")
           end
+        when :mcp_server
+          emit(level, "#{field.dsl_keyword} #{value['kind']} #{quote_string(value['spec'])}")
+        when :secret_ref
+          Array(value).each { |name| emit(level, "#{field.dsl_keyword} #{name}") }
+        when :duration_ms
+          emit(level, "#{field.dsl_keyword} #{Util::DurationParser.render(value)}")
         end
       end
 
@@ -238,6 +244,9 @@ module Prouterd
         end
         if block.agentic
           emit(level + 1, "agentic on")
+          unless block.mcp_refs.empty?
+            emit(level + 1, "mcp #{block.mcp_refs.join(', ')}")
+          end
           unless block.allowed_tools.empty?
             emit(level + 1, "allowed-tools #{block.allowed_tools.join(', ')}")
           end

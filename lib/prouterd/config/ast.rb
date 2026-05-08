@@ -299,6 +299,10 @@ module Prouterd
           @agentic = false
           @allowed_tools = []
           @tool_call_limit = nil
+          # MCP-iface refs the agentic loop should pull tool lists from.
+          # Each name must resolve to an `interface mcp <name>`. Tools
+          # arrive in the registry namespaced as `<iface>.<tool>`.
+          @mcp_refs = []
           # Per-block hard cost cap. When the per-attempt cost would
           # push runs.cost_usd above this value, the block fails with
           # error_type="cost_cap_exceeded".
@@ -306,7 +310,7 @@ module Prouterd
         end
 
         attr_accessor :agentic, :tool_call_limit
-        attr_reader :allowed_tools
+        attr_reader :allowed_tools, :mcp_refs
 
         def pause?
           !@pause_reason.nil?

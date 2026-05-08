@@ -366,6 +366,30 @@ module Prouterd
           key = expect_word(line.tokens[1], "#{field.dsl_keyword} key")
           value = expect_word_or_string(line.tokens[2], "#{field.dsl_keyword} value")
           (node.type_fields[field.storage_key] ||= {})[key] = value
+        when :mcp_server
+          # `server <kind> "<spec>"` where kind ∈ npx | uvx | bin | raw.
+          # Stored as {"kind"=>..., "spec"=>...}; the spec string is
+          # resolved to argv at spawn time by McpClient::ServerCommand.
+          expect_token_count(line, 3, "#{field.dsl_keyword} <kind> <spec>")
+          kind = expect_word(line.tokens[1], "#{field.dsl_keyword} kind")
+          unless %w[npx uvx bin raw].include?(kind)
+            raise ParseError.new(
+              "invalid #{field.dsl_keyword} kind '#{kind}' (allowed: npx, uvx, bin, raw)",
+              line: line.number
+            )
+          end
+          spec = expect_word_or_string(line.tokens[2], "#{field.dsl_keyword} spec")
+          node.type_fields[field.storage_key] = { "kind" => kind, "spec" => spec }
+        when :secret_ref
+          # `secret <NAME>` — accumulates a list of declared-secret names
+          # to thread into the subprocess env at spawn time.
+          expect_token_count(line, 2, "#{field.dsl_keyword} <NAME>")
+          secret_name = expect_env_name(line.tokens[1], "secret name")
+          (node.type_fields[field.storage_key] ||= []) << secret_name
+        when :duration_ms
+          expect_token_count(line, 2, "#{field.dsl_keyword} <duration>")
+          node.type_fields[field.storage_key] =
+            expect_duration(line.tokens[1], field.dsl_keyword)
         else
           raise ParseError.new(
             "interface plugin '#{plugin.type_name}' field '#{field.name}' has unknown kind #{field.kind.inspect}",
@@ -579,11 +603,36 @@ module Prouterd
           raw = line.tokens[1..].map(&:value).join(" ")
           names = raw.split(",").map(&:strip).reject(&:empty?)
           names.each do |t|
-            unless t.match?(IDENT_RE)
+            # Plain `tool` name OR namespaced `<mcp_iface>.<tool>` form.
+            # The dot form is for MCP-server tools auto-discovered at
+            # daemon start (see `interface mcp`); the head must match an
+            # identifier and the tail must match an MCP tool-name shape
+            # (server-defined; we keep the regex permissive).
+            valid = t.match?(IDENT_RE) ||
+                    (t.include?(".") &&
+                     t.split(".", 2).then { |head, tail|
+                       head.match?(IDENT_RE) && !tail.empty? &&
+                         tail.match?(/\A[A-Za-z0-9_.\/-]+\z/)
+                     })
+            unless valid
               raise ParseError.new("invalid tool name '#{t}' in allowed-tools", line: line.number)
             end
           end
           node.allowed_tools.replace((node.allowed_tools + names).uniq)
+        when "mcp"
+          # Per-block opt-in for MCP-server tools. `mcp atlassian, sentry`
+          # exposes every tool advertised by those `interface mcp <name>`
+          # declarations to the agentic block, namespaced as
+          # `<iface>.<tool>`. Pair with `allowed-tools` to scope further.
+          expect_min_tokens(line, 2, "mcp <iface>[, <iface>...]")
+          raw = line.tokens[1..].map(&:value).join(" ")
+          ifaces = raw.split(",").map(&:strip).reject(&:empty?)
+          ifaces.each do |i|
+            unless i.match?(IDENT_RE)
+              raise ParseError.new("invalid mcp interface name '#{i}'", line: line.number)
+            end
+          end
+          node.mcp_refs.replace((node.mcp_refs + ifaces).uniq)
         when "tool-call-limit"
           expect_token_count(line, 2, "tool-call-limit <integer>")
           value = expect_integer(line.tokens[1], "tool-call-limit")

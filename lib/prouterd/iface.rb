@@ -14,6 +14,8 @@ module Prouterd
     autoload :LlmAgentic,     File.expand_path("iface/llm_agentic",     __dir__)
     autoload :PostgresCaller, File.expand_path("iface/postgres_caller", __dir__)
     autoload :LocalRepoCaller, File.expand_path("iface/local_repo_caller", __dir__)
+    autoload :McpClient,      File.expand_path("iface/mcp_client",       __dir__)
+    autoload :Mcp,            File.expand_path("iface/mcp",              __dir__)
   end
 end
 
@@ -28,3 +30,4 @@ require_relative "iface/plugins/postgres"
 require_relative "iface/plugins/docker"
 require_relative "iface/plugins/shell"
 require_relative "iface/plugins/local_repo"
+require_relative "iface/plugins/mcp"

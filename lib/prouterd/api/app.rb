@@ -187,17 +187,18 @@ module Prouterd
 
       # Same payload that GET /v1/status returns. Exposed publicly so
       # the WS-RPC `status` method (RpcDispatcher) can reuse it.
+      #
+      # `queued` is the count of runs in storage with status="queued" —
+      # accepted but not yet picked up by a worker. `in_flight` is what
+      # the runner pool is actively executing right now.
+      #
+      # Storage failures (DB unreachable etc.) propagate to the App's
+      # outer rescue, which flips @accepting to false and returns 503 —
+      # that is the right signal for k8s readiness probes. Don't try to
+      # paper over a failing DB with `queued: 0` here.
       def status_payload
         document = @store.load_running
-        # `queued` is the count of runs in storage with status="queued" —
-        # accepted but not yet picked up by a worker. `in_flight` is what
-        # the runner pool is actively executing right now.
-        queued =
-          begin
-            Storage::Repositories::Runs.new(@store.db).count_runs_by_status("queued")
-          rescue StandardError
-            0
-          end
+        runs_repo = Storage::Repositories::Runs.new(@store.db)
         {
           version: Prouterd::VERSION,
           router: document.router&.name,
@@ -208,7 +209,7 @@ module Prouterd
           startup_commit: @store.startup_commit&.id,
           accepting: @accepting,
           in_flight: @in_flight&.in_flight_count,
-          queued: queued
+          queued: runs_repo.count_runs_by_status("queued")
         }
       end
 

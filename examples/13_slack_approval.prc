@@ -96,7 +96,11 @@ interface webhook slack_in
  hmac-sha256 secret SLACK_SIGNING_SECRET header x-slack-signature
 exit
 
-interface http daemon_self
+! NOTE: base-url must match the daemon's --bind/--port. The default is
+! :8080 — if you run `prouterd --port 9000`, edit the URL here. A
+! future {{system.url}} context-substitution will let this auto-track
+! the daemon's actual bind, see Phase-38 backlog.
+interface http prouterd_v1
  base-url "http://127.0.0.1:8080"
  auth bearer secret PROUTERD_ADMIN_TOKEN
 exit
@@ -112,7 +116,7 @@ exit
 ! /v1/runs/by-thread/<that>/resume finds the right paused run.
 process slack_resume
  block resume
-  interface http daemon_self
+  interface http prouterd_v1
   method POST
   path "/v1/runs/by-thread/{{event.actions.0.block_id}}/resume"
   body-json `{"value":{"decision":"{{event.actions.0.value}}","approver_id":"{{event.user.id}}","approver_name":"{{event.user.name}}"}}`

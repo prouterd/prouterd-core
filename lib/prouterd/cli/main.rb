@@ -971,11 +971,61 @@ module Prouterd
           msg = Iface::Mcp::ServerCommand.warn_if_unresolvable(iface.type_fields["server"])
           warnings << "interface mcp '#{iface.name}': #{msg}" if msg
         end
+        # Apply-time shell-exec check: for each block referencing an
+        # `interface shell`, take the first token of `exec`, resolve
+        # against the iface's `cwd` (or daemon CWD), and warn if the
+        # path doesn't resolve to an existing file. Templated execs
+        # (`{{vars.x}}`) skip the check — we can't know the value
+        # until run time.
+        warnings.concat(shell_exec_warnings(document))
         if warnings.empty?
           @stdout.puts "  none"
         else
           warnings.each { |w| @stdout.puts "  #{path}: #{w}" }
         end
+      end
+
+      # Walks every block's `exec` call_field. For shell-backed
+      # blocks where the script path can be resolved at validate
+      # time, checks the file exists. Yellow warnings, never errors:
+      # `exec` accepts shell metacharacters and templating that we
+      # can't always parse.
+      def shell_exec_warnings(document)
+        require "shellwords"
+        warnings = []
+        document.processes.each do |process|
+          process.blocks.each do |block|
+            ref = block.interface_ref
+            next unless ref && ref.type == "shell"
+
+            exec_str = block.type_fields["exec"].to_s
+            next if exec_str.empty?
+            # Templated; can't resolve at validate time.
+            next if exec_str.include?("{{") && exec_str.include?("}}")
+
+            argv =
+              begin
+                Shellwords.split(exec_str)
+              rescue ArgumentError
+                next # unbalanced quotes — runtime will surface that
+              end
+            head = argv.first
+            next if head.nil? || head.empty?
+            # Bare command name (no path separators) — assume PATH
+            # lookup; we can't verify across the operator's PATH at
+            # validate time.
+            next unless head.include?("/")
+
+            iface = document.interfaces.find { |i| i.name == ref.name && i.type == "shell" }
+            cwd = iface && iface.type_fields["cwd"]
+            full = head.start_with?("/") ? head : File.expand_path(head, cwd || ".")
+            next if File.file?(full)
+
+            warnings << "block '#{process.name}/#{block.name}' exec '#{head}' " \
+                        "does not resolve to an existing file (looked at #{full})"
+          end
+        end
+        warnings
       end
 
       def entry_blocks_for(process)

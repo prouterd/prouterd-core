@@ -39,7 +39,8 @@ module Prouterd
       def initialize(db:, runner:, artifact_store: nil, secret_resolver: nil,
                      logger: Prouterd::NullLogger.new,
                      max_parallelism: 8, in_flight: nil, metrics: nil,
-                     events: Prouterd::Events.default)
+                     events: Prouterd::Events.default,
+                     system_url: nil)
         @db = db
         @runner = runner
         @runs = Storage::Repositories::Runs.new(db)
@@ -50,6 +51,7 @@ module Prouterd
         @in_flight = in_flight
         @metrics = metrics
         @events = events
+        @system_url = system_url
       end
 
       # Trigger a process. Returns the Run record after execution completes.
@@ -197,11 +199,16 @@ module Prouterd
         running = @runs.update_run(run.id, status: "running", started_at: run_started_at.iso8601(3))
         @events.publish(:run_updated, run: running) if running
 
-        context = if seed_context
-                    Context.new(seed_context)
-                  else
-                    Context.new("event" => deep_stringify(run.input_event_json ? JSON.parse(run.input_event_json) : {}))
-                  end
+        # `system` carries daemon-scoped data templates can read — currently
+        # `system.url` (the bind URL of the daemon process). Lets a block
+        # template a self-pointing callback URL (`base-url
+        # "{{system.url}}"`) without hardcoding host/port. Available to
+        # both fresh runs and replay/resume seeds. Context.new deep-dups
+        # and normalizes string vs symbol keys.
+        context = Context.new(seed_context || {
+          "event" => deep_stringify(run.input_event_json ? JSON.parse(run.input_event_json) : {})
+        })
+        context.set("system.url", @system_url) if @system_url
 
         # Per-run mutexes: DB writes serialized, context reads/writes guarded.
         db_mutex = Mutex.new

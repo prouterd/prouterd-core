@@ -45,7 +45,8 @@ module Prouterd
                      logger: Prouterd::NullLogger.new,
                      in_flight: nil, metrics: nil, admin_token: nil,
                      rate_limiter: nil,
-                     events: Prouterd::Events.default)
+                     events: Prouterd::Events.default,
+                     system_url: nil)
         @store = store
         @runner = runner
         @secret_resolver = secret_resolver || Runtime::EnvSecretResolver.new
@@ -57,6 +58,12 @@ module Prouterd
         @rate_limiter = rate_limiter
         @events = events
         @accepting = true
+        @system_url = system_url
+        # Cookie session store — populated by POST /v1/login. Bearer auth
+        # remains the primary path; cookie auth is an opt-in upgrade for
+        # browser operators that closes the XSS-leak surface around the
+        # SPA's sessionStorage.
+        @sessions = admin_token && !admin_token.empty? ? SessionStore.new : nil
 
         @webhook_handler = WebhookHandler.new(
           store: @store,
@@ -76,7 +83,8 @@ module Prouterd
           metrics: @metrics,
           logger: @logger,
           jobs: @jobs,
-          events: @events
+          events: @events,
+          app: self
         )
         @rpc_dispatcher = RpcDispatcher.new(v1: @v1, app: self, store: @store)
       end
@@ -96,6 +104,13 @@ module Prouterd
       def accepting?
         @accepting
       end
+
+      # The URL the daemon is bound on (e.g. "http://127.0.0.1:8080"),
+      # surfaced to runtime as `{{system.url}}` so blocks can build
+      # self-pointing callbacks without hardcoding host/port. Set by
+      # the entry point (Daemon::Main / Server) once the listener is
+      # up; nil for in-process tests / CLI commands that don't bind.
+      attr_accessor :system_url
 
       # Background storage-health probe. The daemon entry point starts
       # this thread; tests / CLI processes don't. Runs forever, checking
@@ -141,6 +156,13 @@ module Prouterd
 
         return status_response if method == "GET" && path == "/v1/status"
         return metrics_response if method == "GET" && path == "/metrics"
+
+        # Auth-establishment endpoints: pre-bearer-check by design.
+        # /v1/login validates the admin bearer once and hands the
+        # browser an HttpOnly cookie session in exchange. /v1/logout
+        # revokes the session.
+        return login_response(request)  if method == "POST" && path == "/v1/login"
+        return logout_response(request) if method == "POST" && path == "/v1/logout"
 
         # WS upgrades for /v1/events and /v1/cli/:sid. Faye::WebSocket
         # hijacks the underlying socket via rack.hijack (Puma supports it),
@@ -259,6 +281,7 @@ module Prouterd
             events:      @events,
             admin_token: @admin_token,
             dispatcher:  @rpc_dispatcher,
+            sessions:    @sessions,
             logger:      @logger
           )
         elsif (m = CLI_WS_PATH.match(path))
@@ -267,6 +290,7 @@ module Prouterd
             session_id:  m[:session_id],
             store:       @store,
             admin_token: @admin_token,
+            sessions:    @sessions,
             logger:      @logger
           )
         else
@@ -333,11 +357,83 @@ module Prouterd
       def check_admin(request)
         return nil if @admin_token.nil? || @admin_token.empty? # open mode
 
+        # 1. Cookie session (set by POST /v1/login). Sliding TTL —
+        #    every successful check refreshes last_seen_at.
+        return nil if Auth.cookie_session_valid?(request, @sessions)
+
+        # 2. Bearer token (Authorization header or ?token= query).
         provided = Auth.token_from(request)
         return json_response(401, error: "missing bearer token") if provided.nil? || provided.empty?
         return nil if Rack::Utils.secure_compare(provided, @admin_token)
 
         json_response(403, error: "admin token rejected")
+      end
+
+      # POST /v1/login — validate body {token} against admin_token,
+      # mint a fresh cookie session. Only the bearer-comparison
+      # cost is paid here (and once); subsequent requests skip it
+      # entirely via the cookie path.
+      #
+      # Cookie attributes:
+      #   HttpOnly      — JS can't read it; XSS in console code
+      #                   no longer leaks the credential
+      #   SameSite=Lax  — submitted on same-site GET/POST. SameSite=
+      #                   None+Secure would be needed for cross-origin
+      #                   SPA deploys behind HTTPS; we default to Lax
+      #                   so dev (HTTP) works, operators wanting
+      #                   internet-facing deploy ride a same-origin
+      #                   reverse proxy.
+      #   Secure        — set when the request was forwarded over TLS.
+      #                   Detected via X-Forwarded-Proto so reverse
+      #                   proxies in front of plain HTTP daemon paths
+      #                   work correctly.
+      #
+      # Open-mode (admin_token unset) → 204 no-op so the SPA can
+      # detect "auth disabled" without a separate probe.
+      def login_response(request)
+        unless @admin_token && !@admin_token.empty?
+          return [204, { "content-type" => "application/json" }, []]
+        end
+
+        body = parse_json_body(request) || {}
+        provided = body["token"].to_s
+        unless !provided.empty? && Rack::Utils.secure_compare(provided, @admin_token)
+          return json_response(401, error: "invalid token")
+        end
+
+        sid = @sessions.create
+        cookie = "#{Auth::SESSION_COOKIE}=#{sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=#{SessionStore::DEFAULT_TTL_SECONDS}"
+        cookie += "; Secure" if request_is_https?(request)
+        [200, { "content-type" => "application/json", "set-cookie" => cookie },
+         [JSON.dump(data: { logged_in: true })]]
+      end
+
+      # POST /v1/logout — revoke the cookie session and clear the
+      # cookie on the browser side. Idempotent: succeeds with 204
+      # whether a session existed or not.
+      def logout_response(request)
+        return [204, {}, []] unless @sessions
+
+        sid = Auth.session_id_from(request)
+        @sessions.revoke(sid) if sid
+        cleared = "#{Auth::SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+        [204, { "set-cookie" => cleared }, []]
+      end
+
+      def parse_json_body(request)
+        text = request.body&.read.to_s
+        return nil if text.empty?
+        JSON.parse(text)
+      rescue JSON::ParserError
+        nil
+      end
+
+      def request_is_https?(request)
+        return true if request.env["HTTPS"] == "on"
+        return true if request.env["rack.url_scheme"] == "https"
+        return true if request.env["HTTP_X_FORWARDED_PROTO"].to_s.split(",").map(&:strip).first == "https"
+
+        false
       end
 
       def status_response

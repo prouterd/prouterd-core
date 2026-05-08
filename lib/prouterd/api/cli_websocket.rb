@@ -30,13 +30,14 @@ module Prouterd
       @sessions_mutex = Mutex.new
 
       class << self
-        def handle(env, session_id:, store:, admin_token: nil, logger: nil)
+        def handle(env, session_id:, store:, admin_token: nil, sessions: nil, logger: nil)
           ws   = Faye::WebSocket.new(env)
           conn = new(ws,
                      env:         env,
                      session_id:  session_id,
                      store:       store,
                      admin_token: admin_token,
+                     sessions:    sessions,
                      logger:      logger)
           ws.on(:open)    { conn.on_open }
           ws.on(:message) { |e| conn.on_message(e.data) }
@@ -60,12 +61,13 @@ module Prouterd
         end
       end
 
-      def initialize(socket, env:, session_id:, store:, admin_token: nil, logger: nil)
+      def initialize(socket, env:, session_id:, store:, admin_token: nil, sessions: nil, logger: nil)
         @socket      = socket
         @env         = env
         @session_id  = session_id
         @store       = store
         @admin_token = admin_token
+        @sessions    = sessions
         @logger      = logger
         @send_mutex  = Mutex.new
       end
@@ -113,6 +115,7 @@ module Prouterd
 
       def authenticated?
         return true if @admin_token.nil? || @admin_token.empty?
+        return true if Auth.cookie_session_valid?(@env, @sessions)
 
         provided = Auth.token_from(@env)
         return false if provided.nil? || provided.empty?

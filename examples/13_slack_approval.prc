@@ -96,12 +96,11 @@ interface webhook slack_in
  hmac-sha256 secret SLACK_SIGNING_SECRET header x-slack-signature
 exit
 
-! NOTE: base-url must match the daemon's --bind/--port. The default is
-! :8080 — if you run `prouterd --port 9000`, edit the URL here. A
-! future {{system.url}} context-substitution will let this auto-track
-! the daemon's actual bind, see Phase-38 backlog.
+! `{{system.url}}` resolves at run time to the daemon's actual bind
+! URL (set by Daemon::Main from --bind/--port at startup), so this
+! interface auto-tracks whichever port the daemon was launched on.
 interface http prouterd_v1
- base-url "http://127.0.0.1:8080"
+ base-url "{{system.url}}"
  auth bearer secret PROUTERD_ADMIN_TOKEN
 exit
 

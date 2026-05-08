@@ -28,12 +28,13 @@ module Prouterd
     # `socket` only needs to expose `#send(string)` and `#close(code, reason)`
     # — production wires Faye::WebSocket; tests inject a capture double.
     class EventsWebSocket
-      def self.handle(env, events:, admin_token: nil, dispatcher: nil, logger: nil)
+      def self.handle(env, events:, admin_token: nil, dispatcher: nil, sessions: nil, logger: nil)
         ws   = Faye::WebSocket.new(env)
         conn = new(ws,
                    env: env, events: events,
                    admin_token: admin_token,
                    dispatcher: dispatcher,
+                   sessions: sessions,
                    logger: logger)
         ws.on(:open)    { conn.on_open }
         ws.on(:message) { |e| conn.on_message(e.data) }
@@ -41,12 +42,13 @@ module Prouterd
         ws.rack_response
       end
 
-      def initialize(socket, env:, events:, admin_token: nil, dispatcher: nil, logger: nil)
+      def initialize(socket, env:, events:, admin_token: nil, dispatcher: nil, sessions: nil, logger: nil)
         @socket          = socket
         @env             = env
         @events          = events
         @admin_token     = admin_token
         @dispatcher      = dispatcher
+        @sessions        = sessions
         @logger          = logger
         @client_topics   = {}      # wire_topic_string => true
         @internal_subs   = []
@@ -104,6 +106,8 @@ module Prouterd
 
       def authenticated?
         return true if @admin_token.nil? || @admin_token.empty?
+        # Cookie session set by /v1/login wins. Fall back to bearer.
+        return true if Auth.cookie_session_valid?(@env, @sessions)
 
         provided = Auth.token_from(@env)
         return false if provided.nil? || provided.empty?

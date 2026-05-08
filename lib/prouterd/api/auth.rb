@@ -50,6 +50,43 @@ module Prouterd
         ok = Rack::Utils.secure_compare(provided, expected_token)
         ok ? nil : [403, "bearer token rejected"]
       end
+
+      # ----- cookie-session auth (POST /v1/login + HttpOnly cookie) -----
+      #
+      # When the daemon hands the browser a cookie session via /v1/login,
+      # subsequent requests carry it instead of the bearer. Closing the
+      # XSS-leak window for browser-based operators while keeping bearer
+      # auth alive for curl / k8s / automation.
+
+      SESSION_COOKIE = "prouterd_session".freeze
+
+      # True if `env`'s Cookie header carries a session id known to
+      # `sessions`. Returns false when no session store is wired (the
+      # SessionStore is optional infrastructure — open-mode + bearer-only
+      # deploys never instantiate it).
+      def cookie_session_valid?(env_or_request, sessions)
+        return false unless sessions
+
+        env = env_or_request.respond_to?(:env) ? env_or_request.env : env_or_request
+        cookies = parse_cookies(env["HTTP_COOKIE"].to_s)
+        sessions.valid?(cookies[SESSION_COOKIE])
+      end
+
+      # Read the session id from the request's Cookie header — used by
+      # logout to revoke the right entry.
+      def session_id_from(env_or_request)
+        env = env_or_request.respond_to?(:env) ? env_or_request.env : env_or_request
+        parse_cookies(env["HTTP_COOKIE"].to_s)[SESSION_COOKIE]
+      end
+
+      def parse_cookies(header)
+        out = {}
+        header.split(/;\s*/).each do |pair|
+          k, v = pair.split("=", 2)
+          out[k.strip] = (v || "").strip if k && !k.empty?
+        end
+        out
+      end
     end
   end
 end

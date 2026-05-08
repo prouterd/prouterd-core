@@ -87,10 +87,18 @@ module Prouterd
 
         rate_limiter = Prouterd::API::RateLimiter.from_env
 
+        # Templates inside running blocks can reach the daemon's own
+        # bind URL via {{system.url}} — used e.g. by HTTP self-call
+        # patterns (see examples/13_slack_approval.prc). https when SSL
+        # is configured, http otherwise.
+        scheme = ENV["PROUTERD_SSL_CERT"].to_s.empty? ? "http" : "https"
+        system_url = "#{scheme}://#{opts[:bind]}:#{opts[:port]}"
+
         app = Prouterd::API::App.new(
           store: store, runner: runner, logger: logger,
           in_flight: in_flight, metrics: metrics,
-          admin_token: admin_token, jobs: jobs, rate_limiter: rate_limiter
+          admin_token: admin_token, jobs: jobs, rate_limiter: rate_limiter,
+          system_url: system_url
         )
         app.start_storage_probe
 

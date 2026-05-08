@@ -15,7 +15,7 @@ module Prouterd
     #   { "error": "...", "details": [..] } on failure
     class V1
       def initialize(store:, runner:, secret_resolver:, in_flight:, metrics:, jobs:,
-                     logger: Prouterd::NullLogger.new, events: nil)
+                     logger: Prouterd::NullLogger.new, events: nil, app: nil)
         @store = store
         @runner = runner
         @secret_resolver = secret_resolver
@@ -24,6 +24,7 @@ module Prouterd
         @logger = logger
         @jobs = jobs
         @events = events
+        @app = app   # for system_url / accepting flag inspection at orchestrator-build time
       end
 
       # ----- /v1/config -----
@@ -423,7 +424,8 @@ module Prouterd
           runner: @runner,
           secret_resolver: @secret_resolver,
           in_flight: @in_flight,
-          metrics: @metrics
+          metrics: @metrics,
+          system_url: @app&.system_url
         )
       end
 

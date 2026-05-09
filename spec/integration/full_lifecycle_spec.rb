@@ -65,8 +65,8 @@ RSpec.describe "Full lifecycle integration" do
       expect(code).to eq(0)
       expect(out).to match(/commit 1/)
 
-      # 2. show commits
-      code, out, _err = run_cli("exec", "show commits", "--db", db_file)
+      # 2. show commits via the read-only shell
+      code, out, _err = run_cli("shell", "--db", db_file, stdin: "enable\nshow commits\nexit\n")
       expect(code).to eq(0)
       expect(out).to match(/^1\s+\w+/)
 
@@ -86,11 +86,11 @@ RSpec.describe "Full lifecycle integration" do
       end
 
       # 4. show runs / show run
-      code, out, _ = run_cli("exec", "show runs", "--db", db_file)
-      run_uid = out.lines.last.split.first
+      code, out, _ = run_cli("shell", "--db", db_file, stdin: "enable\nshow runs\nexit\n")
+      run_uid = out.lines.find { |l| l =~ /\Arun_\w+/ }&.split&.first
       expect(run_uid).to match(/\Arun_/)
 
-      code, out, _ = run_cli("exec", "show run #{run_uid}", "--db", db_file)
+      code, out, _ = run_cli("shell", "--db", db_file, stdin: "enable\nshow run #{run_uid}\nexit\n")
       expect(code).to eq(0)
       expect(out).to include("Status: success")
 
@@ -130,49 +130,13 @@ RSpec.describe "Full lifecycle integration" do
         expect(code).to eq(0)
       end
 
-      code, out, _err = run_cli("exec", "rollback commit 1", "--db", db_file)
+      code, out, _err = run_cli("shell", "--db", db_file, stdin: "enable\nrollback commit 1\nexit\n")
       expect(code).to eq(0)
       expect(out).to include("Rolled back")
 
       # Running config should reflect commit 1 again (queue concurrency 4).
-      code, out, _err = run_cli("exec", "show running-config", "--db", db_file)
+      code, out, _err = run_cli("shell", "--db", db_file, stdin: "enable\nshow running-config\nexit\n")
       expect(out).to include("concurrency 4")
-    end
-  end
-
-  it "trace + show commits + show dead-letter all run with --no-db where appropriate" do
-    Tempfile.create(["trace-", ".prc"]) do |prc|
-      prc.write(<<~PRC)
-        router demo
-        exit
-        interface manual cli
-         no shutdown
-        exit
-        interface docker img1
-         image alpine:latest
-        exit
-        process p
-         block a
-          interface docker img1
-         exit
-        exit
-        route interface cli process p
-        exit
-      PRC
-      prc.flush
-
-      Tempfile.create(["e-", ".json"]) do |evt|
-        evt.write("{}")
-        evt.flush
-
-        code, out, _err = run_cli(
-          "trace", "event", evt.path,
-          "--config", prc.path, "--no-db"
-        )
-        expect(code).to eq(0)
-        expect(out).to include("Trace result")
-        expect(out).to include("Selected process")
-      end
     end
   end
 end

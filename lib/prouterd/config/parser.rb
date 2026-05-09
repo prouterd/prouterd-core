@@ -1617,18 +1617,6 @@ module Prouterd
         value
       end
 
-      # Field-application methods are reused by the interactive shell so that
-      # validation of `version 1`, `image foo:bar`, etc. lives in exactly one
-      # place. Re-exposed publicly here at the end of the class.
-      public :apply_router_field,
-             :apply_secret_field,
-             :apply_policy_field,
-             :apply_queue_field,
-             :apply_process_field,
-             :apply_global_route_field,
-             :parse_interface_field,
-             :parse_block_field,
-             :parse_process_route_field
     end
   end
 end

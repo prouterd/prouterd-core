@@ -95,10 +95,11 @@ RSpec.describe Prouterd::API::CliWebSocket do
       a_socket = socket
       a_conn   = conn
       a_conn.on_open
-      a_conn.on_message(JSON.dump(id: "c1", type: "command.exec", payload: { command: "configure terminal" }))
+      # Run an `enable` to advance the mode-stack into Privileged.
+      a_conn.on_message(JSON.dump(id: "c1", type: "command.exec", payload: { command: "enable" }))
       a_conn.on_close
 
-      # New connection, same session_id — should resume in config mode.
+      # New connection, same session_id — should resume in privileged mode.
       b_socket = Class.new do
         attr_reader :sent
         def initialize; @sent = []; end
@@ -109,7 +110,7 @@ RSpec.describe Prouterd::API::CliWebSocket do
                                               store: store, admin_token: nil)
       b_conn.on_open
       hello = JSON.parse(b_socket.sent.first)
-      expect(hello.dig("payload", "prompt")).to include("(config)")
+      expect(hello.dig("payload", "prompt")).to match(/#\s*\z/)
     end
   end
 

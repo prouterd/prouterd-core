@@ -1881,10 +1881,63 @@ thread itself raises.
 show mcp, prouter-check warnings, and config_changed
 re-subscription).
 
+### Phase 40: BREAKING — purge of interactive shell-editor + niche CLI commands
+
+Two structural cuts following the principle that **deleting beats
+adding** when nobody uses what you built:
+
+1. **`configure terminal` candidate-config flow removed.** The
+   in-shell editor (sub-modes for process / block / route / interface
+   / policy / queue / secret, candidate-config + commit/abort
+   semantics, `do <command>` for running privileged commands while
+   editing, `end` to pop out) was beautiful but unused — operators
+   edit `.prc` in their preferred editor and `apply <file>`. Cuts:
+
+       lib/prouterd/shell/modes/config.rb               (281 LOC)
+       lib/prouterd/shell/modes/config_block.rb         (131)
+       lib/prouterd/shell/modes/config_global_route.rb   (95)
+       lib/prouterd/shell/modes/config_process.rb       (168)
+       lib/prouterd/shell/modes/config_process_route.rb (107)
+       lib/prouterd/shell/modes/section.rb              (109)
+       Most of completer.rb's contextual-completion code,
+       Session#begin_candidate / commit_candidate / abort_candidate
+       / in_config_mode? / candidate_config field,
+       Privileged#cmd_configure,
+       Show#show_candidate / show_diff (candidate vs running),
+       parser's `public :apply_router_field, ...` re-export
+       (those methods are now private again, closed API surface).
+
+2. **`prouter exec` / `prouter cleanup` / `prouter trace` removed.**
+   `exec` was a single-shell-command runner that duplicated `apply`
+   + `trigger`; `cleanup` was better as a user's cron; `trace` was a
+   static analysis tool nobody hit in practice. The CLI commands are
+   gone; the `Cleanup` / `Tracer` library modules stay (someone may
+   embed them programmatically). Cuts ~300 LOC from `cli/main.rb`.
+
+Replacement workflow:
+
+  - Edit `.prc` in your editor.
+  - `prouter check file.prc` to validate.
+  - `prouter apply file.prc` to commit.
+  - `prouter shell` to inspect (`show *`, `apply`, `rollback`,
+    `replay`, `cancel`, `write memory` are all still there).
+
+`provider claude_cli` and `provider codex_cli` were considered for
+removal but kept — they're the only path to LLM subscription
+billing ($20/mo Claude Pro flat) instead of per-token API, which is
+exactly what self-hosted indie users want.
+
+Net delete: ~2300 LOC of production + spec code. Brand-feel
+preserved — `show *` family + imperative top-level commands keep
+the router-CLI aesthetic where it earns its weight; the in-shell
+editor that nobody used is gone.
+
+864 / 0 (was 900 — 36 specs deleted as part of the purge).
+
 ## Status
 
-- 39 phases shipped, one git commit per phase
-- 877 RSpec specs, 0 failures
+- 40 phases shipped, one git commit per phase
+- 864 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

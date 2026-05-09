@@ -13,8 +13,8 @@ module Prouterd
       # raises CommandError listing the candidates.
       TARGETS = %w[
         version status clock logging history
-        running-config candidate-config startup-config
-        commits commit diff
+        running-config startup-config
+        commits commit
         processes process interfaces interface
         policies policy queues queue secrets secret
         blocks block routes
@@ -33,11 +33,9 @@ module Prouterd
         when "logging"           then show_logging(rest, out)
         when "history"           then show_history(out)
         when "running-config"    then show_running(session, out)
-        when "candidate-config"  then show_candidate(session, out)
         when "startup-config"    then show_startup(session, out)
         when "commits"           then list_commits(session, out)
         when "commit"            then show_commit(rest, session, out)
-        when "diff"              then show_diff(session, out)
         when "processes"         then list_processes(session, out)
         when "process"           then show_process(rest, session, out)
         when "interfaces"        then list_interfaces(session, out)
@@ -97,7 +95,6 @@ module Prouterd
       def show_status(session, out)
         out.puts "hostname:        #{session.hostname}"
         out.puts "router:          #{session.running_config.router&.name || '(none)'}"
-        out.puts "config mode:     #{session.in_config_mode? ? 'editing candidate' : 'idle'}"
         out.puts "interfaces:      #{session.running_config.interfaces.length}"
         out.puts "processes:       #{session.running_config.processes.length}"
         out.puts "secrets:         #{session.running_config.secrets.length}"
@@ -513,26 +510,6 @@ module Prouterd
         out.puts "! message: #{commit.message || '-'}"
         out.puts
         out.print(commit.rendered_config)
-      end
-
-      def show_candidate(session, out)
-        if session.in_config_mode?
-          text = Config::Renderer.render(session.candidate_config)
-          out.print(text.empty? ? "(empty candidate)\n" : text)
-        else
-          out.puts "No candidate configuration. Use 'configure terminal' first."
-        end
-      end
-
-      def show_diff(session, out)
-        if !session.in_config_mode?
-          out.puts "No candidate configuration."
-          return
-        end
-
-        a = Config::Renderer.render(session.running_config).split("\n", -1)
-        b = Config::Renderer.render(session.candidate_config).split("\n", -1)
-        emit_diff(a, b, out)
       end
 
       def diff_file_against_running(rest, session, out)

@@ -3,15 +3,13 @@ module Prouterd
     # The Session holds all per-shell-instance state:
     #
     #   * running_config — the active AST::Document
-    #   * candidate_config — clone of running while inside `configure terminal`,
-    #     nil otherwise
     #   * mode_stack — stack of Mode objects driving the prompt and dispatch
     #
-    # All edits during a config session mutate `candidate_config`. `commit`
-    # validates and swaps it into running. `abort` discards it. This matches
-    # Candidate-config-style commit semantics, not router CLI's apply-live model.
+    # The interactive `configure terminal` candidate-config flow was
+    # removed; operators edit `.prc` files in their preferred editor
+    # and `apply` them as new commits.
     class Session
-      attr_accessor :running_config, :candidate_config, :mode_stack
+      attr_accessor :running_config, :mode_stack
       attr_reader :store, :last_commit, :runner, :artifact_store
 
       DEFAULT_HOSTNAME = "process-router".freeze
@@ -33,7 +31,6 @@ module Prouterd
           else
             Config::AST::Document.new
           end
-        @candidate_config = nil
         @mode_stack = []
         @last_commit = store&.running_commit
       end
@@ -102,46 +99,16 @@ module Prouterd
         config.router&.hostname || DEFAULT_HOSTNAME
       end
 
-      # The "active" config for editing/showing during a session:
-      #   - In config mode: candidate
-      #   - Otherwise:      running
+      # The "active" config the shell is reading. With the interactive
+      # config-mode editor removed, this is just the running config.
+      # Kept as its own method so callers don't need to know which
+      # underlying field to read.
       def active_config
-        @candidate_config || @running_config
-      end
-
-      def in_config_mode?
-        !@candidate_config.nil?
-      end
-
-      # Begin editing: deep-clone running into candidate.
-      # Marshal-based clone is sufficient because AST nodes are plain Ruby
-      # objects with no IO/procs.
-      def begin_candidate
-        raise ShellError, "already in config mode" if in_config_mode?
-
-        @candidate_config = deep_clone(@running_config)
-      end
-
-      # Validate the candidate and, if valid, swap it into running. When a
-      # store is attached, also persist a new commit and update the running
-      # pointer atomically. Returns a Validator::Result.
-      def commit_candidate(author: nil, message: nil)
-        raise ShellError, "no candidate to commit" unless in_config_mode?
-
-        result = Config::Validator.validate(@candidate_config)
-        return result unless result.valid?
-
-        if @store
-          @last_commit = @store.commit(@candidate_config, author: author, message: message)
-        end
-        @running_config = @candidate_config
-        @candidate_config = nil
-        result
+        @running_config
       end
 
       def rollback_to(commit_id)
         raise ShellError, "rollback requires a config store" unless @store
-        raise ShellError, "cannot rollback while in config mode; commit or abort first" if in_config_mode?
 
         commit = @store.rollback(commit_id)
         # Reload running from the store so AST and pointer agree.
@@ -155,26 +122,13 @@ module Prouterd
         @store.write_memory
       end
 
-      def abort_candidate
-        raise ShellError, "no candidate to abort" unless in_config_mode?
-
-        @candidate_config = nil
-      end
-
-      # Replace running config wholesale (used by `load <file>`). This bypasses
-      # the candidate flow because it's a top-level "load fresh" operation.
-      # Validation is the caller's responsibility.
+      # Replace running config wholesale (used by `load <file>` / `apply
+      # <file>`). The Validator::Result is the caller's concern.
       def replace_running(document)
-        raise ShellError, "cannot load while in config mode; commit or abort first" if in_config_mode?
-
         @running_config = document
       end
 
       private
-
-      def deep_clone(document)
-        Marshal.load(Marshal.dump(document))
-      end
 
       def load_replay_context(run_uid)
         raise ShellError, "no DB attached; replay requires --db" unless @store

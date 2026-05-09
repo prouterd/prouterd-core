@@ -120,28 +120,27 @@ webhooks or cron instead of the CLI.
 
 ## Operator shell
 
-Configuration is text, but operators don't have to edit text. The
-shell drops you into a router-style mode stack — `configure terminal`,
-`commit`, `abort`, `rollback`, `show running-config`. Familiar to
-anyone who's ever touched a router CLI.
+Configuration is text — edit it in `vim`/VS Code/whatever, then
+`apply` to land it as a versioned commit. The shell is a read-only
+router-style operator surface: `show *`, `apply <file>`, `rollback
+commit X`, `write memory`, `replay run X`, `cancel run X`.
 
 ```text
-sales-prouter-01# show running-config
-sales-prouter-01# configure terminal
-sales-prouter-01(config)# process triage
-sales-prouter-01(config-process)# block summarize
-sales-prouter-01(config-block)# max-tokens 512
-sales-prouter-01(config-process)# commit
-Commit complete.
-sales-prouter-01# show config commits
+sales-prouter-01> enable
+sales-prouter-01# apply triage.prc
+Applied triage.prc as commit 12 (sha256:c4f2…)
+sales-prouter-01# show commits
 ID  CHECKSUM       AUTHOR  MESSAGE
-12  sha256:c4f2…   carol   raise summarize budget
-11  sha256:91003…  alice   initial triage pipeline
+12  sha256:c4f2…   carol   apply triage.prc
+11  sha256:91003…  alice   apply triage.prc
+sales-prouter-01# show running-config
+…
+sales-prouter-01# rollback commit 11
+Rolled back running configuration to commit 11.
 ```
 
-Every commit is a versioned snapshot. `rollback commit 11` restores
-the previous version. `diff file.prc running-config` shows what would
-change before you apply.
+Every commit is a versioned snapshot. `diff file.prc` shows what
+would change before you apply.
 
 ## Built-in interfaces
 

@@ -4,9 +4,15 @@ require_relative "../show"
 module Prouterd
   module Shell
     module Modes
-      # `process-router#`  — privileged mode. Full read access via `show`,
-      # entry to config mode via `configure terminal`, and one-shot operations
-      # like `load <file>`.
+      # `process-router#`  — privileged mode. Read access via `show`,
+      # imperative one-shot operations on the running config (`apply
+      # <file>`, `rollback commit X`, `write memory`).
+      #
+      # The interactive `configure terminal` candidate-config editor
+      # was removed — operators edit `.prc` files in their preferred
+      # editor and apply them with `apply <file>`. Cuts ~1500 LOC of
+      # shell sub-mode wiring whose only purpose was an in-shell
+      # editor that nobody used in practice.
       #
       # `disable` returns to user mode; `exit` quits the shell.
       class Privileged < Mode
@@ -19,14 +25,12 @@ module Prouterd
         def commands
           {
             "show"      => :cmd_show,
-            "configure" => :cmd_configure,
             "load"      => :cmd_load,
             "apply"     => :cmd_apply,
             "write"     => :cmd_write,
             "copy"      => :cmd_copy,
             "rollback"  => :cmd_rollback,
             "trigger"   => :cmd_trigger,
-            "trace"     => :cmd_trace,
             "replay"    => :cmd_replay,
             "cancel"    => :cmd_cancel,
             "diff"      => :cmd_diff,
@@ -45,14 +49,6 @@ module Prouterd
           end
           Show.execute(tokens[1..], session, out, err)
           :handled
-        end
-
-        def cmd_configure(tokens, session, _out, _err)
-          unless tokens.length == 2 && match_keyword?(tokens[1].value, "terminal")
-            raise CommandError, "syntax: configure terminal"
-          end
-          session.begin_candidate
-          enter(Config.new)
         end
 
         def cmd_load(tokens, session, out, _err)
@@ -78,9 +74,10 @@ module Prouterd
         end
 
         # `apply <file>` — load file, validate, COMMIT as a new persisted commit.
-        # Equivalent to `configure terminal` + replace + `commit` in one step,
-        # but driven from a file. Without a store, falls through to a load
-        # plus a synthetic commit so the running config still updates.
+        # The canonical edit-then-commit flow: edit `.prc` in your editor,
+        # `apply` to land it as a new commit. Without a store, falls
+        # through to a load plus a synthetic commit so the running
+        # config still updates in-memory for the current session.
         def cmd_apply(tokens, session, out, _err)
           unless tokens.length == 2
             raise CommandError, "syntax: apply <file>"
@@ -274,31 +271,6 @@ module Prouterd
           :handled
         end
 
-        # `trace event <file> [interface <name>]` — static analysis. Walks the
-        # routing decisions for the given event without running any blocks,
-        # so users can predict pipeline behavior before triggering.
-        def cmd_trace(tokens, session, out, _err)
-          unless tokens.length >= 3 && match_keyword?(tokens[1].value, "event")
-            raise CommandError, "syntax: trace event <file> [interface <name>]"
-          end
-          event_path = tokens[2].value
-          iface = nil
-          if tokens.length == 5 && match_keyword?(tokens[3].value, "interface")
-            iface = tokens[4].value
-          elsif tokens.length != 3
-            raise CommandError, "syntax: trace event <file> [interface <name>]"
-          end
-
-          event = JSON.parse(File.read(event_path))
-          result = Prouterd::Runtime::Tracer.trace(session.running_config, event, interface_name: iface)
-          out.print Prouterd::Runtime::TracerRenderer.render(result)
-          :handled
-        rescue Errno::ENOENT
-          raise CommandError, "no such event file: #{tokens[2].value}"
-        rescue JSON::ParserError => e
-          raise CommandError, "event file is not valid JSON: #{e.message}"
-        end
-
         def render_run_summary(run, session, out)
           steps = Prouterd::Storage::Repositories::Runs.new(session.store.db).list_steps(run.id)
           out.puts "Run #{run.uid}: #{run.status}"
@@ -321,13 +293,15 @@ module Prouterd
           out.puts <<~HELP
             Privileged mode commands:
               show <target>            See list below
-              configure terminal       Enter config mode (abbrev: conf t)
               load <file>              Replace running config from .prc file (no commit)
               apply <file>             Load + commit a .prc file as a new commit
               write memory             Save current running as startup-config
               copy running-config startup-config
                                        Same as `write memory` (modern router-OS spelling)
               rollback commit <id>     Move running pointer back to an earlier commit
+              trigger / replay / cancel
+                                       Run lifecycle commands (see `prouter --help`)
+              diff <file>              Diff a .prc file against the running config
               disable                  Drop to user mode
               exit, logout, quit       Quit the shell
               help, ?                  Show this help
@@ -337,7 +311,6 @@ module Prouterd
               status                   shell session status
               running-config           current running config
               startup-config           saved startup config (after `write memory`)
-              candidate-config         current candidate (only in config mode)
               commits                  history of commits (newest first)
               commit <id>              specific commit detail
               processes / process N    list / detail
@@ -348,10 +321,11 @@ module Prouterd
               blocks process N         blocks in a process
               block process P B        single block detail
               routes [process N]       global routes (and optionally per-process)
-              diff                     candidate vs running diff
               logging                  logging configuration summary
               logging last <N> [severity <0-7>] [facility <NAME>]
                                        tail the in-memory log ring buffer
+              mcp                      live mcp interface health
+              local-repo               auto-pull state per local_repo iface
           HELP
           :handled
         end

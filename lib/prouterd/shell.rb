@@ -4,14 +4,10 @@ require_relative "shell/session"
 require_relative "shell/show"
 require_relative "shell/mode"
 
-# Modes — order matters for require_relative because Config mode references
-# the sub-modes by class name during command dispatch.
-require_relative "shell/modes/section"
-require_relative "shell/modes/config_block"
-require_relative "shell/modes/config_process_route"
-require_relative "shell/modes/config_global_route"
-require_relative "shell/modes/config_process"
-require_relative "shell/modes/config"
+# Modes — read-only operator surface (`enable`, `show *`, imperative
+# top-level commands like `apply file.prc` / `rollback commit X`).
+# Interactive `configure terminal` candidate-config flow was removed;
+# operators edit `.prc` in their editor and `prouter apply` instead.
 require_relative "shell/modes/privileged"
 require_relative "shell/modes/user"
 

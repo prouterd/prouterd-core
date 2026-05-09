@@ -31,16 +31,13 @@ module Prouterd
         when "check"             then cmd_check
         when "render"            then cmd_render
         when "shell"             then cmd_shell
-        when "exec"              then cmd_exec
         when "apply"             then cmd_apply
         when "validate"          then cmd_validate
         when "trigger"           then cmd_trigger
-        when "trace"             then cmd_trace
         when "replay"            then cmd_replay
         when "resume"            then cmd_resume
         when "cancel"            then cmd_cancel
         when "diff"              then cmd_diff
-        when "cleanup"           then cmd_cleanup
         when "version", "--version", "-v" then cmd_version
         when "help", "--help", "-h", nil  then cmd_help
         else
@@ -61,22 +58,20 @@ module Prouterd
             check    <file>                    Parse and validate a .prc config file (alias: validate)
             validate <file> [--against running] Lint a .prc, or semantic-diff vs the running config
             render   <file>                    Parse and print canonical config to stdout
-            apply   <file>                     Validate + commit a .prc file as a new commit
-            trigger process <name> input <file>
+            apply    <file>                    Validate + commit a .prc file as a new commit
+            trigger  process <name> input <file>
                                                Synchronously run a process for the given event
-            replay  run <uid>                  Re-execute a previous run with the same event + commit
-            resume  run <uid>            [--value <json>] Resume a paused run with the given output value
-            resume  run-by-thread <id>   [--value <json>] Resume the latest paused run carrying that thread_id
-            cancel  run <uid>                  Soft-cancel an in-flight run
-            trace   event <file>               Static routing analysis (no execution)
-            diff    <file>                     Show changes if file were applied vs running config
-            cleanup --older-than 30d           Delete terminal runs older than threshold
-            shell                              Start interactive router-style shell
-            exec    "<cmd>"                    Run a single shell command and print result
+            replay   run <uid>                 Re-execute a previous run with the same event + commit
+            resume   run <uid>           [--value <json>] Resume a paused run with the given output value
+            resume   run-by-thread <id>  [--value <json>] Resume the latest paused run carrying that thread_id
+            cancel   run <uid>                 Soft-cancel an in-flight run
+            diff     <file>                    Show changes if file were applied vs running config
+            shell                              Start interactive read-only operator shell (`show *`,
+                                               `apply <file>`, `rollback commit X`, etc)
             version                            Print version
             help                               Show this help
 
-          Common options for shell/exec/apply/trigger:
+          Common options for apply/trigger:
             --db PATH        SQLite path (default: var/prouterd.db, env: PROUTERD_DB)
             --no-db          Skip persistence (in-memory)
             --config FILE    Load this .prc file as the running config
@@ -154,54 +149,6 @@ module Prouterd
         store&.db&.close if store && store != :error
       end
 
-      def cmd_exec
-        store = nil
-        command = @argv.shift
-        unless command
-          @stderr.puts "prouter exec: missing command string"
-          return 2
-        end
-
-        opts = parse_runtime_options("exec")
-        return 2 if opts == :error
-
-        store = open_store(opts[:db_path], opts[:no_db])
-        return 1 if store == :error
-
-        runner = build_runner(opts[:runner_kind])
-        return 1 if runner == :error
-
-        session = Prouterd::Shell::Session.new(store: store, runner: runner)
-        if opts[:config_path]
-          source = read_file(opts[:config_path])
-          return 2 if source.nil?
-          document = parse_with_diagnostics(source, opts[:config_path])
-          return 1 if document.nil?
-          result = Config::Validator.validate(document)
-          unless result.valid?
-            result.errors.each { |e| @stderr.puts "#{opts[:config_path]}: #{e}" }
-            return 1
-          end
-          session.replace_running(document)
-        end
-
-        shell = Prouterd::Shell::Shell.new(
-          session: session,
-          input: StringIO.new,
-          output: @stdout,
-          error: @stderr,
-          interactive: false,
-          banner: false
-        )
-        shell.execute_one(command)
-      ensure
-        store&.db&.close if store && store != :error
-      end
-
-      # Standalone non-interactive `apply <file> [--db PATH]` — validates the
-      # file, persists it as a new commit, and updates running pointer.
-      # `prouter serve` — start the HTTP daemon (Puma) so external systems
-      # can POST events to webhook interfaces. Blocks until SIGINT/SIGTERM.
       def missing_arg(cmd, opt)
         @stderr.puts "prouter #{cmd}: #{opt} requires a value"
         2
@@ -210,92 +157,6 @@ module Prouterd
       def invalid_arg(cmd, msg)
         @stderr.puts "prouter #{cmd}: #{msg}"
         2
-      end
-
-      # `prouter cleanup --older-than 30d [--dry-run] [--db PATH]`
-      # Removes terminal runs older than the threshold along with their
-      # cascading steps/logs/artifacts and on-disk artifact files. Active
-      # runs are never touched. Config commits are kept (audit trail).
-      def cmd_cleanup
-        store = nil
-        older_than_str = nil
-        dry_run = false
-        db_path = nil
-        no_db = false
-        batch_size = Prouterd::ControlPlane::Cleanup::DEFAULT_BATCH_SIZE
-
-        until @argv.empty?
-          case @argv.first
-          when "--older-than"
-            @argv.shift
-            older_than_str = @argv.shift or return missing_arg("cleanup", "--older-than")
-          when "--dry-run"
-            @argv.shift
-            dry_run = true
-          when "--db"
-            @argv.shift
-            db_path = @argv.shift or return missing_arg("cleanup", "--db")
-          when "--no-db"
-            @argv.shift
-            no_db = true
-          when "--batch-size"
-            @argv.shift
-            n = @argv.shift or return missing_arg("cleanup", "--batch-size")
-            batch_size = Integer(n) rescue (return invalid_arg("cleanup", "--batch-size must be a positive integer"))
-            return invalid_arg("cleanup", "--batch-size must be a positive integer") if batch_size < 1
-          else
-            @stderr.puts "prouter cleanup: unknown option '#{@argv.first}'"
-            return 2
-          end
-        end
-
-        unless older_than_str
-          @stderr.puts "prouter cleanup: --older-than is required (e.g. 30d, 12h, 7d)"
-          return 2
-        end
-
-        seconds = parse_retention_window(older_than_str)
-        return 2 unless seconds
-
-        store = open_store(db_path, no_db)
-        return 1 if store == :error
-        unless store
-          @stderr.puts "prouter cleanup: requires --db"
-          return 2
-        end
-
-        result = Prouterd::ControlPlane::Cleanup.sweep(
-          store.db,
-          older_than: seconds,
-          dry_run: dry_run,
-          batch_size: batch_size
-        )
-
-        verb = dry_run ? "would delete" : "deleted"
-        @stdout.puts "Cleanup #{verb}:"
-        @stdout.puts "  runs:           #{result.runs}"
-        @stdout.puts "  run_steps:      #{result.steps}"
-        @stdout.puts "  run_logs:       #{result.logs}"
-        @stdout.puts "  artifact rows:  #{result.artifacts}"
-        @stdout.puts "  artifact files: #{result.artifact_files}"
-        0
-      ensure
-        store&.db&.close if store && store != :error
-      end
-
-      def parse_retention_window(input)
-        m = /\A(\d+)([smhd])\z/.match(input.to_s)
-        unless m
-          @stderr.puts "prouter cleanup: invalid --older-than '#{input}' (expected e.g. 30d, 12h, 1800s)"
-          return nil
-        end
-        n = m[1].to_i
-        case m[2]
-        when "s" then n
-        when "m" then n * 60
-        when "h" then n * 3600
-        when "d" then n * 86_400
-        end
       end
 
       # `prouter cancel run <uid>` — soft-cancel a run from the CLI.
@@ -542,59 +403,6 @@ module Prouterd
       rescue Prouterd::Runtime::TriggerError => e
         @stderr.puts "prouter resume: #{e.message}"
         1
-      ensure
-        store&.db&.close if store && store != :error
-      end
-
-      # `prouter trace event <file> [--interface NAME]` — static routing
-      # analysis without executing any blocks. Reads config from --config or
-      # from the running pointer in --db.
-      def cmd_trace
-        store = nil
-        unless @argv.length >= 2 && @argv[0] == "event"
-          @stderr.puts "prouter trace: usage: trace event <file> [--interface NAME] [--config FILE | --db PATH]"
-          return 2
-        end
-        event_path = @argv[1]
-        @argv = @argv[2..]
-
-        interface_name = nil
-        while %w[--interface -i].include?(@argv.first)
-          @argv.shift
-          interface_name = @argv.shift
-          unless interface_name
-            @stderr.puts "prouter trace: --interface requires a name"
-            return 2
-          end
-        end
-
-        opts = parse_runtime_options("trace")
-        return 2 if opts == :error
-
-        document =
-          if opts[:config_path]
-            source = read_file(opts[:config_path])
-            return 2 if source.nil?
-            parsed = parse_with_diagnostics(source, opts[:config_path])
-            return 1 if parsed.nil?
-            parsed
-          else
-            store = open_store(opts[:db_path], opts[:no_db])
-            return 1 if store == :error
-            return 1 if store.nil?
-            store.load_running
-          end
-
-        event = JSON.parse(File.read(event_path))
-        result = Prouterd::Runtime::Tracer.trace(document, event, interface_name: interface_name)
-        @stdout.print Prouterd::Runtime::TracerRenderer.render(result)
-        result.error ? 1 : 0
-      rescue Errno::ENOENT => e
-        @stderr.puts "prouter trace: #{e.message}"
-        2
-      rescue JSON::ParserError => e
-        @stderr.puts "prouter trace: event file is not valid JSON: #{e.message}"
-        2
       ensure
         store&.db&.close if store && store != :error
       end

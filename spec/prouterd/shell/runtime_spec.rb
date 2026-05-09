@@ -164,38 +164,4 @@ RSpec.describe "Phase 4 runtime through the shell" do
     end
   end
 
-  describe "trace command" do
-    it "renders trace output for a matching event" do
-      # Use the canonical sales_ops fixture which has interface + global route.
-      sales_doc = Prouterd::Config::Parser.parse(
-        Prouterd::Config::Lexer.tokenize(read_fixture("sales_ops.prc"))
-      )
-      store2 = Prouterd::ControlPlane::ConfigStore.new(db)
-      store2.commit(sales_doc)
-
-      Tempfile.create(["evt-", ".json"]) do |tmp|
-        tmp.write('{"type":"lead.created","body":{"name":"Acme"}}')
-        tmp.flush
-
-        input = StringIO.new("enable\ntrace event #{tmp.path} interface leads_in\nexit\n")
-        output = StringIO.new
-        error = StringIO.new
-        session = Prouterd::Shell::Session.new(store: store2, runner: runner)
-        Prouterd::Shell::Shell.run(
-          session: session,
-          input: input, output: output, error: error,
-          interactive: false, banner: false
-        )
-        expect(output.string).to include("Trace result")
-        expect(output.string).to include("Selected process")
-        expect(output.string).to include("lead_pipeline")
-        expect(output.string).to include("score -> notify_sales")
-      end
-    end
-
-    it "errors on missing event file" do
-      _out, err = drive("enable\ntrace event /nope/missing.json\nexit\n")
-      expect(err).to include("no such event file")
-    end
-  end
 end

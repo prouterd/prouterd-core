@@ -39,16 +39,7 @@ RSpec.describe "Phase 18 router-CLI compatibility" do
       _, _out, err = drive("enable\nc")
       expect(err).to include("ambiguous command 'c'")
       expect(err).to include("cancel")
-      expect(err).to include("configure")
       expect(err).to include("copy")
-    end
-
-    it "expands keyword arguments too: `conf t`" do
-      # `conf t` enters config; `commit` (not `end`) promotes the candidate
-      # so `sh run` afterwards reflects the new router section.
-      _, out, err = drive("enable\nconf t\nrouter demo\nexit\ncommit\nsh run")
-      expect(err).to be_empty
-      expect(out).to include("router demo")
     end
   end
 
@@ -79,53 +70,6 @@ RSpec.describe "Phase 18 router-CLI compatibility" do
       # show_run prints the no-DB notice to stdout (it's a status, not an error).
       _, out, _err = drive("enable\nsh run nope-xxx")
       expect(out).to include("no DB attached")
-    end
-  end
-
-  describe "router `end` command" do
-    it "from a config sub-mode jumps straight back to privileged" do
-      _, out, err = drive("enable\nconf t\nrouter demo\nend\nsh run")
-      expect(err).to be_empty
-      # Renderer ran, meaning we're back in privileged with the candidate
-      # promoted to running... but `end` does NOT auto-commit, so the
-      # router section should still be in the candidate, not the running.
-      # Actually `end` keeps the candidate; running is unchanged.
-      expect(out).to include("(empty configuration)")
-    end
-
-    it "from a deeply nested editor (config-block) also pops to privileged" do
-      script = <<~SCRIPT
-        enable
-        conf t
-        process p1
-        block b1
-        end
-        sh run
-      SCRIPT
-      _, _out, err = drive(script)
-      # We expect `end` to leave us in privileged so `sh run` works without
-      # being interpreted as a block field.
-      expect(err).not_to include("unknown command 'sh'")
-    end
-  end
-
-  describe "router `do <command>` from config" do
-    it "runs a privileged-mode command without leaving config" do
-      _, out, err = drive("enable\nconf t\ndo sh ver\nabort")
-      expect(err).to be_empty
-      expect(out).to include("prouter")
-      expect(out).to include("Candidate discarded")
-    end
-
-    it "rejects mode-changing commands" do
-      # `do disable` would drop us to user mode if it weren't blocked.
-      _, _out, err = drive("enable\nconf t\ndo disable\nabort")
-      expect(err).to include("'do' cannot run mode-changing commands")
-    end
-
-    it "requires at least one argument" do
-      _, _out, err = drive("enable\nconf t\ndo\nabort")
-      expect(err).to include("syntax: do")
     end
   end
 

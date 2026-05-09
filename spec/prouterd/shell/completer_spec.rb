@@ -57,7 +57,7 @@ RSpec.describe Prouterd::Shell::Completer do
   describe "in privileged mode" do
     it "completes empty input to the full command list" do
       result = completer.call("", "")
-      expect(result).to include("show", "configure", "trigger", "replay", "exit")
+      expect(result).to include("show", "trigger", "replay", "exit")
     end
 
     it "expands a unique prefix" do
@@ -67,7 +67,7 @@ RSpec.describe Prouterd::Shell::Completer do
 
     it "lists matching commands for ambiguous prefix" do
       result = completer.call("c", "c")
-      expect(result).to include("cancel", "configure")
+      expect(result).to include("cancel", "copy")
     end
   end
 
@@ -129,20 +129,6 @@ RSpec.describe Prouterd::Shell::Completer do
     end
   end
 
-  describe "configure terminal" do
-    it "configure expands to 'terminal'" do
-      expect(completer.call("", "configure ")).to eq(["terminal"])
-    end
-  end
-
-  describe "trace" do
-    it "trace -> 'event'; trace event <file> -> 'interface'; -> interface names" do
-      expect(completer.call("", "trace ")).to eq(["event"])
-      expect(completer.call("", "trace event /tmp/x.json ")).to eq(["interface"])
-      expect(completer.call("", "trace event /tmp/x.json interface ")).to eq(["cli"])
-    end
-  end
-
   describe "in user mode" do
     before do
       session.mode_stack.clear
@@ -152,39 +138,7 @@ RSpec.describe Prouterd::Shell::Completer do
     it "shows only user-mode commands" do
       result = completer.call("", "")
       expect(result).to include("enable", "show", "exit")
-      expect(result).not_to include("configure", "rollback")
-    end
-  end
-
-  describe "in config mode" do
-    before do
-      session.mode_stack.clear
-      session.begin_candidate
-      session.mode_stack << Prouterd::Shell::Modes::Config.new
-    end
-
-    it "completes config-mode commands" do
-      result = completer.call("", "")
-      expect(result).to include("router", "secret", "policy", "queue", "interface", "process", "route", "commit", "abort")
-    end
-
-    it "interface <Tab> lists types" do
-      expect(completer.call("", "interface ")).to contain_exactly("webhook", "manual", "cron")
-    end
-
-    it "no <Tab> lists deletable kinds" do
-      result = completer.call("", "no ")
-      expect(result).to include("router", "secret", "policy", "queue", "interface", "process", "route")
-    end
-
-    it "no process <Tab> lists existing process names" do
-      result = completer.call("", "no process ")
-      expect(result).to contain_exactly("lead_pipeline", "billing")
-    end
-
-    it "route interface <iface> process <Tab> lists processes" do
-      result = completer.call("", "route interface cli process ")
-      expect(result).to include("lead_pipeline", "billing")
+      expect(result).not_to include("rollback")
     end
   end
 end

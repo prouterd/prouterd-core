@@ -4,7 +4,7 @@ require "puma/events"
 
 module Prouterd
   module API
-    # Embedded Puma launcher. The CLI's `prouter serve` calls Server.run
+    # Embedded Puma launcher. The `prouterd` daemon calls Server.run
     # which blocks until the process is signaled (SIGINT/SIGTERM).
     #
     # Graceful shutdown sequence on SIGINT/SIGTERM:
@@ -17,7 +17,7 @@ module Prouterd
     #   3. Puma stops with `force=true` so any HTTP connection still alive
     #      after drain gets cleanly closed.
     #
-    # The Scheduler is stopped externally (in `prouter serve` via `ensure`).
+    # The Scheduler is stopped externally (in `prouterd` via `ensure`).
     class Server
       DEFAULT_BIND = "127.0.0.1".freeze
       DEFAULT_PORT = 8080

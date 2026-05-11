@@ -92,7 +92,8 @@ module Prouterd
         exit_code
       end
 
-      # Public helper for `prouter exec "<command>"` non-interactive use.
+      # Public helper for WebSocket CLI sessions, specs, and non-interactive
+      # `printf "...\\n" | prouter shell` use.
       # Returns the same exit code as run() with input set to a single line.
       def execute_one(input_line)
         @session.mode_stack << Modes::Privileged.new if @session.mode_stack.empty?

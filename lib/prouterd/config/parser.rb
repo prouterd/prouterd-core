@@ -369,7 +369,7 @@ module Prouterd
         when :mcp_server
           # `server <kind> "<spec>"` where kind ∈ npx | uvx | bin | raw.
           # Stored as {"kind"=>..., "spec"=>...}; the spec string is
-          # resolved to argv at spawn time by McpClient::ServerCommand.
+          # resolved to argv at spawn time by Iface::Mcp::ServerCommand.
           expect_token_count(line, 3, "#{field.dsl_keyword} <kind> <spec>")
           kind = expect_word(line.tokens[1], "#{field.dsl_keyword} kind")
           unless %w[npx uvx bin raw].include?(kind)
@@ -736,10 +736,10 @@ module Prouterd
             line: line.number
           )
         end
-        unless plugin.outbound?
+        unless plugin.outbound? && plugin.block_callable?
           raise ParseError.new(
-            "block 'interface' must reference an outbound interface; " \
-            "'#{type}' is #{plugin.direction} (only blocks reference outbound)",
+            "block 'interface' must reference a block-callable outbound interface; " \
+            "'#{type}' is #{plugin.direction}#{plugin.outbound? ? ' but is runtime-only' : ''}",
             line: line.number
           )
         end

@@ -15,7 +15,6 @@ module Prouterd
     autoload :PostgresCaller, File.expand_path("iface/postgres_caller", __dir__)
     autoload :LocalRepoCaller, File.expand_path("iface/local_repo_caller", __dir__)
     autoload :LocalRepoStatus, File.expand_path("iface/local_repo_status", __dir__)
-    autoload :McpClient,      File.expand_path("iface/mcp_client",       __dir__)
     autoload :McpToolRef,     File.expand_path("iface/mcp_tool_ref",     __dir__)
     module Mcp
       autoload :ServerCommand, File.expand_path("iface/mcp/server_command", __dir__)

@@ -11,7 +11,7 @@ module Prouterd
     # un-parseable, and otherwise no-ops; the daemon as a whole keeps
     # running.
     #
-    # Runs as a background thread inside `prouter serve`. Once per tick
+    # Runs as a background thread inside `prouterd`. Once per tick
     # (TICK_SECONDS, default 1s) it:
     #
     #   1. Re-loads running config (so commits during life take effect).

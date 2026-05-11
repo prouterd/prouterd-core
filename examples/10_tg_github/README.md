@@ -64,10 +64,10 @@ curl -s -X POST http://127.0.0.1:8080/i/github \
 
 # 6. Inspect the run.
 sleep 1
-bundle exec exe/prouter exec "show runs" --db $DB
-RUN=$(bundle exec exe/prouter exec "show runs" --db $DB | tail -1 | awk '{print $1}')
-bundle exec exe/prouter exec "show run $RUN" --db $DB
-bundle exec exe/prouter exec "show logs run $RUN" --db $DB
+printf "enable\nshow runs\n" | bundle exec exe/prouter shell --db $DB
+RUN=$(printf "enable\nshow runs\n" | bundle exec exe/prouter shell --db $DB | tail -1 | awk '{print $1}')
+printf "enable\nshow run $RUN\n" | bundle exec exe/prouter shell --db $DB
+printf "enable\nshow logs run $RUN\n" | bundle exec exe/prouter shell --db $DB
 
 # Cleanup.
 kill -INT $SERVER
@@ -110,18 +110,15 @@ GitHub sends the secret as a Bearer header on each request — prouterd's
   host Ruby processes via `Open3`. Default install covers this; no
   extra gem required.
 
-## Tweaking via shell
+## Tweaking safely
 
-Operator can change behavior in production without redeploy:
+Operator can change behavior without redeploy by editing the `.prc`,
+reviewing the semantic diff, and applying a new config commit:
 
-```
-gh-relay-01> enable
-gh-relay-01# configure terminal
-gh-relay-01(config)# route interface github_in process pr_notify
-gh-relay-01(config-route)# no match event.pull_request.draft eq false
-gh-relay-01(config-route)# exit
-gh-relay-01(config)# commit
+```bash
+bundle exec exe/prouter diff examples/10_tg_github/tg_github.prc --db $DB
+bundle exec exe/prouter apply examples/10_tg_github/tg_github.prc --db $DB
 ```
 
-Now drafts notify too. History in `show config commits`. Roll back with
-`prouter rollback --to <commit-id>`.
+History is visible in `show config commits`. Roll back from the shell
+with `rollback commit <id>`.

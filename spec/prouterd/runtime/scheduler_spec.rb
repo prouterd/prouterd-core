@@ -117,11 +117,11 @@ RSpec.describe Prouterd::Runtime::Scheduler do
     expect(out.string).to include("no global route")
   end
 
-  it "advances @last_fired so the next tick at the same minute does not double-fire" do
+  it "advances @last_fired so the next tick before the next minute does not double-fire" do
     scheduler = described_class.new(store: store, runner: runner, jobs: jobs, logger: Prouterd::NullLogger.new)
-    scheduler.instance_variable_set(:@last_fired_warm, Time.now - 120)
+    now = Time.utc(2026, 1, 1, 12, 0, 30)
+    scheduler.instance_variable_set(:@last_fired_warm, now - 120)
 
-    now = Time.now
     scheduler.tick(now: now)
     runs_after_first = repo.list_runs.length
     expect(runs_after_first).to be >= 1

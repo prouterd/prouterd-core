@@ -114,11 +114,14 @@ runs only the pending ones on `DB.open`.
 - **Iface dispatch is plugin-driven.** The set of legal `interface
   <type> <name>` types is whatever's currently registered in
   `Iface::Registry`. Plugins declare `direction :inbound` (webhook,
-  cron, manual) or `:outbound` (docker, shell, http). Blocks may only
-  reference outbound interfaces; global routes wire inbound interfaces
-  to processes. Parser, validator, renderer, `show`, tracer, CallRunner,
-  and CLI all iterate over the registry and the plugin's declared
-  `field` / `call_field` schemas — they hardcode no type names.
+  cron, manual) or `:outbound` (docker, shell, http, mcp). Blocks may
+  only reference outbound interfaces with `block_callable true`
+  (default); runtime-only outbound integrations such as MCP use
+  `block_callable false` and are reached through their own runtime path.
+  Global routes wire inbound interfaces to processes. Parser, validator,
+  renderer, `show`, tracer, CallRunner, and CLI all iterate over the
+  registry and the plugin's declared `field` / `call_field` schemas —
+  they hardcode no type names.
 - **Logging is structured.** Build one `Prouterd::Logger` in `cmd_serve`
   and thread it through all components via `logger:` kwarg. Format is
   `<ts> <LEVEL> prouterd: <message> k=v k=v…` — single-line, grep-able,
@@ -133,7 +136,8 @@ runs only the pending ones on `DB.open`.
 
 ## Adding a new interface type
 
-An iface type is one plugin file (+ a caller class for outbound types).
+An iface type is one plugin file (+ a caller class for block-callable
+outbound types).
 **Nothing else in the codebase needs to change** — parser, validator,
 renderer, show, tracer, CallRunner, and CLI all discover the new type
 through `Iface::Registry`.
@@ -150,8 +154,13 @@ through `Iface::Registry`.
   (`command`, `query`, `body`, ...). The plugin declares
   `direction :outbound`, both `field` (interface-config schema) and
   `call_field` (per-block-call schema), and `caller "ClassName"`.
+- **Runtime-only outbound** (mcp): the daemon/runtime calls the
+  integration, but ordinary process blocks do not dispatch to it
+  directly. Declare `direction :outbound` plus `block_callable false`
+  and omit `caller`; wire it through the specific runtime feature
+  instead.
 
-### 1. Write the caller (outbound only)
+### 1. Write the caller (block-callable outbound only)
 
 Implement `#call(request) -> ExecutionResult`. Read interface-config
 fields and call-fields from `request.type_fields["foo"]` (CallRunner
@@ -209,6 +218,7 @@ Field kinds:
 Pass `caller` as a class OR a String class name. Strings are resolved
 lazily — useful when the caller pulls in a heavy dependency (e.g.
 `docker-api`) that you only want loaded when the iface is actually used.
+Omit `caller` only for `block_callable false` runtime-only integrations.
 
 ### 3. Make Prouterd load it
 

@@ -45,6 +45,10 @@ every MCP server's tools in every agentic block. `allowed-tools` is an
 optional further filter; without it, every tool advertised by the named
 mcp interfaces is exposed.
 
+An MCP interface is not a standalone process block target. Use
+`interface llm <name>` on the block, enable `agentic on`, then attach
+MCP servers with `mcp <iface>`.
+
 ## Server kinds
 
 `server <kind> "<spec>"` — four kinds, in roughly increasing

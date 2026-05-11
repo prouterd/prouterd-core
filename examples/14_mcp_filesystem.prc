@@ -52,4 +52,5 @@ route interface cli process ask
 exit
 
 ! Trigger:
-!   prouter trigger ask --event '{"question":"What files mention TODO?"}'
+!   echo '{"question":"What files mention TODO?"}' > /tmp/question.json
+!   prouter trigger process ask input /tmp/question.json --db /tmp/o.db

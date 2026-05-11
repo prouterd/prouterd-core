@@ -6,8 +6,8 @@ module Prouterd
   module CLI
     # Entry point for the `prouter` binary — operator CLI client.
     #
-    # One-shot commands: check / render / apply / shell / exec / trigger /
-    # trace / replay / cancel / diff / cleanup / version / help.
+    # One-shot commands: check / render / apply / validate / shell / trigger /
+    # replay / resume / cancel / diff / version / help.
     #
     # The long-running daemon (HTTP + cron + worker pool) is a separate
     # binary, `prouterd` (see lib/prouterd/daemon.rb).

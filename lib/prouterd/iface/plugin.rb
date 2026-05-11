@@ -6,7 +6,7 @@ module Prouterd
     #   1. The DSL `interface <type> <name>` keyword that activates it.
     #   2. The fields that appear inside `interface ... exit`.
     #   3. Whether the interface is inbound (triggers a process — webhook,
-    #      cron, manual) or outbound (called by a block — http, llm, ...).
+    #      cron, manual) or outbound (called by the runtime — http, llm, ...).
     #
     # The framework drives parser/validator/renderer off this declaration —
     # adding a new interface type does NOT require touching any core file.
@@ -36,7 +36,8 @@ module Prouterd
         end
 
         # Required. Either :inbound (something fires it externally — webhook,
-        # cron, manual) or :outbound (a block calls into it — http, llm, ...).
+        # cron, manual) or :outbound (the runtime calls out to it — http,
+        # llm, mcp, ...).
         def direction(d = nil)
           if d
             unless %i[inbound outbound].include?(d)
@@ -49,6 +50,22 @@ module Prouterd
 
         def inbound?;  direction == :inbound;  end
         def outbound?; direction == :outbound; end
+
+        # Most outbound interfaces are directly callable from a process block
+        # via `block ... interface <type> <name>`. A few outbound integrations
+        # are runtime-only helpers instead; MCP is the canonical case, where
+        # tools are exposed to `agentic on` LLM blocks rather than dispatched as
+        # standalone blocks.
+        def block_callable(value = :__unset)
+          @block_callable = !!value unless value == :__unset
+          return false unless outbound?
+
+          @block_callable.nil? ? true : @block_callable
+        end
+
+        def block_callable?
+          block_callable
+        end
 
         # Declare a field. Order matters for the canonical renderer.
         #
@@ -101,9 +118,10 @@ module Prouterd
         # Default: no-op.
         def validate(_iface, _document, _result); end
 
-        # Outbound plugins point at a Caller class — the runtime invokes it
-        # when a `type call` block names this interface via `use`. Resolved
-        # lazily so plugin files don't pull in (e.g.) Net::HTTP at parse time.
+        # Block-callable outbound plugins point at a Caller class — the
+        # runtime invokes it when a process block references this interface.
+        # Resolved lazily so plugin files don't pull in (e.g.) Net::HTTP at
+        # parse time. Runtime-only outbound plugins (MCP) can omit this.
         def caller(klass_or_name = nil)
           @caller_ref = klass_or_name if klass_or_name
           @caller_ref

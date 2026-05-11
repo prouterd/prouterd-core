@@ -425,6 +425,15 @@ module Prouterd
           return
         end
 
+        unless plugin.block_callable?
+          @result.error(
+            "block '#{process.name}/#{block.name}' references '#{ref.type}' interface, " \
+            "but '#{ref.type}' is runtime-only; use it through an agentic llm block's `mcp #{ref.name}` directive",
+            line: ref.line
+          )
+          return
+        end
+
         iface = @doc.interfaces.find { |i| i.name == ref.name }
         unless iface
           @result.error(

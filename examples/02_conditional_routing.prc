@@ -1,14 +1,13 @@
 ! Branches on a runtime value: scorer outputs {"score": N}, and the
 ! match condition routes to notify_sales (high score) or notify_marketing
-! (low score). The trace command shows these as "depends on runtime"
-! because the score isn't known until scorer runs.
+! (low score). Static routing analysis via POST /v1/trace reports these
+! as "depends on runtime" because the score isn't known until scorer runs.
 !
 ! Demonstrates: backtick raw strings (no DSL escaping), stdout-as-JSON
 ! (ShellRunner parses single-line JSON stdout into output_json), and
 ! cross-block templating (`{{scorer.score}}`).
 !
 !   $ prouter apply examples/02_conditional_routing.prc --db /tmp/o.db
-!   $ prouter trace event /dev/null --interface cli --db /tmp/o.db
 !   $ prouter trigger process score_pipe input /dev/null --db /tmp/o.db --runner shell
 
 router demo

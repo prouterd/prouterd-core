@@ -79,7 +79,7 @@ curl -X POST http://localhost:8080/i/jira_in \
   -d '{"issue":{"key":"PROJ-123","fields":{"summary":"login fails after MFA","status":{"name":"Needs Triage"}}}}'
 
 # Inspect:
-prouter exec "show runs" --db /tmp/prouterd.db
-prouter exec "show run <uid>" --db /tmp/prouterd.db
-prouter exec "show logs run <uid>" --db /tmp/prouterd.db
+printf "enable\nshow runs\n" | prouter shell --db /tmp/prouterd.db
+printf "enable\nshow run <uid>\n" | prouter shell --db /tmp/prouterd.db
+printf "enable\nshow logs run <uid>\n" | prouter shell --db /tmp/prouterd.db
 ```

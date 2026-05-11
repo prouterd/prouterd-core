@@ -46,9 +46,10 @@ module Prouterd
       class Mcp < Plugin
         type "mcp"
         direction :outbound
+        block_callable false
 
         # `server <kind> "<spec>"` — the only required field.
-        # `<kind>` ∈ npx | uvx | bin | raw — see McpClient::ServerCommand
+        # `<kind>` ∈ npx | uvx | bin | raw — see Mcp::ServerCommand
         # for resolution semantics. The spec string is plugin-validated.
         field :server, kind: :mcp_server, required: true,
                        description: "subprocess to spawn: <kind> \"<spec>\" (npx/uvx/bin/raw)"
@@ -74,8 +75,6 @@ module Prouterd
         # Per-tools/call timeout. Defaults to 60s if unset.
         field :"timeout-tool-call", kind: :duration_ms,
                                     description: "per-tools/call wall-clock timeout"
-
-        caller "Prouterd::Iface::McpClient"
 
         # Plugin-level validation:
         #   1. Each `secret <NAME>` must reference a declared secret.

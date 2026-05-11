@@ -2,14 +2,13 @@ require "json"
 require "fileutils"
 require "tmpdir"
 require "open3"
-require "timeout"
 require "digest"
 require "shellwords"
 require "time"
 
 module Prouterd
   module Runner
-    # Local-process runner for `block ... type shell ... exec "..."`.
+    # Local-process runner for `block ... interface shell ... exec "..."`.
     #
     # Honors the same /prouter/{input.json,output.json,artifacts/} contract
     # as DockerRunner — we just exec a process on the host instead of
@@ -50,18 +49,13 @@ module Prouterd
         error_message = nil
 
         begin
-          if request.timeout_ms
-            Timeout.timeout(request.timeout_ms / 1000.0) do
-              stdout_str, stderr_str, status = Open3.capture3(env, *cmd, chdir: cwd)
-              exit_code = status.exitstatus
-            end
-          else
-            stdout_str, stderr_str, status = Open3.capture3(env, *cmd, chdir: cwd)
-            exit_code = status.exitstatus
+          stdout_str, stderr_str, exit_code, timed_out = capture_command(
+            env, cmd, cwd: cwd, timeout_ms: request.timeout_ms
+          )
+          if timed_out
+            error_type = "timeout"
+            error_message = "shell exec exceeded timeout of #{request.timeout_ms}ms"
           end
-        rescue Timeout::Error
-          error_type = "timeout"
-          error_message = "shell exec exceeded timeout of #{request.timeout_ms}ms"
         rescue Errno::ENOENT => e
           error_type = "shell_error"
           error_message = e.message
@@ -110,7 +104,7 @@ module Prouterd
 
       def build_env(request, work_dir)
         env = (request.env || {}).dup
-        # Per-block env declared via `env KEY VALUE` in the shell type
+        # Per-block env declared via `env KEY VALUE` in the shell interface
         # section. Merged AFTER PROUTER_* so users can intentionally override.
         if (custom = request.field("env")).is_a?(Hash)
           env.merge!(custom)
@@ -139,6 +133,61 @@ module Prouterd
         staged.each do |local_name, src_path|
           FileUtils.cp(src_path, File.join(inputs_dir, local_name))
         end
+      end
+
+      def capture_command(env, cmd, cwd:, timeout_ms:)
+        timeout_seconds = timeout_ms && (timeout_ms / 1000.0)
+        Open3.popen3(env, *cmd, chdir: cwd) do |stdin, stdout, stderr, wait_thr|
+          stdin.close
+          out_reader = stream_reader(stdout)
+          err_reader = stream_reader(stderr)
+          timed_out = false
+          status = nil
+          deadline = timeout_seconds && (Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds)
+
+          loop do
+            if wait_thr.join(0.05)
+              status = wait_thr.value
+              break
+            end
+
+            next unless deadline && Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+            timed_out = true
+            terminate_process(wait_thr)
+            status = wait_thr.value if wait_thr.join(0)
+            break
+          end
+
+          out_reader.join
+          err_reader.join
+          [out_reader.value, err_reader.value, timed_out ? nil : status&.exitstatus, timed_out]
+        end
+      end
+
+      def stream_reader(io)
+        Thread.new do
+          io.read.to_s
+        rescue IOError
+          ""
+        end
+      end
+
+      def terminate_process(wait_thr)
+        pid = wait_thr.pid
+        begin
+          Process.kill("TERM", pid)
+        rescue Errno::ESRCH
+          return
+        end
+
+        return if wait_thr.join(1)
+
+        Process.kill("KILL", pid)
+      rescue Errno::ESRCH
+        nil
+      ensure
+        wait_thr.join
       end
 
       def classify_outcome(work_dir, exit_code, stdout_str)

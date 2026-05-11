@@ -5,7 +5,7 @@
 #   docker build -t prouterd:latest .
 #   docker run -p 8080:8080 -v prouterd-data:/data prouterd:latest
 #
-# To allow `type docker` blocks (which spawn child containers on the host),
+# To allow `interface docker` blocks (which spawn child containers on the host),
 # mount the host Docker socket:
 #   -v /var/run/docker.sock:/var/run/docker.sock
 # Pure-shell pipelines don't need it.
@@ -64,9 +64,10 @@ EXPOSE 8080
 VOLUME ["/data"]
 
 # Default: long-running daemon (exe/prouterd). For one-shot operator
-# commands (check, render, apply, shell, exec, trigger, replay, cancel,
-# diff, cleanup, trace), override the entrypoint:
-#   docker run --rm -v ... --entrypoint=bundle prouterd:latest \
-#     exec ruby exe/prouter exec "show running-config"
+# commands (check, render, apply, shell, trigger, replay, resume, cancel,
+# diff), override the entrypoint:
+#   printf "enable\nshow running-config\n" | docker run --rm -i \
+#     -v prouterd-data:/data --entrypoint=bundle prouterd:latest \
+#     exec ruby exe/prouter shell --db /data/prouterd.db
 ENTRYPOINT ["bundle", "exec", "ruby", "exe/prouterd"]
 CMD ["--bind", "0.0.0.0", "--port", "8080", "--db", "/data/prouterd.db"]

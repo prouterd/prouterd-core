@@ -6,7 +6,7 @@ module Prouterd
   module Daemon
     # `prouterd` daemon entry point.
     #
-    # Replaces what used to be `prouter serve`. Runs the HTTP API + worker
+    # Runs the HTTP API + worker
     # pool + cron scheduler + recovery sweep in one process. State persists
     # in SQLite at --db (or PROUTERD_DB env). Graceful shutdown via SIGINT/
     # SIGTERM drains in-flight runs before stopping Puma.
@@ -270,8 +270,8 @@ module Prouterd
             PROUTERD_MAX_BODY_BYTES  request body cap (default 1 MB)
             PROUTERD_WEBHOOK_RATE    MAX/WINDOW per-iface webhook rate limit
 
-          For one-shot operator commands (check, render, apply, shell, exec,
-          trigger, replay, cancel, diff, cleanup, trace), use `prouter`.
+          For one-shot operator commands (check, render, apply, validate,
+          shell, trigger, replay, resume, cancel, diff), use `prouter`.
         USAGE
         0
       end

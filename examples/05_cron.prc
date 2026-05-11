@@ -1,11 +1,11 @@
-! Cron interface. The scheduler thread inside `prouter serve` fires the
+! Cron interface. The scheduler thread inside `prouterd` fires the
 ! pipeline every minute. event.fired_at carries the trigger timestamp;
 ! event.interface names the originating cron.
 !
 !   $ prouter apply examples/05_cron.prc --db /tmp/o.db
-!   $ prouter serve --db /tmp/o.db --port 8090
+!   $ prouterd --db /tmp/o.db --port 8090
 !   # wait ~1 minute, then in another terminal:
-!   $ prouter exec "show runs" --db /tmp/o.db
+!   $ printf "enable\nshow runs\n" | prouter shell --db /tmp/o.db
 
 router demo
 exit

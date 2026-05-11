@@ -159,9 +159,9 @@ Heavier callers are `gem install` away.
 | `postgres <name>`    | SQL with `$1..$N` bind params                   | `gem install pg`         |
 | `cron <name>`        | Inbound cron schedule                           | `gem install fugit`      |
 
-Adding your own type is one plugin file + one caller class — no edits
-to parser/validator/renderer/CLI. See [CLAUDE.md](CLAUDE.md) for the
-worked recipe.
+Adding your own block-callable type is one plugin file + one caller
+class — no edits to parser/validator/renderer/CLI. See
+[CLAUDE.md](CLAUDE.md) for the worked recipe.
 
 ## What you get with it
 
@@ -266,10 +266,10 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 
 ## Status
 
-Production-ready core. 864 specs, 0 failures. End-to-end smoke-tested
+Production-ready core. 865 specs, 0 failures. End-to-end smoke-tested
 against real Docker, Puma, cron, and shell exec. Web console
-(`prouterd-web`) ships separately and talks to the daemon over `/v1`
-HTTP + `/v1/events` WS.
+(`prouterd-web`) ships separately; browser login and artifact downloads
+use HTTP, while console data and live updates ride `/v1/events` WS-RPC.
 
 Out of scope for v0.1 (the plugin interfaces are ready — write a plugin
 file and a caller class, no core edits): KubernetesCaller, S3

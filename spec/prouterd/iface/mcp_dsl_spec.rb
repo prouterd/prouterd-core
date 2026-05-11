@@ -96,6 +96,23 @@ RSpec.describe "interface mcp DSL surface" do
       expect(block.allowed_tools).to eq(%w[atlassian.search_issues atlassian.get_issue])
     end
 
+    it "rejects using an mcp interface as a direct process block" do
+      expect {
+        parse(<<~PRC)
+          router demo
+          exit
+          interface mcp fs
+           server raw "ruby fake_server.rb"
+          exit
+          process p
+           block read
+            interface mcp fs
+           exit
+          exit
+        PRC
+      }.to raise_error(Prouterd::Config::ParseError, /runtime-only/)
+    end
+
     it "rejects a malformed namespaced tool name" do
       bad = source.sub("atlassian.search_issues", "atlassian.")
       expect { parse(bad) }

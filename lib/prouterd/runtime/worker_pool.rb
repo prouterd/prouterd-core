@@ -5,7 +5,7 @@ require "time"
 module Prouterd
   module Runtime
     # Pool of worker threads that drain the jobs queue. Lives inside the
-    # daemon process started by `prouter serve`.
+    # `prouterd` daemon process.
     #
     # Each worker:
     #   1. claims a job atomically (UPDATE … RETURNING),

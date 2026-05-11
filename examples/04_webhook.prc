@@ -4,7 +4,7 @@
 !
 !   $ export WEBHOOK_TOKEN=demo-token
 !   $ prouter apply examples/04_webhook.prc --db /tmp/o.db
-!   $ prouter serve --db /tmp/o.db --port 8089 &
+!   $ prouterd --db /tmp/o.db --port 8089 &
 !   $ curl -s -X POST http://127.0.0.1:8089/i/leads_in \
 !       -H "Authorization: Bearer demo-token" \
 !       -d '{"type":"lead.created","body":{"name":"Acme"}}'

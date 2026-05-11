@@ -4,8 +4,8 @@
 !
 !   $ prouter apply examples/03_retries.prc --db /tmp/o.db
 !   $ prouter trigger process flaky_pipe input /dev/null --db /tmp/o.db
-!   $ prouter exec "show dead-letter" --db /tmp/o.db
-!   $ prouter exec "show logs run <uid>" --db /tmp/o.db
+!   $ printf "enable\nshow dead-letter\n" | prouter shell --db /tmp/o.db
+!   $ printf "enable\nshow logs run <uid>\n" | prouter shell --db /tmp/o.db
 !     # — three attempts visible, two "retrying" system lines
 
 router demo

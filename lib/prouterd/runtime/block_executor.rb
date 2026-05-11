@@ -34,6 +34,8 @@ module Prouterd
     # templated_fields / build_env / accumulate_run_usage /
     # update_context_with_output; FanOut uses log_system_safe).
     class BlockExecutor
+      include SystemLog
+
       def initialize(db:, runs:, runner:, artifact_store:,
                      secret_resolver:, events:, logger:, mcp_pool:,
                      retry_engine:)
@@ -330,21 +332,6 @@ module Prouterd
         # Auto-key by block name. Downstream blocks reference via templating:
         # `{{<block_name>.field}}`.
         context.set(block.name, scrubbed_output_json)
-      end
-
-      # Host contract for FanOut — log a system-stream line + publish
-      # the matching `:log_appended` event. Identical to Orchestrator's
-      # own log_system_safe; both exist so each collaborator owns its
-      # log path without reaching across.
-      def log_system_safe(run, message, db_mutex)
-        db_mutex.synchronize { @runs.append_log(run_id: run.id, stream: "system", content: message) }
-        @events.publish(:log_appended,
-                        run_id:     run.id,
-                        run_uid:    run.uid,
-                        step_id:    nil,
-                        stream:     "system",
-                        content:    message,
-                        created_at: Time.now.utc.iso8601(3))
       end
 
       private

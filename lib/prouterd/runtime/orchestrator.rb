@@ -33,6 +33,8 @@ module Prouterd
     # The orchestrator depends only on small abstractions (Runner, ArtifactStore,
     # Repositories::Runs) so unit tests stub the Runner cleanly.
     class Orchestrator
+      include SystemLog
+
       attr_reader :runs
 
       # `runner` is a single runner (typically `Runner::CallRunner` in
@@ -518,17 +520,6 @@ module Prouterd
         ctx_mutex.synchronize { context.set(block.name, output) }
         log_system_safe(run, "block '#{block.name}' skipped (skip-when matched)", db_mutex)
         @events.publish(:step_updated, step: step, run_id: run.id, run_uid: run.uid) if step
-      end
-
-      def log_system_safe(run, message, db_mutex)
-        db_mutex.synchronize { @runs.append_log(run_id: run.id, stream: "system", content: message) }
-        @events.publish(:log_appended,
-                        run_id:     run.id,
-                        run_uid:    run.uid,
-                        step_id:    nil,
-                        stream:     "system",
-                        content:    message,
-                        created_at: Time.now.utc.iso8601(3))
       end
 
       def entry_blocks(process)

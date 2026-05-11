@@ -58,7 +58,16 @@ module Prouterd
       private
 
       def escape(value)
-        value.gsub("\\", "\\\\").gsub('"', '\\"').gsub("\n", '\\n')
+        # Block form: gsub replacement-strings interpret `\\` as a single
+        # literal `\`, so the naive `gsub("\\", "\\\\")` is a no-op. Using
+        # a block returns the literal we want without that re-encoding.
+        value.gsub(/[\\"\n]/) do |c|
+          case c
+          when "\\" then '\\\\'
+          when '"'  then '\\"'
+          when "\n" then '\\n'
+          end
+        end
       end
     end
   end

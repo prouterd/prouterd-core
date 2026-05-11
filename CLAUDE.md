@@ -126,7 +126,11 @@ runs only the pending ones on `DB.open`.
   and thread it through all components via `logger:` kwarg. Format is
   `<ts> <LEVEL> prouterd: <message> k=v k=v…` — single-line, grep-able,
   no JSON unless a value contains spaces/`=`. Do NOT use `puts` /
-  `@output.puts` in `lib/`. Tests pass `Prouterd::NullLogger.new`.
+  `@output.puts` in `lib/` — **except in `lib/prouterd/shell/`**, where
+  `@output.puts` IS the operator-facing API (shell renders tables and
+  human-readable replies on stdout). Everywhere else in `lib/`, route
+  diagnostic output through the structured logger; tests pass
+  `Prouterd::NullLogger.new`.
 - **Operational knobs go through ENV.** New behavior that an operator
   might want to tune (cap, timeout, path) reads
   `PROUTERD_<UPPER_SNAKE>` with a sensible compile-time default. Never

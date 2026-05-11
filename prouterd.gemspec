@@ -19,7 +19,7 @@ Gem::Specification.new do |spec|
   # render, apply, exec, shell) and the daemon's HTTP / WebSocket layer.
   # Everything else is opt-in.
   spec.add_dependency "sqlite3",         "~> 2.1"
-  spec.add_dependency "puma",            "~> 6.4"
+  spec.add_dependency "puma",            "~> 8.0"
   spec.add_dependency "rack",            "~> 3.1"
   spec.add_dependency "faye-websocket",  "~> 0.11"
 

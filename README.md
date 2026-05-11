@@ -266,7 +266,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 
 ## Status
 
-Production-ready core. 778 specs, 0 failures. End-to-end smoke-tested
+Production-ready core. 864 specs, 0 failures. End-to-end smoke-tested
 against real Docker, Puma, cron, and shell exec. Web console
 (`prouterd-web`) ships separately and talks to the daemon over `/v1`
 HTTP + `/v1/events` WS.
@@ -278,7 +278,7 @@ idempotency keys. Storage is SQLite, by design — single binary, no
 external DB dependency.
 
 See [CHANGELOG.md](CHANGELOG.md) for the per-version breakdown
-(38 phases shipped).
+(40 phases shipped).
 
 ## License
 

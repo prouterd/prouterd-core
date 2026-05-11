@@ -42,25 +42,28 @@ rm -f $DB
 # 1. Apply (commit it as version 1)
 prouter apply examples/02_conditional_routing.prc --db $DB
 
-# 2. Trace what would happen with an event (no execution)
+# 2. Trigger the pipeline (--runner shell so no docker is involved).
+#    `trigger` prints a JSON envelope with the run id on stdout.
 echo '{}' > /tmp/event.json
-prouter trace event /tmp/event.json --interface cli --db $DB
+TRIGGER_OUT=$(prouter trigger process score_pipe input /tmp/event.json --db $DB --runner shell)
+echo "$TRIGGER_OUT"
+RUN=$(echo "$TRIGGER_OUT" | sed -nE 's/.*"run_id":"([^"]+)".*/\1/p')
 
-# 3. Trigger the pipeline (--runner shell so no docker is involved)
-prouter trigger process score_pipe input /tmp/event.json --db $DB --runner shell
+# 3. Inspect the run via piped `prouter shell` (read-only operator surface).
+printf "enable\nshow runs\n"           | prouter shell --db $DB
+printf "enable\nshow run $RUN\n"       | prouter shell --db $DB
+printf "enable\nshow logs run $RUN\n"  | prouter shell --db $DB
 
-# 4. Inspect the run
-prouter exec "show runs" --db $DB
-RUN=$(prouter exec "show runs" --db $DB | tail -1 | awk '{print $1}')
-prouter exec "show run $RUN"          --db $DB
-prouter exec "show logs run $RUN"     --db $DB
-
-# 5. Replay (with same input + same config commit)
+# 4. Replay (with same input + same config commit)
 prouter replay run $RUN --db $DB
 
-# 6. Replay starting from a chosen block (skips earlier blocks)
+# 5. Replay starting from a chosen block (skips earlier blocks)
 prouter replay run $RUN from notify_sales --db $DB
 ```
+
+Static routing analysis (no execution) lives at `POST /v1/trace` on the
+running daemon — see [`../docs/cli.md`](../docs/cli.md). The `prouter
+trace` CLI wrapper was removed in Phase 40.
 
 ## Webhook demo
 
@@ -80,7 +83,7 @@ curl -s -X POST http://127.0.0.1:8089/i/leads_in \
 # -> {"run_id":"run_xxxxxxxx","status":"queued"}
 
 sleep 1
-prouter exec "show runs" --db $DB
+printf "enable\nshow runs\n" | prouter shell --db $DB
 
 kill -INT $SERVER_PID
 ```
@@ -101,7 +104,7 @@ SERVER_PID=$!
 
 # Wait for a minute boundary, then check
 sleep 70
-prouter exec "show runs" --db $DB
+printf "enable\nshow runs\n" | prouter shell --db $DB
 
 kill -INT $SERVER_PID
 ```

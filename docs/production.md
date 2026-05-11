@@ -58,17 +58,37 @@ as the auth header value (for http / llm). Rendered config never
 contains the secret value — only the source pointer. All log streams
 go through `Redactor`, which scrubs every declared secret value.
 
-## Cleanup
+## Retention
 
-A long-running cleanup splits into N-row transactions so the table
-isn't write-locked for minutes on a million-run sweep.
+Run retention is driven externally — host cron + a small Ruby script
+that calls the library directly. The convenience `prouter cleanup` CLI
+was removed in Phase 40; the module behind it (`ControlPlane::Cleanup`)
+stayed and is the supported entry point.
 
-```bash
-prouter cleanup --older-than 90d --batch-size 500 \
-  --db /var/lib/prouterd/prouterd.db
+```ruby
+# /usr/local/bin/prouterd-cleanup.rb
+require "prouterd"
+
+db = Prouterd::Storage::DB.open("/var/lib/prouterd/prouterd.db")
+result = Prouterd::ControlPlane::Cleanup.sweep(
+  db,
+  older_than: 90 * 24 * 3600,   # seconds
+  dry_run:    false,
+  batch_size: 500,
+)
+puts "deleted runs=#{result.runs} steps=#{result.steps} logs=#{result.logs} artifacts=#{result.artifacts}"
 ```
 
-`--dry-run` reports what would be deleted without touching anything.
+```cron
+# /etc/cron.d/prouterd
+17 4 * * * prouterd /usr/local/bin/prouterd-cleanup.rb >> /var/log/prouterd-cleanup.log 2>&1
+```
+
+Only runs in terminal status (`success` / `failed` / `canceled` /
+`timeout`) are eligible. Config commits are never pruned — the audit
+trail is intentional. Pass `dry_run: true` to preview without touching
+the DB. Batching keeps each transaction short so concurrent writes are
+not blocked for long.
 
 ## Crash recovery
 

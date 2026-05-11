@@ -8,24 +8,30 @@ Two binaries:
 ## prouter (operator CLI)
 
 ```
-prouter check  <file>                         parse + validate
-prouter render <file>                         emit canonical config
-prouter apply  <file> [--db PATH]             commit a config snapshot
+prouter check    <file>                       parse + validate
+prouter validate <file> [--against running]   lint, or semantic diff vs running
+prouter render   <file>                       emit canonical config
+prouter apply    <file> [--db PATH]           commit a config snapshot
 
-prouter shell  [--db PATH] [--config FILE]    router-style interactive
-prouter exec   "<cmd>" [--db PATH]            one-shot shell command
+prouter shell    [--db PATH] [--config FILE]  read-only operator shell
+                                              (`show *`, `apply <file>`,
+                                              `rollback commit X`, etc)
 
-prouter trigger process <name> input <file>   enqueue a run
-prouter trace   event <file> [--interface N]  static analysis (no execution)
+prouter trigger  process <name> input <file>  enqueue a run
 
-prouter replay  run <uid> [from <block>]
-prouter cancel  run <uid>                     soft cancel (between-level)
-prouter diff    <file>                        diff file vs running config
-prouter cleanup --older-than 30d              delete terminal runs
-                [--dry-run] [--batch-size N]
+prouter replay   run <uid> [from <block>]
+prouter resume   run <uid>          [--value <json>]
+prouter resume   run-by-thread <id> [--value <json>]
+prouter cancel   run <uid>                    soft cancel (between-level)
+prouter diff     <file>                       diff file vs running config
 
 prouter version | help
 ```
+
+Static routing analysis lives at `POST /v1/trace` on the daemon (no
+dedicated `prouter` subcommand). Run retention is now expected to be
+driven externally — see [`production.md`](production.md#retention) for
+the recipe.
 
 ### Common flags
 
@@ -75,13 +81,26 @@ $ prouter shell --db var/prouterd.db
 process-router> enable
 process-router# show running-config
 process-router# show runs
-process-router# trigger process triage input event.json
+process-router# apply triage.prc
+process-router# rollback commit 11
+process-router# replay run run_ab6a5e49
 process-router# exit
 ```
 
-Mode stack: user `>`, privileged `#`, `(config)#`, `(config-process)#`,
-`(config-block)#`, etc. Tab completion + router-style prefix
-abbreviation everywhere — `sh ru` resolves to `show running-config`.
+Two modes: user `>` (read-only) and privileged `#` (`enable` to enter,
+`disable` to leave). Tab completion + router-style prefix abbreviation
+everywhere — `sh ru` resolves to `show running-config`.
 
-`configure terminal` enters a candidate buffer; `commit` validates and
-persists, `abort` discards.
+Configuration is text — edit `.prc` in your editor, then `apply <file>`
+from the shell (or `prouter apply` from the CLI) to commit it. The
+shell is a read-only operator surface: `show *`, `apply`, `rollback
+commit X`, `replay run X`, `cancel run X`, `write memory`. The
+in-shell candidate-config editor (`configure terminal`) was removed
+in Phase 40 — operators were editing `.prc` in their preferred editor
+anyway.
+
+Stdin is honored when not a TTY, so scripts can pipe commands:
+
+```bash
+printf "enable\nshow runs\n" | prouter shell --db var/prouterd.db
+```

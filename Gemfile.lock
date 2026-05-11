@@ -28,7 +28,7 @@ GEM
       et-orbi (~> 1.4)
       raabro (~> 1.4)
     logger (1.7.0)
-    multi_json (1.20.1)
+    multi_json (1.21.1)
     nio4r (2.7.5)
     pg (1.6.3-x86_64-linux)
     puma (6.6.1)
@@ -51,7 +51,7 @@ GEM
       diff-lcs (>= 1.2.0, < 2.0)
       rspec-support (~> 3.13.0)
     rspec-support (3.13.7)
-    sqlite3 (2.9.3-x86_64-linux-gnu)
+    sqlite3 (2.9.4-x86_64-linux-gnu)
     tzinfo (2.0.6)
       concurrent-ruby (~> 1.0)
     websocket-driver (0.8.0)
@@ -82,7 +82,7 @@ CHECKSUMS
   faye-websocket (0.12.0) sha256=ad9f7dfcd0306d0a13baeee450729657661129af15bb5f38716c242484ab42e1
   fugit (1.12.1) sha256=5898f478ede9b415f0804e42b8f3fd53f814bd85eebffceebdbc34e1107aaf68
   logger (1.7.0) sha256=196edec7cc44b66cfb40f9755ce11b392f21f7967696af15d274dde7edff0203
-  multi_json (1.20.1) sha256=2f3934e805cc45ef91b551a1f89d0e9191abd06a5e04a2ef09a6a036c452ca6d
+  multi_json (1.21.1) sha256=e6126a31808e3b4d19f483c775ceac34df190dffa62adfb63a165ee14ba68080
   nio4r (2.7.5) sha256=6c90168e48fb5f8e768419c93abb94ba2b892a1d0602cb06eef16d8b7df1dca1
   pg (1.6.3-x86_64-linux) sha256=5d9e188c8f7a0295d162b7b88a768d8452a899977d44f3274d1946d67920ae8d
   prouterd (0.1.0)
@@ -96,7 +96,7 @@ CHECKSUMS
   rspec-expectations (3.13.5) sha256=33a4d3a1d95060aea4c94e9f237030a8f9eae5615e9bd85718fe3a09e4b58836
   rspec-mocks (3.13.8) sha256=086ad3d3d17533f4237643de0b5c42f04b66348c28bf6b9c2d3f4a3b01af1d47
   rspec-support (3.13.7) sha256=0640e5570872aafefd79867901deeeeb40b0c9875a36b983d85f54fb7381c47c
-  sqlite3 (2.9.3-x86_64-linux-gnu) sha256=85200a10c6cf5c60085fcca411a3168c5fba8fda3e2b1b0109ec277d7c226d46
+  sqlite3 (2.9.4-x86_64-linux-gnu) sha256=537a3eda71b1df1336d0055cbebe55a7317c34870c192c7b6b9d8d0be6871847
   tzinfo (2.0.6) sha256=8daf828cc77bcf7d63b0e3bdb6caa47e2272dcfaf4fbfe46f8c3a9df087a829b
   websocket-driver (0.8.0) sha256=ed0dba4b943c22f17f9a734817e808bc84cdce6a7e22045f5315aa57676d4962
   websocket-extensions (0.1.5) sha256=1c6ba63092cda343eb53fc657110c71c754c56484aad42578495227d717a8241

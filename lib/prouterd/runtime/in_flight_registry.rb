@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Runtime
     # Thread-safe map of in-flight runs to the resources currently driving them.

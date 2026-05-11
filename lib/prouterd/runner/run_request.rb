@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Runner
     # Inputs the orchestrator hands to a Runner. Common fields are named;

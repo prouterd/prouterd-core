@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Runtime
     # Run-scoped data that flows between blocks. Templating in call-fields

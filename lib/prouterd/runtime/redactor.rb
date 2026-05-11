@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Runtime
     # Strips secret values from arbitrary text before it lands in run_logs,

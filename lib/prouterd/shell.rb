@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require_relative "shell/errors"
 require_relative "shell/command_line"
 require_relative "shell/session"

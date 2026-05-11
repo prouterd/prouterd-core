@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Util
     # Parses router-style duration strings into milliseconds.

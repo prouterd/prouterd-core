@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Shell
     class ShellError < StandardError; end

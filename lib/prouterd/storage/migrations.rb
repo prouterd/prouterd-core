@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Storage
     # Schema migrations are declared as plain SQL. Each migration has a

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Iface
     # Live-discovered MCP tool descriptor, sourced from a

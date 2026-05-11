@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Config
     # Tokenizes a .prc source string into an array of Line objects.

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Storage
     # Persisted config commit row.

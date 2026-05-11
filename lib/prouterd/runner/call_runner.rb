@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Runner
     # Single dispatch runner. Replaces the per-type-runner registry: instead

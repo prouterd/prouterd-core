@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Runtime
     # Runtime validator for contracts (Phase 14).

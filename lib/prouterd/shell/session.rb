@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Shell
     # The Session holds all per-shell-instance state:

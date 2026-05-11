@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Runtime
     # Static "what would happen" trace for an event without executing blocks.

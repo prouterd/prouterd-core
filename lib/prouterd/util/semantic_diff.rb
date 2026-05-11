@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Util
     # Phase 36e: a structural diff between two AST::Document snapshots.

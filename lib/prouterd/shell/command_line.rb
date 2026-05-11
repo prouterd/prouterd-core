@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Shell
     # Tokenizes a single line of user input into Tokens, reusing the .prc

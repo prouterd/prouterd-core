@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   # In-process publish/subscribe bus for domain events.
   #

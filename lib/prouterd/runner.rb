@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require_relative "runner/execution_result"
 require_relative "runner/run_request"
 require_relative "runner/stub_runner"

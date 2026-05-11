@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require_relative "prouterd/version"
 require_relative "prouterd/logger"
 require_relative "prouterd/util/duration_parser"

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Runner
     # Two-stage Docker container shutdown shared between DockerRunner

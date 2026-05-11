@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Shell
     # Base class for shell modes (User, Privileged, Config, sub-modes).

@@ -313,7 +313,7 @@ If you change how timezones are stored, update
 ## Testing
 
 ```bash
-bundle exec rspec                  # full suite (~620 specs)
+bundle exec rspec                  # full suite (~865 specs)
 bundle exec rspec spec/prouterd/runtime/   # one subsystem
 bundle exec rspec spec/prouterd/runtime/orchestrator_spec.rb:42  # one example
 ```

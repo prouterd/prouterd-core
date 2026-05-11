@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Iface
     # Mixin for outbound iface callers. Wraps the caller's per-request

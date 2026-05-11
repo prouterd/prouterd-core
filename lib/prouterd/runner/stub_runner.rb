@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Runner
     # Test-only runner that returns programmed ExecutionResults.

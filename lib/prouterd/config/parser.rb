@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require_relative "../util/duration_parser"
 require_relative "../iface/registry"
 

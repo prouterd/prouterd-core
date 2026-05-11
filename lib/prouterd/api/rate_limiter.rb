@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module API
     # Per-interface request rate limiter for webhook ingestion.

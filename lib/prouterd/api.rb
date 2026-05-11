@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require_relative "api/auth"
 require_relative "api/session_store"
 require_relative "api/metrics"

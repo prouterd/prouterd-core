@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Storage
     RUN_STATUSES = %w[queued running success failed canceled paused].freeze

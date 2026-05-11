@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Storage
     JOB_STATUSES = %w[queued locked completed failed dead].freeze

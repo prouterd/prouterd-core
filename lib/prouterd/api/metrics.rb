@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module API
     # In-process Prometheus-style counter/gauge registry. Renders to text

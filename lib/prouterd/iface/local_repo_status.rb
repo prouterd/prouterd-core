@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Iface
     # Process-singleton store of the most recent `auto-pull` outcome

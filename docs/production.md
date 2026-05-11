@@ -14,10 +14,13 @@ and limits don't end up in `.prc` files or `ps` output.
 | `PROUTERD_MAX_CONFIG_BYTES`        | `4194304` (4 MB)     | Higher cap for `/v1/config/{check,apply}`        |
 | `PROUTERD_LOG_CAPTURE_BYTES`       | `1048576` (1 MB)     | Per-stream cap on persisted container logs       |
 | `PROUTERD_CONTAINER_STOP_TIMEOUT`  | `10` (s)             | SIGTERM grace before SIGKILL on cancel           |
+| `PROUTERD_RUN_DEFAULT_TIMEOUT_MS`  | `21600000` (6 h)     | Wall-clock cap when no process/queue timeout set; over-cap kills in-flight containers and finalizes the run with `error_type: "run_timeout"` |
 | `PROUTERD_JOB_LOCK_TIMEOUT`        | `60` (s)             | Recovery: re-queue job locks older than this     |
+| `PROUTERD_STORAGE_PROBE_SECONDS`   | `30` (s)             | Background probe interval. On `db.healthy?` flip, daemon toggles between accepting writes and returning 503 |
 | `PROUTERD_WEBHOOK_RATE`            | `60/1`               | `MAX/WINDOW` per-interface webhook rate limit    |
 | `PROUTERD_ARTIFACTS_ROOT`          | `var/artifacts`      | Where `ArtifactStore` writes block outputs       |
 | `PROUTERD_DB`                      | `var/prouterd.db`    | SQLite path                                      |
+| `PROUTERD_RUNNER`                  | `docker`             | Default runner kind: `docker` / `shell` / `stub`. Overridable per-invocation with `--runner` |
 
 ## Hardened invocation
 

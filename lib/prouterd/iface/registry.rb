@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Iface
     # Process-global registry of `Iface::Plugin` subclasses. Mirrors

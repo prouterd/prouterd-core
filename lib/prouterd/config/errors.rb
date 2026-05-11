@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Config
     class ConfigError < StandardError

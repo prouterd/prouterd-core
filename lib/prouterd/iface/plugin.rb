@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Iface
     # Subclass `Plugin` to add a new `interface` type. One plugin file

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Runner
     # Outcome of a single block execution. Returned by every Runner adapter.

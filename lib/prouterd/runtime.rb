@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require_relative "runtime/context"
 require_relative "runtime/match_evaluator"
 require_relative "runtime/retry_calculator"

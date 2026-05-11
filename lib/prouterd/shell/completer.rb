@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Prouterd
   module Shell
     # router-style tab completion for the read-only operator shell.

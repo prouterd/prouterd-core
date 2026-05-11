@@ -12,6 +12,15 @@ jobs:
       fail-fast: false
       matrix:
         ruby: ["3.3", "3.4"]
+        experimental: [false]
+        # Ruby 4.0 was released 2025-12-25. Running it here as
+        # `continue-on-error: true` so a Ruby 4.x regression shows up
+        # as a yellow square (informational), not a red one blocking
+        # main. Promote to required once 4.1 lands ZJIT as production-
+        # ready and we adopt it as the dev pin.
+        include:
+          - ruby: "4.0"
+            experimental: true
     steps:
       - uses: actions/checkout@v4
       - name: Set up Ruby
@@ -21,3 +30,4 @@ jobs:
           bundler-cache: true
       - name: Run RSpec
         run: bundle exec rspec --format progress
+        continue-on-error: ${{ matrix.experimental }}

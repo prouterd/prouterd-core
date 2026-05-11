@@ -9,7 +9,7 @@
 # mount the host Docker socket:
 #   -v /var/run/docker.sock:/var/run/docker.sock
 # Pure-shell pipelines don't need it.
-FROM ruby:3.2-slim-bookworm AS builder
+FROM ruby:3.4-slim-bookworm AS builder
 
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
       build-essential \
@@ -33,7 +33,7 @@ COPY lib lib
 COPY exe exe
 
 # ---- runtime stage ----
-FROM ruby:3.2-slim-bookworm
+FROM ruby:3.4-slim-bookworm
 
 # Runtime libs only — no build toolchain.
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \

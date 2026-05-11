@@ -8,7 +8,7 @@ Gem::Specification.new do |spec|
   spec.description = "Events route through declarative rules to isolated executable blocks. " \
                      "Configured via line-oriented .prc DSL, operated via interactive shell."
   spec.license     = "MIT"
-  spec.required_ruby_version = ">= 3.2.0"
+  spec.required_ruby_version = ">= 3.3.0"
 
   spec.files = Dir.glob("{lib,exe}/**/*") + %w[prouterd.gemspec README.md].select { |f| File.exist?(f) }
   spec.bindir      = "exe"

@@ -290,6 +290,18 @@ module Prouterd
           )
         end
 
+        apply_field_kind(plugin, field, node, line, error_scope: "field")
+      end
+
+      # Shared field-kind dispatcher used by BOTH interface-body fields
+      # (`apply_interface_field`) and block call-field args
+      # (`apply_call_field_value`). Both contexts have identical
+      # semantics per kind; the only difference is the error message
+      # when a plugin declares a kind we don't understand. Keeping one
+      # implementation prevents the kinds from drifting (the `:env_forward`
+      # parser kind was originally added to interface-body only, even
+      # though a plugin could legally declare it on a call_field).
+      def apply_field_kind(plugin, field, node, line, error_scope:)
         case field.kind
         when :string
           expect_token_count(line, 2, "#{field.dsl_keyword} <value>")
@@ -404,7 +416,7 @@ module Prouterd
             expect_duration(line.tokens[1], field.dsl_keyword)
         else
           raise ParseError.new(
-            "interface plugin '#{plugin.type_name}' field '#{field.name}' has unknown kind #{field.kind.inspect}",
+            "interface plugin '#{plugin.type_name}' #{error_scope} '#{field.name}' has unknown kind #{field.kind.inspect}",
             line: line.number
           )
         end
@@ -897,44 +909,7 @@ module Prouterd
           return
         end
 
-        case field.kind
-        when :string
-          expect_token_count(line, 2, "#{field.dsl_keyword} <value>")
-          node.type_fields[field.storage_key] = expect_word_or_string(line.tokens[1], field.dsl_keyword)
-        when :enum
-          expect_token_count(line, 2, "#{field.dsl_keyword} <#{field.enum.join('|')}>")
-          value = expect_word(line.tokens[1], field.dsl_keyword)
-          unless field.enum.include?(value)
-            raise ParseError.new(
-              "invalid #{field.dsl_keyword} '#{value}' (allowed: #{field.enum.join(', ')})",
-              line: line.number
-            )
-          end
-          node.type_fields[field.storage_key] = value
-        when :http_method
-          expect_token_count(line, 2, "#{field.dsl_keyword} <METHOD>")
-          value = expect_word(line.tokens[1], field.dsl_keyword).upcase
-          unless HTTP_METHODS.include?(value)
-            raise ParseError.new(
-              "invalid HTTP method '#{value}' (allowed: #{HTTP_METHODS.join(', ')})",
-              line: line.number
-            )
-          end
-          node.type_fields[field.storage_key] = value
-        when :command
-          expect_min_tokens(line, 2, "#{field.dsl_keyword} <args...>")
-          node.type_fields[field.storage_key] = line.tokens[1..].map(&:value).join(" ")
-        when :env_pair
-          expect_token_count(line, 3, "#{field.dsl_keyword} <KEY> <VALUE>")
-          key = expect_word(line.tokens[1], "#{field.dsl_keyword} key")
-          value = expect_word_or_string(line.tokens[2], "#{field.dsl_keyword} value")
-          (node.type_fields[field.storage_key] ||= {})[key] = value
-        else
-          raise ParseError.new(
-            "interface plugin '#{plugin.type_name}' call_field '#{field.name}' has unknown kind #{field.kind.inspect}",
-            line: line.number
-          )
-        end
+        apply_field_kind(plugin, field, node, line, error_scope: "call_field")
       end
 
       # `vars` sub-section — local-name overlay for templating call-fields.

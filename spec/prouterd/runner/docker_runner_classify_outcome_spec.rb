@@ -70,6 +70,16 @@ RSpec.describe Prouterd::Runner::DockerRunner do
       expect(output).to be_nil
     end
 
+    it "surfaces output_too_large when output.json exceeds the cap" do
+      ENV["PROUTERD_MAX_OUTPUT_BYTES"] = "10"
+      err_type, err_msg, output = classify(exit_code: 0, output_file: "12345678901")
+      expect(err_type).to eq("output_too_large")
+      expect(err_msg).to include("exceeds")
+      expect(output).to be_nil
+    ensure
+      ENV.delete("PROUTERD_MAX_OUTPUT_BYTES")
+    end
+
     it "ignores stdout when output.json is present" do
       _, _, output = classify(
         exit_code: 0,
@@ -116,6 +126,26 @@ RSpec.describe Prouterd::Runner::DockerRunner do
       artifacts = runner.send(:collect_artifacts, work_dir)
 
       expect(artifacts.map(&:name)).not_to include("leak")
+    end
+  end
+
+  describe "streaming log capture" do
+    it "caps streamed stdout without retaining docker-api's message stack" do
+      fake_container = Class.new do
+        def streaming_logs(**_opts)
+          yield :stdout, "x" * 200_000
+          yield :stderr, "warn"
+        end
+      end.new
+
+      ENV["PROUTERD_LOG_CAPTURE_BYTES"] = "1000"
+      out, err = runner.send(:capture_logs, fake_container)
+
+      expect(out.bytesize).to be <= 1100
+      expect(out).to include("truncated")
+      expect(err).to eq("warn")
+    ensure
+      ENV.delete("PROUTERD_LOG_CAPTURE_BYTES")
     end
   end
 end

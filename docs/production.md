@@ -13,6 +13,7 @@ and limits don't end up in `.prc` files or `ps` output.
 | `PROUTERD_MAX_BODY_BYTES`          | `1048576` (1 MB)     | Reject `/i/*` and most `/v1` POSTs above this    |
 | `PROUTERD_MAX_CONFIG_BYTES`        | `4194304` (4 MB)     | Higher cap for `/v1/config/{check,apply}`        |
 | `PROUTERD_LOG_CAPTURE_BYTES`       | `1048576` (1 MB)     | Per-stream cap on persisted container logs       |
+| `PROUTERD_MAX_OUTPUT_BYTES`        | `4194304` (4 MB)     | Cap on a block's explicit `output.json`          |
 | `PROUTERD_CONTAINER_STOP_TIMEOUT`  | `10` (s)             | SIGTERM grace before SIGKILL on cancel           |
 | `PROUTERD_RUN_DEFAULT_TIMEOUT_MS`  | `21600000` (6 h)     | Wall-clock cap when no process/queue timeout set; over-cap kills in-flight containers and finalizes the run with `error_type: "run_timeout"` |
 | `PROUTERD_JOB_LOCK_TIMEOUT`        | `60` (s)             | Recovery: re-queue job locks older than this     |

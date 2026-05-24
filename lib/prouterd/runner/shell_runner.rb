@@ -7,6 +7,7 @@ require "open3"
 require "digest"
 require "shellwords"
 require "time"
+require_relative "io_limits"
 
 module Prouterd
   module Runner
@@ -169,9 +170,7 @@ module Prouterd
 
       def stream_reader(io)
         Thread.new do
-          io.read.to_s
-        rescue IOError
-          ""
+          IOLimits.read_stream(io)
         end
       end
 
@@ -208,7 +207,8 @@ module Prouterd
         # If the block explicitly wrote /prouter/output.json, that always
         # wins (mirrors the docker contract).
         if File.exist?(path)
-          raw = File.read(path)
+          ok, raw, too_large = read_output_file(path)
+          return ["output_too_large", too_large, nil] unless ok
           return [nil, nil, {}] if raw.empty?
 
           begin
@@ -242,7 +242,10 @@ module Prouterd
       def extract_partial_output(work_dir, stdout_str)
         path = File.join(work_dir, OUTPUT_FILENAME)
         if File.exist?(path)
-          raw = File.read(path).to_s
+          ok, raw, = read_output_file(path)
+          return nil unless ok
+
+          raw = raw.to_s
           unless raw.empty?
             parsed = (JSON.parse(raw) rescue nil)
             return parsed if parsed.is_a?(Hash) || parsed.is_a?(Array)
@@ -284,6 +287,12 @@ module Prouterd
         d = Digest::SHA256.new
         File.open(path, "rb") { |f| while (chunk = f.read(64 * 1024)); d.update(chunk); end }
         d.hexdigest
+      end
+
+      def read_output_file(path)
+        IOLimits.read_file(path)
+      rescue SystemCallError => e
+        [false, nil, e.message]
       end
 
       def error_result(type, message)

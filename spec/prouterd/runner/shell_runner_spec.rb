@@ -30,6 +30,15 @@ RSpec.describe Prouterd::Runner::ShellRunner do
     expect(result.stderr).to include("ERR")
   end
 
+  it "caps captured stdout" do
+    ENV["PROUTERD_LOG_CAPTURE_BYTES"] = "1000"
+    result = runner.run(request(command: %q[sh -c 'yes x | head -c 200000; echo "{}" > $PROUTER_OUTPUT_PATH']))
+    expect(result.stdout.bytesize).to be <= 1100
+    expect(result.stdout).to include("truncated")
+  ensure
+    ENV.delete("PROUTERD_LOG_CAPTURE_BYTES")
+  end
+
   it "treats exit-0 with no output.json as success with empty output_json" do
     # Shell blocks frequently exist for side effects (echo, notify, tail).
     # Forcing them all to synthesize JSON into /prouter/output.json is
@@ -73,6 +82,14 @@ RSpec.describe Prouterd::Runner::ShellRunner do
   it "returns invalid_output when the command writes garbage" do
     result = runner.run(request(command: %q[sh -c 'echo not-json > $PROUTER_OUTPUT_PATH']))
     expect(result.error_type).to eq("invalid_output")
+  end
+
+  it "returns output_too_large when output.json exceeds the cap" do
+    ENV["PROUTERD_MAX_OUTPUT_BYTES"] = "10"
+    result = runner.run(request(command: %q[sh -c 'printf 12345678901 > $PROUTER_OUTPUT_PATH']))
+    expect(result.error_type).to eq("output_too_large")
+  ensure
+    ENV.delete("PROUTERD_MAX_OUTPUT_BYTES")
   end
 
   it "returns non_zero_exit when the command fails" do

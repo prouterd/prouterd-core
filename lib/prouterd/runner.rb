@@ -2,6 +2,7 @@
 
 require_relative "runner/execution_result"
 require_relative "runner/run_request"
+require_relative "runner/io_limits"
 require_relative "runner/stub_runner"
 require_relative "runner/shell_runner"
 require_relative "runner/call_runner"

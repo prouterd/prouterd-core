@@ -8,6 +8,7 @@ require "digest"
 require "shellwords"
 require "time"
 require_relative "docker_stop"
+require_relative "io_limits"
 
 module Prouterd
   module Runner
@@ -284,12 +285,21 @@ module Prouterd
       DEFAULT_LOG_CAPTURE_BYTES = 1 * 1024 * 1024
 
       def capture_logs(container)
-        cap = (ENV["PROUTERD_LOG_CAPTURE_BYTES"] || DEFAULT_LOG_CAPTURE_BYTES).to_i
-        # docker-api returns multiplexed log frames for non-TTY containers;
-        # we demux ourselves and clamp each side to `cap` bytes so a 5GB
-        # stdout can't allocate a 5GB Ruby string.
-        raw = container.logs(stdout: true, stderr: true, tail: "all")
-        demultiplex_logs(raw, cap: cap)
+        cap = IOLimits.log_capture_bytes
+        out = String.new(encoding: Encoding::BINARY)
+        err = String.new(encoding: Encoding::BINARY)
+        out_truncated = false
+        err_truncated = false
+
+        container.streaming_logs(stdout: true, stderr: true, tail: "all", stack_size: 0) do |stream, chunk|
+          payload = chunk.to_s.b
+          case stream
+          when :stdout, "stdout" then out_truncated ||= !IOLimits.append_capped(out, payload, cap)
+          when :stderr, "stderr" then err_truncated ||= !IOLimits.append_capped(err, payload, cap)
+          end
+        end
+
+        [finish_log_buffer(out, out_truncated, cap), finish_log_buffer(err, err_truncated, cap)]
       rescue Docker::Error::DockerError
         ["", ""]
       end
@@ -314,33 +324,20 @@ module Prouterd
           payload_str = payload.dup.force_encoding("UTF-8")
           payload_str.scrub!("?")
           case stream
-          when 1 then out_truncated ||= !append_capped(out, payload_str, cap)
-          when 2 then err_truncated ||= !append_capped(err, payload_str, cap)
+          when 1 then out_truncated ||= !IOLimits.append_capped(out, payload_str, cap)
+          when 2 then err_truncated ||= !IOLimits.append_capped(err, payload_str, cap)
           else
             # Unknown stream byte often means the daemon is returning raw
             # un-multiplexed output (TTY-mode). Treat the whole buffer as
             # stdout and apply the same cap.
-            buf = raw.force_encoding("UTF-8").scrub("?")
-            buf = "#{buf[0, cap]}\n…[truncated to #{cap} bytes]" if buf.bytesize > cap
-            return [buf, ""]
+            buf = String.new(encoding: Encoding::BINARY)
+            truncated = !IOLimits.append_capped(buf, raw.b, cap)
+            return [finish_log_buffer(buf, truncated, cap), ""]
           end
           pos += 8 + size
         end
 
-        out << "\n…[truncated to #{cap} bytes]" if out_truncated
-        err << "\n…[truncated to #{cap} bytes]" if err_truncated
-        [out, err]
-      end
-
-      def append_capped(buffer, chunk, cap)
-        if (buffer.bytesize + chunk.bytesize) <= cap
-          buffer << chunk
-          return true
-        end
-
-        remaining = cap - buffer.bytesize
-        buffer << chunk.byteslice(0, remaining) if remaining.positive?
-        false
+        [finish_log_buffer(out, out_truncated, cap), finish_log_buffer(err, err_truncated, cap)]
       end
 
       # Output discovery, in priority order:
@@ -371,7 +368,8 @@ module Prouterd
         end
 
         if File.exist?(output_path)
-          raw = File.read(output_path)
+          ok, raw, too_large = read_output_file(output_path)
+          return ["output_too_large", too_large, nil] unless ok
           return [nil, nil, {}] if raw.empty?
 
           begin
@@ -401,7 +399,10 @@ module Prouterd
       def extract_partial_output(work_dir, stdout_str)
         output_path = File.join(work_dir, OUTPUT_FILENAME)
         if File.exist?(output_path)
-          raw = File.read(output_path).to_s
+          ok, raw, = read_output_file(output_path)
+          return nil unless ok
+
+          raw = raw.to_s
           unless raw.empty?
             parsed = (JSON.parse(raw) rescue nil)
             return parsed if parsed.is_a?(Hash) || parsed.is_a?(Array)
@@ -451,6 +452,19 @@ module Prouterd
           end
         end
         digest.hexdigest
+      end
+
+      def read_output_file(path)
+        IOLimits.read_file(path)
+      rescue SystemCallError => e
+        [false, nil, e.message]
+      end
+
+      def finish_log_buffer(buffer, truncated, cap)
+        buffer.force_encoding("UTF-8")
+        buffer.scrub!("?")
+        buffer << "\n...[truncated to #{cap} bytes]" if truncated
+        buffer
       end
 
       def cleanup(container, work_dir)

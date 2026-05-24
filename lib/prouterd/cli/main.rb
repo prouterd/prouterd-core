@@ -126,29 +126,19 @@ module Prouterd
       end
 
       def cmd_shell
-        store = nil
-        opts = parse_runtime_options("shell")
-        return 2 if opts == :error
-
-        store = open_store(opts[:db_path], opts[:no_db])
-        return 1 if store == :error
-
-        runner = build_runner(opts[:runner_kind])
-        return 1 if runner == :error
-
-        session = Prouterd::Shell::Session.new(store: store, runner: runner)
-        Prouterd::Shell::Shell.run(
-          session: session,
-          input: @stdin,
-          output: @stdout,
-          error: @stderr,
-          initial_config_path: opts[:config_path]
-        )
+        with_runtime("shell", require_db: false) do |store, runner, opts|
+          session = Prouterd::Shell::Session.new(store: store, runner: runner)
+          Prouterd::Shell::Shell.run(
+            session: session,
+            input: @stdin,
+            output: @stdout,
+            error: @stderr,
+            initial_config_path: opts[:config_path]
+          )
+        end
       rescue Prouterd::Shell::ShellError => e
         @stderr.puts "prouter shell: #{e.message}"
         1
-      ensure
-        store&.db&.close if store && store != :error
       end
 
       def missing_arg(cmd, opt)
@@ -163,7 +153,6 @@ module Prouterd
 
       # `prouter cancel run <uid>` — soft-cancel a run from the CLI.
       def cmd_cancel
-        store = nil
         unless @argv.length >= 2 && @argv[0] == "run"
           @stderr.puts "prouter cancel: usage: cancel run <uid> [--db PATH]"
           return 2
@@ -171,38 +160,29 @@ module Prouterd
         uid = @argv[1]
         @argv = @argv[2..]
 
-        opts = parse_runtime_options("cancel")
-        return 2 if opts == :error
-        store = open_store(opts[:db_path], opts[:no_db])
-        return 1 if store == :error
-        unless store
-          @stderr.puts "prouter cancel: requires --db"
-          return 2
-        end
+        with_runtime("cancel", require_runner: false) do |store, _runner, _opts|
+          repo = Prouterd::Storage::Repositories::Runs.new(store.db)
+          run = repo.get_run_by_uid(uid)
+          unless run
+            @stderr.puts "prouter cancel: no such run '#{uid}'"
+            next 1
+          end
+          if %w[success failed canceled].include?(run.status)
+            @stderr.puts "prouter cancel: run '#{uid}' is already #{run.status}"
+            next 1
+          end
 
-        repo = Prouterd::Storage::Repositories::Runs.new(store.db)
-        run = repo.get_run_by_uid(uid)
-        unless run
-          @stderr.puts "prouter cancel: no such run '#{uid}'"
-          return 1
-        end
-        if %w[success failed canceled].include?(run.status)
-          @stderr.puts "prouter cancel: run '#{uid}' is already #{run.status}"
-          return 1
-        end
+          finished_at = Time.now.utc.iso8601(3)
+          repo.update_run(run.id, status: "canceled", finished_at: finished_at, error_summary: "canceled by operator")
+          repo.list_steps(run.id).each do |s|
+            next if %w[success failed canceled timeout skipped].include?(s.status)
 
-        finished_at = Time.now.utc.iso8601(3)
-        repo.update_run(run.id, status: "canceled", finished_at: finished_at, error_summary: "canceled by operator")
-        repo.list_steps(run.id).each do |s|
-          next if %w[success failed canceled timeout skipped].include?(s.status)
-
-          repo.update_step(s.id, status: "canceled", finished_at: finished_at,
-                                 error_type: "canceled", error_message: "canceled by operator")
+            repo.update_step(s.id, status: "canceled", finished_at: finished_at,
+                                   error_type: "canceled", error_message: "canceled by operator")
+          end
+          @stdout.puts "Cancelled run #{uid}."
+          0
         end
-        @stdout.puts "Cancelled run #{uid}."
-        0
-      ensure
-        store&.db&.close if store && store != :error
       end
 
       # `prouter diff <file> [--db PATH]` — show what would change if the file
@@ -277,39 +257,27 @@ module Prouterd
           @argv = @argv[0...idx] + @argv[(idx + 1)..]
         end
 
-        opts = parse_runtime_options("replay")
-        return 2 if opts == :error
+        with_runtime("replay",
+                     db_message: "prouter replay: requires --db (replays must be persisted)") do |store, runner, _opts|
+          session = Prouterd::Shell::Session.new(store: store, runner: runner)
+          new_run = if from_block
+                      session.replay_from(run_uid, from_block, use_current_config: use_current_config)
+                    else
+                      session.replay(run_uid, use_current_config: use_current_config)
+                    end
 
-        store = open_store(opts[:db_path], opts[:no_db])
-        return 1 if store == :error
-        unless store
-          @stderr.puts "prouter replay: requires --db (replays must be persisted)"
-          return 2
+          repo = Prouterd::Storage::Repositories::Runs.new(store.db)
+          emit_run_summary(
+            new_run, repo,
+            header: "Replayed #{run_uid} as #{new_run.uid} (#{new_run.status})",
+            extra:  { replay_of: run_uid }
+          )
+
+          new_run.status == "success" ? 0 : 1
         end
-
-        runner = build_runner(opts[:runner_kind])
-        return 1 if runner == :error
-
-        session = Prouterd::Shell::Session.new(store: store, runner: runner)
-        new_run = if from_block
-                    session.replay_from(run_uid, from_block, use_current_config: use_current_config)
-                  else
-                    session.replay(run_uid, use_current_config: use_current_config)
-                  end
-
-        repo = Prouterd::Storage::Repositories::Runs.new(store.db)
-        emit_run_summary(
-          new_run, repo,
-          header: "Replayed #{run_uid} as #{new_run.uid} (#{new_run.status})",
-          extra:  { replay_of: run_uid }
-        )
-
-        new_run.status == "success" ? 0 : 1
       rescue Prouterd::Shell::ShellError, Prouterd::Runtime::TriggerError => e
         @stderr.puts "prouter replay: #{e.message}"
         1
-      ensure
-        store&.db&.close if store && store != :error
       end
 
       # `prouter resume run <uid> [--value <json>]` — resume a paused
@@ -343,64 +311,51 @@ module Prouterd
           @argv = @argv[2..]
         end
 
-        opts = parse_runtime_options("resume")
-        return 2 if opts == :error
-
-        store = open_store(opts[:db_path], opts[:no_db])
-        return 1 if store == :error
-        unless store
-          @stderr.puts "prouter resume: requires --db (resumes act on a persisted run)"
-          return 2
-        end
-
-        runner = build_runner(opts[:runner_kind])
-        return 1 if runner == :error
-
-        repo = Prouterd::Storage::Repositories::Runs.new(store.db)
-        run =
-          if mode == "run"
-            repo.get_run_by_uid(key)
-          else
-            paused = repo.list_runs(limit: 200, status: "paused", thread_id: key)
-            paused.first  # list_runs orders DESC by id → first is latest
+        with_runtime("resume",
+                     db_message: "prouter resume: requires --db (resumes act on a persisted run)") do |store, runner, _opts|
+          repo = Prouterd::Storage::Repositories::Runs.new(store.db)
+          run =
+            if mode == "run"
+              repo.get_run_by_uid(key)
+            else
+              paused = repo.list_runs(limit: 200, status: "paused", thread_id: key)
+              paused.first  # list_runs orders DESC by id → first is latest
+            end
+          unless run
+            @stderr.puts "prouter resume: no #{mode == 'run' ? 'run' : 'paused run for thread'} '#{key}'"
+            next 1
           end
-        unless run
-          @stderr.puts "prouter resume: no #{mode == 'run' ? 'run' : 'paused run for thread'} '#{key}'"
-          return 1
+          run_uid = run.uid
+          unless run.process_config_commit_id
+            @stderr.puts "prouter resume: run '#{run_uid}' has no pinned commit; cannot resume"
+            next 1
+          end
+
+          commit = store.get_commit(run.process_config_commit_id)
+          unless commit
+            @stderr.puts "prouter resume: pinned commit ##{run.process_config_commit_id} is gone"
+            next 1
+          end
+          document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
+
+          orchestrator = Prouterd::Runtime::Orchestrator.new(db: store.db, runner: runner)
+          finished = orchestrator.resume_run(run_uid, document, value: value)
+
+          emit_run_summary(
+            finished, repo,
+            header: "Resumed #{run_uid} (#{finished.status})"
+          )
+
+          finished.status == "success" ? 0 : 1
         end
-        run_uid = run.uid
-        unless run.process_config_commit_id
-          @stderr.puts "prouter resume: run '#{run_uid}' has no pinned commit; cannot resume"
-          return 1
-        end
-
-        commit = store.get_commit(run.process_config_commit_id)
-        unless commit
-          @stderr.puts "prouter resume: pinned commit ##{run.process_config_commit_id} is gone"
-          return 1
-        end
-        document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
-
-        orchestrator = Prouterd::Runtime::Orchestrator.new(db: store.db, runner: runner)
-        finished = orchestrator.resume_run(run_uid, document, value: value)
-
-        emit_run_summary(
-          finished, repo,
-          header: "Resumed #{run_uid} (#{finished.status})"
-        )
-
-        finished.status == "success" ? 0 : 1
       rescue Prouterd::Runtime::TriggerError => e
         @stderr.puts "prouter resume: #{e.message}"
         1
-      ensure
-        store&.db&.close if store && store != :error
       end
 
       # Standalone non-interactive `trigger process <name> input <file>`. Always
       # synchronous; prints a step-by-step summary and exits with the run status.
       def cmd_trigger
-        store = nil
         unless @argv.length >= 4 && @argv[0] == "process" && @argv[2] == "input"
           @stderr.puts "prouter trigger: usage: trigger process <name> input <file> [--db PATH] [--runner docker|stub]"
           return 2
@@ -409,56 +364,42 @@ module Prouterd
         input_path = @argv[3]
         @argv = @argv[4..]
 
-        opts = parse_runtime_options("trigger")
-        return 2 if opts == :error
+        with_runtime("trigger",
+                     db_message: "prouter trigger: requires --db (runs must be persisted)") do |store, runner, opts|
+          document =
+            if opts[:config_path]
+              source = read_file(opts[:config_path])
+              next 2 if source.nil?
+              parsed = parse_with_diagnostics(source, opts[:config_path])
+              next 1 if parsed.nil?
+              parsed
+            else
+              store.load_running
+            end
 
-        store = open_store(opts[:db_path], opts[:no_db])
-        return 1 if store == :error
-
-        runner = build_runner(opts[:runner_kind])
-        return 1 if runner == :error
-
-        document =
-          if opts[:config_path]
-            source = read_file(opts[:config_path])
-            return 2 if source.nil?
-            parsed = parse_with_diagnostics(source, opts[:config_path])
-            return 1 if parsed.nil?
-            parsed
-          elsif store
-            store.load_running
-          else
-            @stderr.puts "prouter trigger: no config available (use --config or have a running commit in --db)"
-            return 2
+          validation = Config::Validator.validate(document)
+          unless validation.valid?
+            validation.errors.each { |e| @stderr.puts "config invalid: #{e}" }
+            next 1
           end
 
-        validation = Config::Validator.validate(document)
-        unless validation.valid?
-          validation.errors.each { |e| @stderr.puts "config invalid: #{e}" }
-          return 1
+          orchestrator = Prouterd::Runtime::Orchestrator.new(
+            db: store.db,
+            runner: runner
+          )
+
+          run = orchestrator.trigger(
+            document,
+            process_name,
+            input_event: JSON.parse(File.read(input_path)),
+            commit_id: store.running_commit&.id
+          )
+
+          repo = Prouterd::Storage::Repositories::Runs.new(store.db)
+          emit_run_summary(run, repo)
+
+          run.status == "success" ? 0 : 1
         end
-
-        unless store
-          @stderr.puts "prouter trigger: requires --db (runs must be persisted)"
-          return 2
-        end
-
-        orchestrator = Prouterd::Runtime::Orchestrator.new(
-          db: store.db,
-          runner: runner
-        )
-
-        run = orchestrator.trigger(
-          document,
-          process_name,
-          input_event: JSON.parse(File.read(input_path)),
-          commit_id: store.running_commit&.id
-        )
-
-        repo = Prouterd::Storage::Repositories::Runs.new(store.db)
-        emit_run_summary(run, repo)
-
-        run.status == "success" ? 0 : 1
       rescue Errno::ENOENT => e
         @stderr.puts "prouter trigger: #{e.message}"
         2
@@ -468,8 +409,6 @@ module Prouterd
       rescue Prouterd::Runtime::TriggerError => e
         @stderr.puts "prouter trigger: #{e.message}"
         1
-      ensure
-        store&.db&.close if store && store != :error
       end
 
       # Emits a run summary in machine-readable JSON when stdout is piped,
@@ -689,6 +628,44 @@ module Prouterd
       # `default_runner_kind`, `open_store`, `build_runner` provided by
       # Prouterd::Bootstrap mixin so `prouter` and `prouterd` parse and
       # validate runtime options identically.
+
+      # Shared "open store + build runner, close store on exit" wrapper.
+      # Every `cmd_X` that runs against a persisted DB ran the same
+      # 5-line prelude (parse_runtime_options → open_store → build_runner
+      # → use → ensure close). This collapses that to one call:
+      #
+      #   with_runtime("trigger") do |store, runner, opts|
+      #     ... do work ...
+      #   end
+      #
+      # `require_db: true` (default) errors with `requires --db` when
+      # the operator passed --no-db; pass `false` to allow nil store
+      # (cmd_shell explicitly supports a session-less in-memory mode).
+      # `require_runner: true` (default) builds a runner; pass `false`
+      # for commands that don't need one (cmd_cancel, cmd_diff). The
+      # block's return value becomes the command's exit code.
+      def with_runtime(cmd, require_db: true, require_runner: true, db_message: nil)
+        store = nil
+        opts = parse_runtime_options(cmd)
+        return 2 if opts == :error
+
+        store = open_store(opts[:db_path], opts[:no_db])
+        return 1 if store == :error
+        if require_db && store.nil?
+          @stderr.puts(db_message || "prouter #{cmd}: requires --db")
+          return 2
+        end
+
+        runner = nil
+        if require_runner
+          runner = build_runner(opts[:runner_kind])
+          return 1 if runner == :error
+        end
+
+        yield(store, runner, opts)
+      ensure
+        store&.db&.close if store && store != :error
+      end
 
       def read_file(path)
         File.read(path)

@@ -149,6 +149,7 @@ module Prouterd
           @runs.update_step(step.id, status: "running", started_at: Time.now.utc.iso8601(3))
         end
 
+        extra_env, sandbox_env = build_subprocess_env(templated_iface, env)
         outcome = Iface::LlmAgentic.run(
           provider:         provider,
           model:            model,
@@ -159,6 +160,8 @@ module Prouterd
           sandbox:          templated_iface["sandbox"],
           cwd:              templated_call["cwd"],
           reasoning_effort: templated_call["reasoning-effort"],
+          extra_env:        extra_env,
+          sandbox_env:      sandbox_env,
           prompt:           prompt,
           system_msg:       system_m,
           max_tokens:       max_tokens,
@@ -202,6 +205,31 @@ module Prouterd
       end
 
       private
+
+      # Mirror of LlmCaller#build_subprocess_env. The agentic path
+      # doesn't share that method (it builds its own env via the
+      # AgenticRunner's host), so the strict-spawn semantics for env /
+      # env-forward / secret are duplicated here.
+      def build_subprocess_env(templated_iface, parent_env)
+        env_static  = templated_iface["env"]
+        env_static  = env_static.is_a?(Hash) ? env_static : {}
+        env_forward = Array(templated_iface["env-forward"])
+        secret_refs = Array(templated_iface["secret"])
+        sandbox_env = !env_static.empty? || !env_forward.empty? || !secret_refs.empty?
+
+        extra = {}
+        env_static.each { |k, v| extra[k.to_s] = v.to_s }
+        env_forward.each do |key|
+          v = ENV[key]
+          extra[key] = v.to_s if v
+        end
+        secret_refs.each do |name|
+          v = parent_env[name]
+          extra[name] = v.to_s if v
+        end
+
+        [extra, sandbox_env]
+      end
 
       def invalid_agentic(block, message)
         Runner::ExecutionResult.new(

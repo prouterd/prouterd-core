@@ -300,6 +300,25 @@ module Prouterd
             env[iface_auth.secret_name] ||= @secret_resolver.resolve(secret).to_s
           end
         end
+        # Generic resolution of `:secret_ref` fields on the interface
+        # (e.g. `interface llm` and `interface mcp` both accept
+        # `secret <NAME>`). Plugin-driven so a third-party iface gets
+        # this for free.
+        if iface
+          plugin = Iface::Registry.lookup(iface.type)
+          if plugin
+            plugin.fields.each do |field|
+              next unless field.kind == :secret_ref
+
+              Array(iface.type_fields[field.storage_key]).each do |secret_name|
+                secret = document.secrets.find { |s| s.name == secret_name }
+                next unless secret
+
+                env[secret_name] ||= @secret_resolver.resolve(secret).to_s
+              end
+            end
+          end
+        end
         env
       end
 

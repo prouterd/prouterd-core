@@ -119,7 +119,7 @@ module Prouterd
           end
         when :mcp_server
           emit(level, "#{field.dsl_keyword} #{value['kind']} #{quote_string(value['spec'])}")
-        when :secret_ref
+        when :secret_ref, :env_forward
           Array(value).each { |name| emit(level, "#{field.dsl_keyword} #{name}") }
         when :duration_ms
           emit(level, "#{field.dsl_keyword} #{Util::DurationParser.render(value)}")

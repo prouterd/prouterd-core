@@ -327,6 +327,54 @@ RSpec.describe Prouterd::Iface::LlmSubprocess do
     expect(result[:error_message]).to include("/no/such/dir/here")
   end
 
+  it "spawns with unsetenv_others: true when sandbox_env is set" do
+    captured_opts = nil
+    captured_env = nil
+    allow(Open3).to receive(:popen3).and_wrap_original do |original, *args, &blk|
+      captured_env = args.shift if args.first.is_a?(Hash)
+      captured_opts = args.last.is_a?(Hash) ? args.last : nil
+      original.call(captured_env, *(captured_opts ? args[0..-2] : args), captured_opts || {}, &blk)
+    end
+    bin = fake_binary([
+      '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+    ])
+
+    described_class.call(
+      provider: "codex_cli", model: "x",
+      binary: bin, home: "/tmp",
+      sandbox: nil,
+      extra_env: { "FOO" => "bar" }, sandbox_env: true,
+      prompt: "ping", system_msg: "",
+      timeout_ms: 5_000
+    )
+
+    expect(captured_opts).to include(unsetenv_others: true)
+    expect(captured_env).to include("HOME" => "/tmp", "FOO" => "bar")
+    File.unlink(bin)
+  end
+
+  it "inherits-all by default (no sandbox_env, no extra_env)" do
+    captured_opts = nil
+    allow(Open3).to receive(:popen3).and_wrap_original do |original, *args, &blk|
+      args.shift if args.first.is_a?(Hash)
+      captured_opts = args.last.is_a?(Hash) ? args.last : nil
+      original.call(*args, &blk)
+    end
+    bin = fake_binary([
+      '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+    ])
+
+    described_class.call(
+      provider: "codex_cli", model: "x",
+      binary: bin, home: nil, sandbox: nil,
+      prompt: "ping", system_msg: "",
+      timeout_ms: 5_000
+    )
+
+    expect(captured_opts).to be_nil.or(satisfy { |o| !o.key?(:unsetenv_others) })
+    File.unlink(bin)
+  end
+
   it "keeps output_json nil when the subprocess fails with no captured output" do
     bin = fake_binary([], exit_code: 1)
 

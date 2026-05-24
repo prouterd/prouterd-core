@@ -94,12 +94,14 @@ module Prouterd
       def run(provider: "anthropic", model:, base_url: nil, api_key: nil,
               binary: nil, home: nil, sandbox: nil,
               cwd: nil, reasoning_effort: nil,
+              extra_env: {}, sandbox_env: false,
               prompt:, system_msg:, max_tokens:, max_turns:, tools:, dispatcher:,
               timeout_ms: nil)
         if %w[codex_cli claude_cli].include?(provider)
           return run_subprocess(
             provider: provider, model: model, binary: binary, home: home,
             sandbox: sandbox, cwd: cwd, reasoning_effort: reasoning_effort,
+            extra_env: extra_env, sandbox_env: sandbox_env,
             prompt: prompt, system_msg: system_msg,
             max_turns: max_turns, tools: tools, dispatcher: dispatcher,
             timeout_ms: timeout_ms
@@ -274,14 +276,15 @@ module Prouterd
       # extract_event_text / extract_event_function_call.
       def run_subprocess(provider:, model:, binary:, home:, sandbox:, prompt:, system_msg:,
                          max_turns:, tools:, dispatcher:, timeout_ms:,
-                         cwd: nil, reasoning_effort: nil)
+                         cwd: nil, reasoning_effort: nil,
+                         extra_env: {}, sandbox_env: false)
         max_turns = (max_turns || DEFAULT_MAX_TURNS).to_i
         max_turns = DEFAULT_MAX_TURNS if max_turns < 1
         deadline = Time.now + ((timeout_ms || DEFAULT_TIMEOUT_MS) / 1000.0)
 
         argv = LlmSubprocess.build_argv(provider, binary, model, sandbox,
                                          reasoning_effort: reasoning_effort)
-        env  = LlmSubprocess.build_env(home)
+        env  = LlmSubprocess.build_env(home).merge(extra_env || {})
         resolved_cwd = LlmSubprocess.resolve_cwd(cwd)
         if cwd && resolved_cwd.nil?
           return failure(error_type: "invalid_cwd",
@@ -304,7 +307,8 @@ module Prouterd
         turns = 0
         stderr_buf = String.new(encoding: Encoding::UTF_8)
 
-        popen_args = resolved_cwd ? [env, *argv, { chdir: resolved_cwd }] : [env, *argv]
+        options = LlmSubprocess.popen_options(cwd: resolved_cwd, sandbox_env: sandbox_env)
+        popen_args = options.empty? ? [env, *argv] : [env, *argv, options]
         Open3.popen3(*popen_args) do |stdin, stdout, stderr, wait_thr|
           err_thread = Thread.new { stderr_buf << stderr.read.to_s }
 

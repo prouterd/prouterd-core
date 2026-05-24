@@ -50,6 +50,28 @@ module Prouterd
                      description: "HOME for the subprocess (codex_cli/claude_cli) — directory holding subscription state"
         field :sandbox, kind: :string,
                         description: "sandbox mode passed verbatim via `-s <mode>` (codex_cli/claude_cli)"
+        # Subprocess env controls. The default (none declared) keeps
+        # back-compat: the spawn inherits the daemon's full env. Declare
+        # ANY of these and the driver flips to `unsetenv_others: true`,
+        # assembling the subprocess env strictly from:
+        #
+        #   1. HOME (the iface's `home` field, else the daemon's HOME)
+        #   2. each `env KEY VALUE` directive
+        #   3. each `env-forward KEY` directive — passes through if
+        #      KEY is set in the daemon's env, omitted otherwise
+        #   4. each `secret <NAME>` directive — resolves through the
+        #      declared `secret <NAME> / source env <X> / exit` and
+        #      exposes the value under env key <NAME>
+        #
+        # Strict mode is the opt-in security model for subprocess LLMs.
+        # Without it, a prompt-injection in a customer-supplied payload
+        # could exfiltrate any env var the daemon was started with.
+        field :env, kind: :env_pair,
+                    description: "static env var (env KEY VALUE); repeats accumulate"
+        field :"env-forward", kind: :env_forward,
+                               description: "pass through a daemon env var (env-forward KEY) if present"
+        field :secret, kind: :secret_ref,
+                       description: "thread a declared secret into the subprocess env (secret <NAME>)"
 
         # Per-call args — supplied by a block referencing this interface.
         call_field :prompt, kind: :command, required: true,
@@ -100,6 +122,27 @@ module Prouterd
               "interface '#{iface.name}': `binary` / `home` / `sandbox` are only valid for codex_cli / claude_cli providers",
               line: iface.line
             )
+          end
+
+          # env / env-forward / secret only thread into the spawn for
+          # subprocess providers — HTTP callers (anthropic/openai) reach
+          # the upstream over Net::HTTP and don't need a controlled env.
+          if !subprocess_provider &&
+             (iface.type_fields["env"] || iface.type_fields["env-forward"] || iface.type_fields["secret"])
+            result.error(
+              "interface '#{iface.name}': `env` / `env-forward` / `secret` only apply to codex_cli / claude_cli providers",
+              line: iface.line
+            )
+          end
+
+          # Each declared `secret <NAME>` must reference a known secret.
+          Array(iface.type_fields["secret"]).each do |secret_name|
+            unless document.secrets.any? { |s| s.name == secret_name }
+              result.error(
+                "interface '#{iface.name}' references undeclared secret '#{secret_name}'",
+                line: iface.line
+              )
+            end
           end
         end
       end

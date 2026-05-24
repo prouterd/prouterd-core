@@ -64,6 +64,7 @@ module Prouterd
         temperature = parse_float(request.field("temperature"))
 
         if %w[codex_cli claude_cli].include?(provider)
+          extra_env, sandbox_env = build_subprocess_env(request)
           return LlmSubprocess.call(
             provider:         provider,
             model:            model,
@@ -72,6 +73,8 @@ module Prouterd
             sandbox:          request.field("sandbox"),
             cwd:              request.field("cwd"),
             reasoning_effort: request.field("reasoning-effort"),
+            extra_env:        extra_env,
+            sandbox_env:      sandbox_env,
             prompt:           prompt,
             system_msg:       system_msg,
             timeout_ms:       request.timeout_ms
@@ -200,6 +203,41 @@ module Prouterd
         return nil unless auth
 
         (request.env || {})[auth.secret_name]
+      end
+
+      # Build the subprocess env from the interface's `env` / `env-forward`
+      # / `secret` declarations. Returns `[extra_env, sandbox_env]` where
+      # `sandbox_env` is true when ANY of the three is declared — the
+      # opt-in signal that the spawn should run with
+      # `unsetenv_others: true` so a prompt-injection can't exfiltrate
+      # whatever else the daemon was started with.
+      #
+      # Resolution rules:
+      #   `env KEY VALUE`     — static (already templated by BlockExecutor)
+      #   `env-forward KEY`   — pass through daemon ENV[KEY] if present
+      #   `secret <NAME>`     — read resolved value from request.env (the
+      #                          orchestrator's secret resolver already
+      #                          populated it via BlockExecutor.build_env)
+      def build_subprocess_env(request)
+        env_static  = request.field("env")
+        env_static  = env_static.is_a?(Hash) ? env_static : {}
+        env_forward = Array(request.field("env-forward"))
+        secret_refs = Array(request.field("secret"))
+        sandbox_env = !env_static.empty? || !env_forward.empty? || !secret_refs.empty?
+
+        extra = {}
+        env_static.each { |k, v| extra[k.to_s] = v.to_s }
+        env_forward.each do |key|
+          v = ENV[key]
+          extra[key] = v.to_s if v
+        end
+        request_env = request.env || {}
+        secret_refs.each do |name|
+          v = request_env[name]
+          extra[name] = v.to_s if v
+        end
+
+        [extra, sandbox_env]
       end
 
       def parse_int(value, default)

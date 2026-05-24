@@ -388,6 +388,16 @@ module Prouterd
           expect_token_count(line, 2, "#{field.dsl_keyword} <NAME>")
           secret_name = expect_env_name(line.tokens[1], "secret name")
           (node.type_fields[field.storage_key] ||= []) << secret_name
+        when :env_forward
+          # `env-forward <KEY>` — whitelists a single env var name to
+          # pass through from the daemon's environment if present.
+          # Accumulates into an ordered list; later strict-spawn paths
+          # use it together with `env` / `secret` to assemble a minimal
+          # subprocess env. No silent dedupe — duplicates are operator
+          # error and would render verbatim.
+          expect_token_count(line, 2, "#{field.dsl_keyword} <KEY>")
+          key = expect_env_name(line.tokens[1], "#{field.dsl_keyword} key")
+          (node.type_fields[field.storage_key] ||= []) << key
         when :duration_ms
           expect_token_count(line, 2, "#{field.dsl_keyword} <duration>")
           node.type_fields[field.storage_key] =

@@ -38,10 +38,10 @@ module Prouterd
       DEFAULT_TIMEOUT_MS = 120_000
 
       def call(provider:, model:, binary:, home:, sandbox:, prompt:, system_msg:, timeout_ms:,
-               cwd: nil, reasoning_effort: nil)
+               cwd: nil, reasoning_effort: nil, extra_env: {}, sandbox_env: false)
         argv, stdin_text = build_invocation(provider, binary, model, sandbox, prompt, system_msg,
                                              reasoning_effort: reasoning_effort)
-        env = build_env(home)
+        env = build_env(home).merge(extra_env || {})
         resolved_cwd = resolve_cwd(cwd)
         if cwd && resolved_cwd.nil?
           return {
@@ -60,7 +60,7 @@ module Prouterd
         end
 
         stdout_lines, stderr_text, status = run_subprocess(env, argv, stdin_text, timeout_ms || DEFAULT_TIMEOUT_MS,
-                                                            cwd: resolved_cwd)
+                                                            cwd: resolved_cwd, sandbox_env: sandbox_env)
 
         if status == :timeout
           return { exit_code: nil, output_json: nil, stdout: "", stderr: stderr_text,
@@ -169,6 +169,17 @@ module Prouterd
         File.directory?(cwd) ? cwd : nil
       end
 
+      # Combine the optional spawn options into a single hash for
+      # Open3.popen3. Empty hash means "no options at all" — keeping
+      # the old call shape Ruby-compatible across versions and avoiding
+      # an empty hash being treated as a positional arg.
+      def popen_options(cwd: nil, sandbox_env: false)
+        opts = {}
+        opts[:chdir] = cwd if cwd
+        opts[:unsetenv_others] = true if sandbox_env
+        opts
+      end
+
       # Real Claude Code CLI 2.1.x invocation:
       #   claude -p "<prompt>" --output-format json --model <model>
       #          [--system-prompt "<system>"]
@@ -215,13 +226,14 @@ module Prouterd
         end
       end
 
-      def run_subprocess(env, argv, stdin_text, timeout_ms, cwd: nil)
+      def run_subprocess(env, argv, stdin_text, timeout_ms, cwd: nil, sandbox_env: false)
         stdout_lines = []
         stderr_buf = String.new(encoding: Encoding::UTF_8)
         status = nil
 
         deadline = Time.now + (timeout_ms / 1000.0)
-        popen_args = cwd ? [env, *argv, { chdir: cwd }] : [env, *argv]
+        options = popen_options(cwd: cwd, sandbox_env: sandbox_env)
+        popen_args = options.empty? ? [env, *argv] : [env, *argv, options]
         Open3.popen3(*popen_args) do |stdin, stdout, stderr, wait_thr|
           stdin.write(stdin_text) rescue nil
           stdin.close rescue nil

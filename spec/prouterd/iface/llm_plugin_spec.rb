@@ -134,6 +134,67 @@ RSpec.describe "interface llm plugin schema" do
     expect(block.type_fields["temperature"]).to eq("0.2")
   end
 
+  it "parses env / env-forward / secret on a subprocess provider" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      secret SENTRY_AUTH
+       source env SENTRY_AUTH
+      exit
+      interface llm researcher
+       provider codex_cli
+       model gpt-5-codex
+       env JIRA_URL "https://example.atlassian.net"
+       env-forward GITLAB_TOKEN
+       env-forward PATH
+       secret SENTRY_AUTH
+      exit
+    PRC
+
+    iface = doc.interfaces.first
+    expect(iface.type_fields["env"]).to eq("JIRA_URL" => "https://example.atlassian.net")
+    expect(iface.type_fields["env-forward"]).to eq(%w[GITLAB_TOKEN PATH])
+    expect(iface.type_fields["secret"]).to eq(%w[SENTRY_AUTH])
+
+    result = Prouterd::Config::Validator.validate(doc)
+    expect(result.errors).to be_empty
+  end
+
+  it "validator rejects env / env-forward / secret on a non-subprocess provider" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      secret K
+       source env K
+      exit
+      interface llm claude
+       provider anthropic
+       model claude-haiku-4-5-20251001
+       env-forward GITLAB_TOKEN
+      exit
+    PRC
+
+    result = Prouterd::Config::Validator.validate(doc)
+    expect(result.errors.map(&:message).join("\n"))
+      .to match(/env-forward.*only apply to codex_cli/i)
+  end
+
+  it "validator rejects unknown secret refs" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface llm researcher
+       provider codex_cli
+       model gpt-5-codex
+       secret GHOST_SECRET
+      exit
+    PRC
+
+    result = Prouterd::Config::Validator.validate(doc)
+    expect(result.errors.map(&:message).join("\n"))
+      .to match(/undeclared secret 'GHOST_SECRET'/)
+  end
+
   it "renders a parse->render roundtrip identically" do
     src = <<~PRC
       router demo

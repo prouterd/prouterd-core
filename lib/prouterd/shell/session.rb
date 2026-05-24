@@ -48,10 +48,14 @@ module Prouterd
         )
       end
 
-      # Replay a previous run with the same input event and the same config
-      # commit it was originally pinned to. Returns the new Run.
-      def replay(run_uid)
-        original, document = load_replay_context(run_uid)
+      # Replay a previous run with the same input event. By default, pins
+      # to the same config commit the original run used so the re-execution
+      # is byte-for-byte reproducible. Pass `use_current_config: true` to
+      # re-bind to whatever the running pointer points at now — useful
+      # for iterating on a prompt or routing tweak against a fixed input.
+      # Returns the new Run.
+      def replay(run_uid, use_current_config: false)
+        original, document, commit_id = load_replay_context(run_uid, use_current_config: use_current_config)
         event = original.input_event_json ? JSON.parse(original.input_event_json) : {}
 
         orchestrator.trigger(
@@ -59,7 +63,7 @@ module Prouterd
           original.process_name,
           input_event: event,
           interface_name: original.interface_name,
-          commit_id: original.process_config_commit_id,
+          commit_id: commit_id,
           replay_of_run_id: original.id
         )
       end
@@ -67,8 +71,11 @@ module Prouterd
       # Replay starting AT a specific block. Seeds the new run's context with
       # the snapshot captured in the original step's input_json, so downstream
       # blocks see exactly what they would have seen on the original run.
-      def replay_from(run_uid, block_name)
-        original, document = load_replay_context(run_uid)
+      # `use_current_config: true` keeps the seeded upstream context but
+      # walks downstream against the running configuration — replays a
+      # routing/prompt edit without re-running expensive upstream evidence.
+      def replay_from(run_uid, block_name, use_current_config: false)
+        original, document, commit_id = load_replay_context(run_uid, use_current_config: use_current_config)
         repo = Storage::Repositories::Runs.new(@store.db)
 
         # Pick the EARLIEST attempt's row for the chosen block — that's the
@@ -89,7 +96,7 @@ module Prouterd
           original.process_name,
           input_event: payload["context"]&.dig("event") || (original.input_event_json ? JSON.parse(original.input_event_json) : {}),
           interface_name: original.interface_name,
-          commit_id: original.process_config_commit_id,
+          commit_id: commit_id,
           replay_of_run_id: original.id
         )
         orchestrator.execute_run(new_run, document, from_block: block_name, seed_context: seed)
@@ -132,7 +139,7 @@ module Prouterd
 
       private
 
-      def load_replay_context(run_uid)
+      def load_replay_context(run_uid, use_current_config: false)
         raise ShellError, "no DB attached; replay requires --db" unless @store
 
         repo = Storage::Repositories::Runs.new(@store.db)
@@ -142,11 +149,19 @@ module Prouterd
           raise ShellError, "run '#{run_uid}' was not pinned to a config commit; cannot replay"
         end
 
-        commit = @store.get_commit(original.process_config_commit_id)
-        raise ShellError, "config commit #{original.process_config_commit_id} no longer exists" unless commit
+        commit =
+          if use_current_config
+            current = @store.running_commit
+            raise ShellError, "no running config; cannot replay --use-current-config" unless current
+            current
+          else
+            pinned = @store.get_commit(original.process_config_commit_id)
+            raise ShellError, "config commit #{original.process_config_commit_id} no longer exists" unless pinned
+            pinned
+          end
 
         document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
-        [original, document]
+        [original, document, commit.id]
       end
     end
   end

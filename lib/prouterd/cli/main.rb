@@ -253,11 +253,17 @@ module Prouterd
 
       # `prouter replay run <uid>` — re-runs a previous run.
       # `prouter replay run <uid> from <block>` — replays from a chosen block.
+      # `--use-current-config` re-binds the replay to the running config
+      # instead of the commit the original run was pinned to. Combined
+      # with `from <block>`, this re-runs downstream against the current
+      # routing/prompts while keeping the original upstream context — the
+      # iteration workflow when a single block was edited.
       def cmd_replay
         store = nil
         from_block = nil
+        use_current_config = false
         unless @argv.length >= 2 && @argv[0] == "run"
-          @stderr.puts "prouter replay: usage: replay run <uid> [from <block>] [--db PATH] [--runner KIND]"
+          @stderr.puts "prouter replay: usage: replay run <uid> [from <block>] [--use-current-config] [--db PATH] [--runner KIND]"
           return 2
         end
         run_uid = @argv[1]
@@ -265,6 +271,10 @@ module Prouterd
         if @argv[0] == "from" && @argv[1]
           from_block = @argv[1]
           @argv = @argv[2..]
+        end
+        if (idx = @argv.index("--use-current-config"))
+          use_current_config = true
+          @argv = @argv[0...idx] + @argv[(idx + 1)..]
         end
 
         opts = parse_runtime_options("replay")
@@ -282,9 +292,9 @@ module Prouterd
 
         session = Prouterd::Shell::Session.new(store: store, runner: runner)
         new_run = if from_block
-                    session.replay_from(run_uid, from_block)
+                    session.replay_from(run_uid, from_block, use_current_config: use_current_config)
                   else
-                    session.replay(run_uid)
+                    session.replay(run_uid, use_current_config: use_current_config)
                   end
 
         repo = Prouterd::Storage::Repositories::Runs.new(store.db)

@@ -29,7 +29,7 @@ module Prouterd
     #   GET  /v1/runs/:uid               detail with steps             (admin)
     #   GET  /v1/runs/:uid/logs          logs (filterable)             (admin)
     #   GET  /v1/runs/:uid/artifacts     list                          (admin)
-    #   POST /v1/runs/:uid/replay        body {from_block?}            (admin)
+    #   POST /v1/runs/:uid/replay        body {from_block?, use_current_config?}  (admin)
     #   POST /v1/runs/:uid/cancel        soft + hard cancel            (admin)
     #
     #   POST /v1/trace                   body {event, interface?}      (admin)

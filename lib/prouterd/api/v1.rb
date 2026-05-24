@@ -311,9 +311,18 @@ module Prouterd
         end
         body = parse_json_body(request) || {}
         from_block = body["from_block"]
+        use_current = !!body["use_current_config"]
 
-        commit = @store.get_commit(original.process_config_commit_id)
-        return json_error(410, "gone", "config commit no longer exists") unless commit
+        commit =
+          if use_current
+            current = @store.running_commit
+            return json_error(409, "conflict", "no running config; cannot use_current_config") unless current
+            current
+          else
+            pinned = @store.get_commit(original.process_config_commit_id)
+            return json_error(410, "gone", "config commit no longer exists") unless pinned
+            pinned
+          end
 
         document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
         orchestrator = build_orchestrator
@@ -333,7 +342,7 @@ module Prouterd
               input_event: payload["context"]&.dig("event") ||
                            (original.input_event_json ? JSON.parse(original.input_event_json) : {}),
               interface_name: original.interface_name,
-              commit_id: original.process_config_commit_id,
+              commit_id: commit.id,
               replay_of_run_id: original.id
             )
             dispatch_run(new_run, from_block: from_block, seed_context: seed)
@@ -344,14 +353,15 @@ module Prouterd
               document, original.process_name,
               input_event: original.input_event_json ? JSON.parse(original.input_event_json) : {},
               interface_name: original.interface_name,
-              commit_id: original.process_config_commit_id,
+              commit_id: commit.id,
               replay_of_run_id: original.id
             )
             dispatch_run(new_run)
           end
         end
 
-        json(202, data: { run_id: new_run.uid, status: "queued", replay_of: uid, from: from_block })
+        json(202, data: { run_id: new_run.uid, status: "queued", replay_of: uid, from: from_block,
+                          use_current_config: use_current, config_commit_id: commit.id })
       end
 
       def post_run_resume(request, uid)

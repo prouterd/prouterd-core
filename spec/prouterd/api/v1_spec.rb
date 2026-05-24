@@ -689,6 +689,31 @@ RSpec.describe "Prouterd::API::App /v1 endpoints" do
       data = JSON.parse(last_response.body)["data"]
       expect(data["replay_of"]).to eq(original.uid)
     end
+
+    it "with use_current_config: true binds the replay to the current running commit" do
+      orchestrator = Prouterd::Runtime::Orchestrator.new(db: db, runner: runner)
+      original = orchestrator.trigger(
+        document, "pipeline",
+        input_event: { "body" => "x" },
+        commit_id: store.running_commit.id
+      )
+      original_commit_id = store.running_commit.id
+
+      # Roll the running pointer forward to a new commit (re-apply the
+      # same document; commit() always creates a new row).
+      store.commit(document)
+      new_commit_id = store.running_commit.id
+      expect(new_commit_id).not_to eq(original_commit_id)
+
+      post "/v1/runs/#{original.uid}/replay",
+           JSON.dump(use_current_config: true),
+           { "CONTENT_TYPE" => "application/json" }
+
+      expect(last_response.status).to eq(202)
+      data = JSON.parse(last_response.body)["data"]
+      expect(data["use_current_config"]).to be(true)
+      expect(data["config_commit_id"]).to eq(new_commit_id)
+    end
   end
 
   describe "POST /v1/trace" do

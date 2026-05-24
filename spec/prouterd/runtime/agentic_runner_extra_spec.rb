@@ -188,6 +188,98 @@ RSpec.describe Prouterd::Runtime::AgenticRunner do
       expect(res.error_message).to include("unknown tool 'missing-tool'")
     end
 
+    it "auto-includes every mcp-advertised tool when block has mcp_refs but no allowed-tools" do
+      doc = make_doc(<<~PRC)
+        router demo
+        exit
+        interface llm m
+         provider anthropic
+        exit
+        interface mcp mid
+         server bin "true"
+        exit
+        process p
+         block b
+          interface llm m
+          prompt "hi"
+          agentic on
+          mcp mid
+         exit
+        exit
+      PRC
+      mcp_pool = double
+      allow(mcp_pool).to receive(:tool_snapshot).with(["mid"]).and_return(
+        "mid" => [
+          { "name" => "search",  "description" => "s", "inputSchema" => {} },
+          { "name" => "fetch",   "description" => "f", "inputSchema" => {} }
+        ]
+      )
+      block_executor = Prouterd::Runtime::BlockExecutor.new(
+        db: db, runs: runs, runner: runner_stub,
+        artifact_store: Prouterd::Runtime::ArtifactStore.new,
+        secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+        events: Prouterd::Events.default,
+        logger: Prouterd::NullLogger.new, mcp_pool: mcp_pool,
+        retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+      )
+      ar = described_class.new(runs: runs, runner: runner_stub, mcp_pool: mcp_pool, host: block_executor)
+      captured_tools = nil
+      allow(Prouterd::Iface::LlmAgentic).to receive(:run) do |**kwargs|
+        captured_tools = kwargs[:tools]
+        { ok: true, output_json: { "text" => "ok" }, exit_code: 0,
+          stdout: "", stderr: "", error_type: nil, error_message: nil }
+      end
+
+      process = doc.processes.first
+      block = process.blocks.first
+      ar.execute(run, process, block, context, doc, db_mutex, ctx_mutex, redactor, 1)
+      expect(captured_tools.length).to eq(2)
+      expect(captured_tools.map(&:full_name)).to contain_exactly("mid.search", "mid.fetch")
+    end
+
+    it "resolves api_key from build_env when interface declares `auth bearer secret`" do
+      doc = make_doc(<<~PRC)
+        router demo
+        exit
+        secret CLAUDE_KEY
+         source env CLAUDE_KEY
+        exit
+        interface llm m
+         provider anthropic
+         auth bearer secret CLAUDE_KEY
+        exit
+        process p
+         block b
+          interface llm m
+          prompt "hi"
+          agentic on
+         exit
+        exit
+      PRC
+      ENV["CLAUDE_KEY"] = "ek-xyz"
+      block_executor = Prouterd::Runtime::BlockExecutor.new(
+        db: db, runs: runs, runner: runner_stub,
+        artifact_store: Prouterd::Runtime::ArtifactStore.new,
+        secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+        events: Prouterd::Events.default,
+        logger: Prouterd::NullLogger.new, mcp_pool: nil,
+        retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+      )
+      ar = described_class.new(runs: runs, runner: runner_stub, mcp_pool: nil, host: block_executor)
+      captured_api_key = nil
+      allow(Prouterd::Iface::LlmAgentic).to receive(:run) do |**kwargs|
+        captured_api_key = kwargs[:api_key]
+        { ok: true, output_json: { "text" => "ok" }, exit_code: 0,
+          stdout: "", stderr: "", error_type: nil, error_message: nil }
+      end
+      process = doc.processes.first
+      block = process.blocks.first
+      ar.execute(run, process, block, context, doc, db_mutex, ctx_mutex, redactor, 1)
+      expect(captured_api_key).to eq("ek-xyz")
+    ensure
+      ENV.delete("CLAUDE_KEY")
+    end
+
     it "rejects a namespaced allowed-tools entry whose iface doesn't advertise it" do
       doc = make_doc(<<~PRC)
         router demo
@@ -265,6 +357,65 @@ RSpec.describe Prouterd::Runtime::AgenticRunner do
       dispatcher = ar.send(:build_tool_dispatcher, run, process, block, doc, {})
       result = dispatcher.call(name: "mid.search", input: { "q" => "x" })
       expect(result[:output_json]).to eq("hit" => 1)
+    end
+
+    it "surfaces tool_failed error_type when a declared tool's runner returns a failure" do
+      doc = make_doc(<<~PRC)
+        router demo
+        exit
+        interface shell sh
+        exit
+        tool boom
+         description "always fails"
+         implementation interface shell sh call boom
+        exit
+      PRC
+      # Stub a runner that returns a failed ExecutionResult.
+      stub_runner = Class.new do
+        def run(_req)
+          Prouterd::Runner::ExecutionResult.new(
+            exit_code: 7, stdout: "", stderr: "broke",
+            output_json: nil, artifacts: [],
+            error_type: "shell_error", error_message: "process crashed",
+            duration_ms: 1, started_at: nil, finished_at: nil
+          )
+        end
+      end.new
+      ar = described_class.new(runs: runs, runner: stub_runner, mcp_pool: nil, host: double)
+      block = double(name: "b", timeout_ms: nil)
+      dispatcher = ar.send(:build_tool_dispatcher, run, double(name: "p"), block, doc, {})
+      out = dispatcher.call(name: "boom", input: {})
+      expect(out[:error_type]).to eq("shell_error")
+      expect(out[:error_message]).to eq("process crashed")
+    end
+
+    it "falls back to 'tool_failed' / generic message when runner failure carries no metadata" do
+      doc = make_doc(<<~PRC)
+        router demo
+        exit
+        interface shell sh
+        exit
+        tool silentboom
+         description "fails with no metadata"
+         implementation interface shell sh call boom
+        exit
+      PRC
+      stub_runner = Class.new do
+        def run(_req)
+          Prouterd::Runner::ExecutionResult.new(
+            exit_code: 1, stdout: "", stderr: "",
+            output_json: nil, artifacts: [],
+            error_type: nil, error_message: nil,
+            duration_ms: 1, started_at: nil, finished_at: nil
+          )
+        end
+      end.new
+      ar = described_class.new(runs: runs, runner: stub_runner, mcp_pool: nil, host: double)
+      block = double(name: "b", timeout_ms: nil)
+      dispatcher = ar.send(:build_tool_dispatcher, run, double(name: "p"), block, doc, {})
+      out = dispatcher.call(name: "silentboom", input: {})
+      expect(out[:error_type]).to eq("tool_failed")
+      expect(out[:error_message]).to include("silentboom")
     end
 
     it "uses block.timeout_ms when set" do

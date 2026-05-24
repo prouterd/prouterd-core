@@ -125,4 +125,139 @@ RSpec.describe Prouterd::Daemon::Main do
       end
     end
   end
+
+  # Drives `run` end-to-end with the heavy components (Puma, worker
+  # threads, MCP subprocesses) injected as no-ops so the daemon's
+  # boot-and-shutdown sequence executes inline. Hits the
+  # `start_storage_probe` / `Server.run` / `ensure` cleanup chain that
+  # otherwise needs a real `prouterd` process to cover.
+  describe "happy-path boot + ordered shutdown" do
+    def stub_all_subsystems!
+      allow(Prouterd::Daemon::Lock).to receive(:acquire).and_return(IO.sysopen("/dev/null"))
+      allow_any_instance_of(Prouterd::Runtime::WorkerPool).to receive(:run)
+      allow_any_instance_of(Prouterd::Runtime::WorkerPool).to receive(:stop)
+      allow_any_instance_of(Prouterd::Runtime::Scheduler).to receive(:run)
+      allow_any_instance_of(Prouterd::Runtime::Scheduler).to receive(:stop)
+      allow_any_instance_of(Prouterd::Iface::Mcp::Pool).to receive(:start_or_reconcile)
+      allow_any_instance_of(Prouterd::Iface::Mcp::Pool).to receive(:stop)
+      allow_any_instance_of(Prouterd::API::App).to receive(:start_storage_probe)
+      allow_any_instance_of(Prouterd::API::App).to receive(:stop_storage_probe)
+    end
+
+    it "returns 0 after Server.run unblocks and runs the ensure-block cleanup in order" do
+      Tempfile.create(["prouterd-happy-", ".sqlite3"]) do |db|
+        db.close
+        stub_all_subsystems!
+
+        shutdown_order = []
+        allow_any_instance_of(Prouterd::API::App).to receive(:stop_storage_probe) { shutdown_order << :probe }
+        allow_any_instance_of(Prouterd::Runtime::Scheduler).to receive(:stop) { shutdown_order << :scheduler }
+        allow_any_instance_of(Prouterd::Runtime::WorkerPool).to receive(:stop) { shutdown_order << :workers }
+        allow_any_instance_of(Prouterd::Iface::Mcp::Pool).to receive(:stop)    { shutdown_order << :mcp }
+
+        captured_server_args = nil
+        allow(Prouterd::API::Server).to receive(:run) do |**kwargs|
+          captured_server_args = kwargs
+          # simulate Server.run returning when the operator hits SIGTERM
+          nil
+        end
+
+        out = StringIO.new
+        code = described_class.run(["--db", db.path, "--bind", "127.0.0.1", "--port", "0"],
+                                    stdin: StringIO.new, stdout: out, stderr: StringIO.new)
+        expect(code).to eq(0)
+        expect(captured_server_args[:bind]).to eq("127.0.0.1")
+        expect(captured_server_args[:port]).to eq(0)
+        # Shutdown sequence: probe → scheduler → workers → mcp. This
+        # order matters because the storage probe writes to the same
+        # DB the worker threads do; stopping it first means no probe
+        # row collides with a worker-driven mid-shutdown write.
+        expect(shutdown_order).to eq([:probe, :scheduler, :workers, :mcp])
+      end
+    end
+
+    it "exits 2 when --console-dir is a regular file and never reaches Server.run" do
+      Tempfile.create(["prouterd-cd-", ".sqlite3"]) do |db|
+        db.close
+        Tempfile.create(["prouterd-cd-conf-"]) do |reg_file|
+          stub_all_subsystems!
+          expect(Prouterd::API::Server).not_to receive(:run)
+
+          err = StringIO.new
+          code = described_class.run(
+            ["--db", db.path, "--console-dir", reg_file.path],
+            stdin: StringIO.new, stdout: StringIO.new, stderr: err
+          )
+          expect(code).to eq(2)
+          expect(err.string).to include("not a directory")
+        end
+      end
+    end
+
+    it "accepts a valid --console-dir and forwards it to App via expand_path" do
+      Tempfile.create(["prouterd-cd-", ".sqlite3"]) do |db|
+        db.close
+        Dir.mktmpdir do |dir|
+          stub_all_subsystems!
+          captured_console_dir = nil
+          allow(Prouterd::API::App).to receive(:new).and_wrap_original do |orig, **kwargs|
+            captured_console_dir = kwargs[:console_dir]
+            orig.call(**kwargs)
+          end
+          allow(Prouterd::API::Server).to receive(:run)
+
+          described_class.run(["--db", db.path, "--console-dir", dir],
+                              stdin: StringIO.new, stdout: StringIO.new, stderr: StringIO.new)
+          expect(captured_console_dir).to eq(File.expand_path(dir))
+        end
+      end
+    end
+
+    it "swallows StandardError from the initial mcp pool reconcile and continues to boot" do
+      Tempfile.create(["prouterd-mcp-", ".sqlite3"]) do |db|
+        db.close
+        stub_all_subsystems!
+        allow_any_instance_of(Prouterd::Iface::Mcp::Pool).to receive(:start_or_reconcile)
+          .and_raise(StandardError, "mcp server unreachable")
+        allow(Prouterd::API::Server).to receive(:run)
+
+        out = StringIO.new
+        code = described_class.run(["--db", db.path],
+                                    stdin: StringIO.new, stdout: out, stderr: StringIO.new)
+        expect(code).to eq(0)
+        # The warning is structured-logged to stdout via Logger.build.
+        expect(out.string).to include("mcp pool initial reconcile failed")
+        expect(out.string).to include("mcp server unreachable")
+      end
+    end
+
+    it "swallows StandardError from a config_changed-driven mcp reconcile" do
+      Tempfile.create(["prouterd-mcp2-", ".sqlite3"]) do |db|
+        db.close
+        stub_all_subsystems!
+
+        # Capture the events subscription so we can fire it ourselves
+        # after the daemon's run() returns — by which point @logger /
+        # mcp_pool are already initialised and live for the block.
+        fire_event = nil
+        allow(Prouterd::Events).to receive(:subscribe).and_call_original
+        allow(Prouterd::Events).to receive(:subscribe).with(:config_changed) do |&blk|
+          fire_event = blk
+          Prouterd::Events.default.subscribe(:config_changed, &blk)
+        end
+        allow(Prouterd::API::Server).to receive(:run) do
+          # Now fire the event with the mcp pool stub raising
+          allow_any_instance_of(Prouterd::Iface::Mcp::Pool).to receive(:start_or_reconcile)
+            .and_raise(StandardError, "mid-run mcp blew up")
+          fire_event&.call(:config_changed, {})
+        end
+
+        out = StringIO.new
+        code = described_class.run(["--db", db.path],
+                                    stdin: StringIO.new, stdout: out, stderr: StringIO.new)
+        expect(code).to eq(0)
+        expect(out.string).to include("mcp pool reconcile on config_changed failed")
+      end
+    end
+  end
 end

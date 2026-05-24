@@ -63,9 +63,16 @@ module Prouterd
         stderr_combined = [stderr_text, raw_stderr_extra].reject(&:empty?).join
 
         if !status.success?
+          # Preserve any text / usage the model emitted before the
+          # subprocess died. Codex/Claude can hit a contract violation
+          # or rate limit mid-turn and still have streamed partial
+          # output; the operator wants to see it on the failed step
+          # row. Downstream context propagation is gated on success in
+          # BlockExecutor, so this only affects persistence.
+          partial = build_partial_output(text, model, usage, stop_reason)
           return {
             exit_code:     status.exitstatus,
-            output_json:   nil,
+            output_json:   partial,
             stdout:        "",
             stderr:        stderr_combined,
             error_type:    "llm_error",
@@ -203,6 +210,25 @@ module Prouterd
         end
 
         [stdout_lines, stderr_buf, status]
+      end
+
+      # Build the canonical output shape from parsed pieces, or return
+      # nil if the subprocess produced no text and zero token usage.
+      # Used on the failure path so a step row only carries a partial
+      # output_json when the model actually streamed something — empty
+      # failures stay output_json=nil.
+      def build_partial_output(text, model, usage, stop_reason)
+        text_str = text.to_s
+        in_tokens  = (usage["input_tokens"]  if usage.is_a?(Hash)).to_i
+        out_tokens = (usage["output_tokens"] if usage.is_a?(Hash)).to_i
+        return nil if text_str.empty? && in_tokens.zero? && out_tokens.zero?
+
+        {
+          "text"        => text_str,
+          "model"       => model,
+          "usage"       => usage,
+          "stop_reason" => stop_reason
+        }
       end
 
       # Dispatch per-provider stdout shape. `codex_cli` is a JSONL

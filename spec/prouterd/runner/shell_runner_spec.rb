@@ -81,6 +81,29 @@ RSpec.describe Prouterd::Runner::ShellRunner do
     expect(result.exit_code).to eq(7)
   end
 
+  # Failed blocks preserve any structured payload they emitted before
+  # bailing — operator can see what the block produced via `show run`/
+  # `show logs`. Downstream context propagation stays gated on success
+  # in BlockExecutor so this only affects the persisted step row.
+  it "preserves stdout JSON on non-zero exit" do
+    result = runner.run(request(command: %q[sh -c 'echo "{\"partial\":true,\"reason\":\"crash\"}"; exit 9']))
+    expect(result.error_type).to eq("non_zero_exit")
+    expect(result.exit_code).to eq(9)
+    expect(result.output_json).to eq("partial" => true, "reason" => "crash")
+  end
+
+  it "preserves an explicit output.json on non-zero exit" do
+    result = runner.run(request(command: %q[sh -c 'echo "{\"phase\":\"loaded\"}" > $PROUTER_OUTPUT_PATH; exit 2']))
+    expect(result.error_type).to eq("non_zero_exit")
+    expect(result.output_json).to eq("phase" => "loaded")
+  end
+
+  it "leaves output_json nil on non-zero exit when stdout is plain log" do
+    result = runner.run(request(command: %q[sh -c 'echo plain logs; exit 5']))
+    expect(result.error_type).to eq("non_zero_exit")
+    expect(result.output_json).to be_nil
+  end
+
   it "respects timeout" do
     result = runner.run(request(command: "sleep 5", timeout_ms: 200))
     expect(result.error_type).to eq("timeout")

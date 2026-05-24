@@ -209,4 +209,47 @@ RSpec.describe Prouterd::Iface::LlmSubprocess do
 
     File.unlink(bin)
   end
+
+  # When the subprocess dies mid-turn but streamed partial output
+  # before exiting (e.g. assistant text + a usage event then a
+  # rate-limit kill), the failed result still carries the captured
+  # text and usage so the operator can diff against what the agent
+  # was about to say.
+  it "preserves partial text and usage on subprocess failure" do
+    bin = fake_binary([
+      '{"type":"item.completed","item":{"type":"agent_message","text":"half-written reply"}}',
+      '{"type":"turn.completed","usage":{"input_tokens":4,"output_tokens":2}}'
+    ], exit_code: 1)
+
+    result = described_class.call(
+      provider: "codex_cli", model: "x",
+      binary: bin, home: nil, sandbox: nil,
+      prompt: "go", system_msg: "",
+      timeout_ms: 5_000
+    )
+
+    expect(result[:error_type]).to eq("llm_error")
+    expect(result[:exit_code]).to eq(1)
+    expect(result[:output_json]).not_to be_nil
+    expect(result[:output_json]["text"]).to eq("half-written reply")
+    expect(result[:output_json]["usage"]).to eq("input_tokens" => 4, "output_tokens" => 2)
+
+    File.unlink(bin)
+  end
+
+  it "keeps output_json nil when the subprocess fails with no captured output" do
+    bin = fake_binary([], exit_code: 1)
+
+    result = described_class.call(
+      provider: "codex_cli", model: "x",
+      binary: bin, home: nil, sandbox: nil,
+      prompt: "go", system_msg: "",
+      timeout_ms: 5_000
+    )
+
+    expect(result[:error_type]).to eq("llm_error")
+    expect(result[:output_json]).to be_nil
+
+    File.unlink(bin)
+  end
 end

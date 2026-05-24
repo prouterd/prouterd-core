@@ -18,11 +18,38 @@ RSpec.describe Prouterd::Runner::DockerRunner do
     runner.send(:classify_outcome, work_dir, exit_code, stdout)
   end
 
-  it "non-zero exit beats everything else" do
-    err_type, err_msg, output = classify(exit_code: 7, stdout: '{"x":1}')
-    expect(err_type).to eq("non_zero_exit")
-    expect(err_msg).to include("7")
-    expect(output).to be_nil
+  describe "non-zero exit" do
+    # error_type still wins on the result envelope; the change is that
+    # partial structured output the failing container emitted before
+    # bailing is preserved on the step row so the operator can debug.
+    # Downstream context propagation stays gated on success in
+    # BlockExecutor — failed blocks still don't seed downstream
+    # templating.
+    it "preserves a JSON Hash captured from stdout" do
+      err_type, err_msg, output = classify(exit_code: 7, stdout: '{"x":1}')
+      expect(err_type).to eq("non_zero_exit")
+      expect(err_msg).to include("7")
+      expect(output).to eq("x" => 1)
+    end
+
+    it "preserves an explicit output.json over stdout" do
+      _, _, output = classify(
+        exit_code: 1,
+        stdout: '{"from":"stdout"}',
+        output_file: '{"from":"file"}'
+      )
+      expect(output).to eq("from" => "file")
+    end
+
+    it "returns nil when stdout is plain log lines" do
+      _, _, output = classify(exit_code: 9, stdout: "TICK\nDone\n")
+      expect(output).to be_nil
+    end
+
+    it "returns nil when stdout is empty" do
+      _, _, output = classify(exit_code: 9, stdout: "")
+      expect(output).to be_nil
+    end
   end
 
   describe "with explicit /prouter/output.json" do

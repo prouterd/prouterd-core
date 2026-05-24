@@ -361,7 +361,13 @@ module Prouterd
       def classify_outcome(work_dir, exit_code, stdout_str)
         output_path = File.join(work_dir, OUTPUT_FILENAME)
         if exit_code != 0
-          return ["non_zero_exit", "block exited with code #{exit_code}", nil]
+          # Preserve any structured output the failing container managed
+          # to emit before bailing — operator can inspect via `show run`/
+          # `show logs`. Downstream context propagation stays gated on
+          # success in BlockExecutor, so this only affects the persisted
+          # step row.
+          return ["non_zero_exit", "block exited with code #{exit_code}",
+                  extract_partial_output(work_dir, stdout_str)]
         end
 
         if File.exist?(output_path)
@@ -386,6 +392,28 @@ module Prouterd
         end
 
         [nil, nil, {}]
+      end
+
+      # Best-effort recovery of a structured payload from a failed
+      # container run. Returns nil when neither output.json nor stdout
+      # yield a Hash/Array — the step still persists with output_json=nil
+      # and the operator falls back to the captured stdout/stderr.
+      def extract_partial_output(work_dir, stdout_str)
+        output_path = File.join(work_dir, OUTPUT_FILENAME)
+        if File.exist?(output_path)
+          raw = File.read(output_path).to_s
+          unless raw.empty?
+            parsed = (JSON.parse(raw) rescue nil)
+            return parsed if parsed.is_a?(Hash) || parsed.is_a?(Array)
+          end
+        end
+        trimmed = stdout_str.to_s.strip
+        return nil if trimmed.empty?
+
+        parsed = (JSON.parse(trimmed) rescue nil)
+        return parsed if parsed.is_a?(Hash) || parsed.is_a?(Array)
+
+        nil
       end
 
       def collect_artifacts(work_dir)

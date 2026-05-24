@@ -160,17 +160,11 @@ module Prouterd
         end
 
         def list_logs(run_id, step_id: nil)
-          if step_id
-            rows = @db.execute(
-              "SELECT id, run_id, step_id, stream, content, created_at FROM run_logs WHERE run_id = ? AND step_id = ? ORDER BY id ASC",
-              [run_id, step_id]
-            )
-          else
-            rows = @db.execute(
-              "SELECT id, run_id, step_id, stream, content, created_at FROM run_logs WHERE run_id = ? ORDER BY id ASC",
-              [run_id]
-            )
-          end
+          rows = list_for_run(
+            "run_logs",
+            "id, run_id, step_id, stream, content, created_at",
+            run_id, step_id
+          )
           rows.map do |r|
             LogEntry.new(
               id: r[0], run_id: r[1], step_id: r[2], stream: r[3], content: r[4], created_at: r[5]
@@ -207,17 +201,11 @@ module Prouterd
         end
 
         def list_artifacts(run_id, step_id: nil)
-          if step_id
-            rows = @db.execute(
-              "SELECT id, run_id, step_id, block_name, name, path, content_type, size_bytes, checksum, created_at FROM artifacts WHERE run_id = ? AND step_id = ? ORDER BY id ASC",
-              [run_id, step_id]
-            )
-          else
-            rows = @db.execute(
-              "SELECT id, run_id, step_id, block_name, name, path, content_type, size_bytes, checksum, created_at FROM artifacts WHERE run_id = ? ORDER BY id ASC",
-              [run_id]
-            )
-          end
+          rows = list_for_run(
+            "artifacts",
+            "id, run_id, step_id, block_name, name, path, content_type, size_bytes, checksum, created_at",
+            run_id, step_id
+          )
           rows.map do |r|
             Artifact.new(
               id: r[0], run_id: r[1], step_id: r[2], block_name: r[3], name: r[4],
@@ -227,6 +215,25 @@ module Prouterd
         end
 
         private
+
+        # Run-scoped list with an optional step filter. Both list_logs
+        # and list_artifacts shared identical "if step_id ... else ..."
+        # SQL pairs that differed only in columns and table. Now one
+        # place builds the WHERE clause; the caller passes raw column
+        # list as a string (kept readable in each method's signature).
+        def list_for_run(table, columns, run_id, step_id)
+          if step_id
+            @db.execute(
+              "SELECT #{columns} FROM #{table} WHERE run_id = ? AND step_id = ? ORDER BY id ASC",
+              [run_id, step_id]
+            )
+          else
+            @db.execute(
+              "SELECT #{columns} FROM #{table} WHERE run_id = ? ORDER BY id ASC",
+              [run_id]
+            )
+          end
+        end
 
         def generate_uid
           # 8 hex chars are enough for human display; collisions are checked

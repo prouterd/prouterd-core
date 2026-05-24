@@ -322,9 +322,69 @@ module Prouterd
               end
             end
           end
+
+          check_resume_from(process, block)
         end
 
         check_artifact_flow(process)
+      end
+
+      # `resume-from "{{<upstream>.session_id}}"` only makes sense
+      # when the upstream block produced a session_id — i.e. when its
+      # interface is an `interface llm` with a subprocess provider
+      # (codex_cli / claude_cli), AND the providers match (cross-
+      # provider resume is not a wire-level thing). HTTP providers
+      # (anthropic / openai) don't speak resume at all; flag those
+      # too.
+      def check_resume_from(process, block)
+        ref = block.interface_ref
+        return unless ref && ref.type == "llm"
+
+        raw = block.type_fields["resume-from"]
+        return if raw.nil? || raw.to_s.empty?
+
+        downstream_iface = @doc.interfaces.find { |i| i.type == "llm" && i.name == ref.name }
+        downstream_provider = downstream_iface&.type_fields&.[]("provider")
+        unless %w[codex_cli claude_cli].include?(downstream_provider)
+          @result.error(
+            "block '#{process.name}/#{block.name}': `resume-from` only applies to subprocess LLM providers " \
+            "(codex_cli / claude_cli); '#{downstream_provider}' on interface '#{ref.name}' has no session model",
+            line: block.line
+          )
+          return
+        end
+
+        match = raw.to_s.match(/\A\{\{\s*([A-Za-z_][\w-]*)\.session_id\s*\}\}\z/)
+        return unless match
+
+        upstream_name = match[1]
+        upstream = process.block(upstream_name)
+        unless upstream
+          @result.error(
+            "block '#{process.name}/#{block.name}': `resume-from` references unknown block '#{upstream_name}'",
+            line: block.line
+          )
+          return
+        end
+
+        upstream_ref = upstream.interface_ref
+        if upstream_ref.nil? || upstream_ref.type != "llm"
+          @result.error(
+            "block '#{process.name}/#{block.name}': `resume-from` references block '#{upstream_name}' which is not an LLM block",
+            line: block.line
+          )
+          return
+        end
+
+        upstream_iface = @doc.interfaces.find { |i| i.type == "llm" && i.name == upstream_ref.name }
+        upstream_provider = upstream_iface&.type_fields&.[]("provider")
+        if upstream_provider && upstream_provider != downstream_provider
+          @result.error(
+            "block '#{process.name}/#{block.name}': `resume-from` provider mismatch — " \
+            "upstream block '#{upstream_name}' uses '#{upstream_provider}' but this block uses '#{downstream_provider}'",
+            line: block.line
+          )
+        end
       end
 
       # Verify every `input from Y.Z`:

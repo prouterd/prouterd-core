@@ -288,7 +288,8 @@ RSpec.describe Prouterd::Iface::LlmSubprocess do
       out = described_class.build_partial_output("some text", "m",
                                                   { "input_tokens" => 1, "output_tokens" => 0 }, "end")
       expect(out).to eq("text" => "some text", "model" => "m",
-                        "usage" => { "input_tokens" => 1, "output_tokens" => 0 }, "stop_reason" => "end")
+                        "usage" => { "input_tokens" => 1, "output_tokens" => 0 }, "stop_reason" => "end",
+                        "session_id" => nil)
     end
 
     it "treats non-Hash usage as zero counts" do

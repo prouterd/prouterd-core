@@ -81,6 +81,7 @@ module Prouterd
             stream_sink:      stream_sink,
             prompt:           prompt,
             system_msg:       system_msg,
+            resume_from:      request.field("resume-from"),
             timeout_ms:       request.timeout_ms
           )
         end

@@ -40,10 +40,11 @@ module Prouterd
 
       def call(provider:, model:, binary:, home:, sandbox:, prompt:, system_msg:, timeout_ms:,
                cwd: nil, reasoning_effort: nil, extra_env: {}, sandbox_env: false,
-               stream: false, stream_sink: nil)
+               stream: false, stream_sink: nil, resume_from: nil)
         argv, stdin_text = build_invocation(provider, binary, model, sandbox, prompt, system_msg,
                                              reasoning_effort: reasoning_effort,
-                                             stream: stream)
+                                             stream: stream,
+                                             resume_from: resume_from)
         env = build_env(home).merge(extra_env || {})
         resolved_cwd = resolve_cwd(cwd)
         if cwd && resolved_cwd.nil?
@@ -82,7 +83,7 @@ module Prouterd
         # Output protocol differs by provider — codex emits JSONL events,
         # claude (-p mode) emits one wrapper JSON object on stdout (or
         # JSONL when `--output-format stream-json` is active).
-        text, usage, stop_reason, raw_stderr_extra =
+        text, usage, stop_reason, raw_stderr_extra, session_id =
           parse_output(provider, stdout_lines, stream: stream)
         stderr_combined = [stderr_text, raw_stderr_extra].reject(&:empty?).join
 
@@ -93,7 +94,7 @@ module Prouterd
           # output; the operator wants to see it on the failed step
           # row. Downstream context propagation is gated on success in
           # BlockExecutor, so this only affects persistence.
-          partial = build_partial_output(text, model, usage, stop_reason)
+          partial = build_partial_output(text, model, usage, stop_reason, session_id)
           return {
             exit_code:     status.exitstatus,
             output_json:   partial,
@@ -110,7 +111,8 @@ module Prouterd
             "text"        => text,
             "model"       => model,
             "usage"       => usage,
-            "stop_reason" => stop_reason
+            "stop_reason" => stop_reason,
+            "session_id"  => session_id
           },
           stdout:        "",
           stderr:        stderr_combined,
@@ -124,8 +126,10 @@ module Prouterd
       # Code) takes the prompt as the positional arg of `-p` and reads
       # nothing from stdin.
       def build_invocation(provider, binary, model, sandbox, prompt, system_msg,
-                           reasoning_effort: nil, stream: false)
+                           reasoning_effort: nil, stream: false, resume_from: nil)
         bin = resolve_binary(provider, binary)
+        resume = resume_from.to_s.strip
+        resume = nil if resume.empty?
         case provider
         when "codex_cli"
           # Codex CLI emits JSONL events under `--json` regardless of
@@ -133,7 +137,16 @@ module Prouterd
           # side — the `stream:` flag here just controls whether the
           # driver tees each line into the per-step log table as it
           # arrives, not the codex invocation itself.
-          argv = [bin, "exec", "--json"]
+          #
+          # When `resume_from` is set, codex re-opens the prior rollout
+          # via `codex exec resume <id> --json` so the next prompt
+          # continues that conversation; otherwise a fresh rollout
+          # starts via plain `codex exec --json`.
+          argv = if resume
+                   [bin, "exec", "resume", resume, "--json"]
+                 else
+                   [bin, "exec", "--json"]
+                 end
           argv += ["-m", model] unless model.to_s.empty?
           argv += ["-s", sandbox] if sandbox && !sandbox.empty?
           argv += codex_reasoning_args(reasoning_effort)
@@ -142,7 +155,7 @@ module Prouterd
           # reasoning_effort is a codex-only concept; silently ignored
           # for Claude Code (it has its own thinking-mode toggles via
           # a different API).
-          argv = build_argv_claude(bin, model, prompt, system_msg, stream: stream)
+          argv = build_argv_claude(bin, model, prompt, system_msg, stream: stream, resume_from: resume)
           stdin_text = ""
         else
           raise ArgumentError, "unknown subprocess provider '#{provider}'"
@@ -201,13 +214,17 @@ module Prouterd
       # Real Claude Code CLI 2.1.x invocation:
       #   claude -p "<prompt>" --output-format json --model <model>
       #          [--system-prompt "<system>"]
+      #          [--resume <session_id>]
       #
       # `--system-prompt` FULLY replaces Claude Code's default agent
       # system prompt; that's what we want for `interface llm` blocks
       # (no Claude-Code-agent baggage). Without `system_msg` we omit
       # the flag and let Claude Code apply its default — usually fine
       # for one-shot prompts.
-      def build_argv_claude(bin, model, prompt, system_msg, stream: false)
+      #
+      # `--resume <id>` re-opens the prior session so the next prompt
+      # is appended to that conversation rather than starting fresh.
+      def build_argv_claude(bin, model, prompt, system_msg, stream: false, resume_from: nil)
         # Claude Code's `-p` print mode requires `--verbose` whenever
         # `--output-format stream-json` is requested (CLI errors out
         # otherwise). Aggregated final text is read from the `type:
@@ -218,6 +235,7 @@ module Prouterd
         argv += ["--verbose"] if stream
         argv += ["--model", model] unless model.to_s.empty?
         argv += ["--system-prompt", system_msg] if system_msg && !system_msg.to_s.empty?
+        argv += ["--resume", resume_from] if resume_from && !resume_from.to_s.empty?
         argv
       end
 
@@ -326,18 +344,21 @@ module Prouterd
       # nil if the subprocess produced no text and zero token usage.
       # Used on the failure path so a step row only carries a partial
       # output_json when the model actually streamed something — empty
-      # failures stay output_json=nil.
-      def build_partial_output(text, model, usage, stop_reason)
+      # failures stay output_json=nil. When the subprocess emitted a
+      # `session_id` before dying we still surface it so a downstream
+      # block can resume the conversation on retry.
+      def build_partial_output(text, model, usage, stop_reason, session_id = nil)
         text_str = text.to_s
         in_tokens  = (usage["input_tokens"]  if usage.is_a?(Hash)).to_i
         out_tokens = (usage["output_tokens"] if usage.is_a?(Hash)).to_i
-        return nil if text_str.empty? && in_tokens.zero? && out_tokens.zero?
+        return nil if text_str.empty? && in_tokens.zero? && out_tokens.zero? && session_id.to_s.empty?
 
         {
           "text"        => text_str,
           "model"       => model,
           "usage"       => usage,
-          "stop_reason" => stop_reason
+          "stop_reason" => stop_reason,
+          "session_id"  => session_id
         }
       end
 
@@ -373,7 +394,7 @@ module Prouterd
         parsed = (JSON.parse(joined) rescue nil)
         unless parsed.is_a?(Hash)
           unparsed << joined unless joined.empty?
-          return ["", { "input_tokens" => 0, "output_tokens" => 0 }, nil, unparsed]
+          return ["", { "input_tokens" => 0, "output_tokens" => 0 }, nil, unparsed, nil]
         end
 
         text = parsed["result"].to_s
@@ -382,8 +403,9 @@ module Prouterd
         in_tokens  = (usage["input_tokens"]  || usage["prompt_tokens"]    || 0).to_i
         out_tokens = (usage["output_tokens"] || usage["completion_tokens"] || 0).to_i
         stop_reason = parsed["stop_reason"] || parsed["subtype"]
+        session_id = parsed["session_id"]
 
-        [text, { "input_tokens" => in_tokens, "output_tokens" => out_tokens }, stop_reason, unparsed]
+        [text, { "input_tokens" => in_tokens, "output_tokens" => out_tokens }, stop_reason, unparsed, session_id]
       end
 
       # Claude Code `--output-format stream-json --verbose` emits one
@@ -399,6 +421,7 @@ module Prouterd
         usage = { "input_tokens" => 0, "output_tokens" => 0 }
         stop_reason = nil
         model = nil
+        session_id = nil
 
         stdout_lines.each do |raw|
           next if raw.strip.empty?
@@ -407,6 +430,11 @@ module Prouterd
             unparsed << raw << "\n"
             next
           end
+
+          # `session_id` appears on every event Claude Code emits in
+          # stream-json mode (init, assistant, result). Capture the
+          # first one we see — they all refer to the same session.
+          session_id ||= event["session_id"]
 
           if event["type"] == "result"
             text = event["result"].to_s if event.key?("result")
@@ -425,7 +453,7 @@ module Prouterd
           end
         end
 
-        [text, usage, stop_reason, unparsed]
+        [text, usage, stop_reason, unparsed, session_id]
       end
 
       # Codex emits JSONL: one event per line, multiple events per run.
@@ -453,6 +481,7 @@ module Prouterd
         in_tokens = 0
         out_tokens = 0
         stop_reason = nil
+        session_id = nil
         unparsed = String.new(encoding: Encoding::UTF_8)
 
         stdout_lines.each do |raw|
@@ -476,11 +505,33 @@ module Prouterd
             out_tokens += (u["output_tokens"] || u["completion_tokens"] || 0).to_i
           end
 
+          # Codex emits its rollout id on the `session_configured`
+          # event early in the JSONL stream:
+          #   {type:"session_configured", session_id:"..."}
+          # Subsequent events may also carry it; first non-nil wins.
+          session_id ||= extract_codex_session_id(parsed)
+
           stop_reason = parsed["stop_reason"] || parsed["finish_reason"] || stop_reason
         end
 
         text = last_agent_message_text || legacy_text
-        [text, { "input_tokens" => in_tokens, "output_tokens" => out_tokens }, stop_reason, unparsed]
+        [text, { "input_tokens" => in_tokens, "output_tokens" => out_tokens }, stop_reason, unparsed, session_id]
+      end
+
+      # Codex session id. Top-level `session_id` on `session_configured`
+      # events (codex 0.129+) and on item events that include it. Also
+      # accepts a wrapped form `{item:{session_id:"..."}}` defensively
+      # — codex versions vary on whether the field is hoisted.
+      def extract_codex_session_id(event)
+        sid = event["session_id"]
+        return sid if sid.is_a?(String) && !sid.empty?
+
+        item = event["item"]
+        if item.is_a?(Hash)
+          sid = item["session_id"]
+          return sid if sid.is_a?(String) && !sid.empty?
+        end
+        nil
       end
 
       # Codex agent_message text, in either the 0.129+ wrapped shape

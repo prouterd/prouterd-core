@@ -105,6 +105,17 @@ module Prouterd
         # — downstream blocks see the same shape regardless of stream.
         call_field :stream, kind: :enum, enum: %w[on off], default: "off",
                             description: "stream JSONL events to run_logs as they arrive (codex_cli / claude_cli)"
+        # `resume-from <session_id>` re-opens a prior subprocess LLM
+        # session (claude_cli `--resume <id>`, codex_cli `exec resume
+        # <id> --json`) so the next prompt continues that
+        # conversation rather than starting a fresh one. Typically
+        # templated against an upstream block's surfaced
+        # `session_id`: `resume-from "{{draft.session_id}}"`. Silently
+        # ignored for HTTP providers (anthropic / openai) — their
+        # session model is request-scoped and re-attaching is not a
+        # thing on the wire.
+        call_field :"resume-from", kind: :string,
+                                    description: "resume a prior LLM subprocess session by its session_id (codex_cli / claude_cli)"
 
         caller "Prouterd::Iface::LlmCaller"
 

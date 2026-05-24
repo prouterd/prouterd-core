@@ -91,5 +91,39 @@ RSpec.describe Prouterd::Events do
     it "is the same instance returned by .default" do
       expect(described_class.default).to be(described_class::DEFAULT)
     end
+
+    it ".unsubscribe delegates to DEFAULT" do
+      seen = []
+      handle = described_class.subscribe(:t) { |_, p| seen << p }
+      described_class.publish(:t, 1)
+      described_class.unsubscribe(handle)
+      described_class.publish(:t, 2)
+      expect(seen).to eq([1])
+    end
+  end
+
+  describe "topics + clear" do
+    it "topics lists the currently-subscribed topic symbols" do
+      bus.subscribe(:a) { }
+      bus.subscribe(:b) { }
+      expect(bus.topics).to contain_exactly(:a, :b)
+    end
+
+    it "clear removes every subscription" do
+      bus.subscribe(:a) { }
+      bus.clear
+      expect(bus.topics).to eq([])
+    end
+
+    it "unsubscribing the last subscriber drops the topic key" do
+      handle = bus.subscribe(:vanishing) { }
+      expect(bus.topics).to include(:vanishing)
+      bus.unsubscribe(handle)
+      expect(bus.topics).not_to include(:vanishing)
+    end
+
+    it "unsubscribe with an unknown topic / handle is a no-op" do
+      expect { bus.unsubscribe([:nonexistent_topic, 12345]) }.not_to raise_error
+    end
   end
 end

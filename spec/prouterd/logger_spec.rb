@@ -63,4 +63,68 @@ RSpec.describe Prouterd::Logger do
   ensure
     ENV.delete("PROUTERD_LOG_LEVEL")
   end
+
+  it "falls back to info when level is unknown" do
+    log_x = described_class.build(io, level: "weird")
+    log_x.info("hi", facility: "T", mnemonic: "X")
+    expect(io.string).to include("hi")
+  end
+
+  it "format_line omits the k=v tail when context is empty" do
+    line = described_class.format_line(
+      severity: 6, facility: "T", mnemonic: "Y", message: "ok", context: {}
+    )
+    expect(line).to end_with("ok")
+  end
+
+  describe ".format_value" do
+    it "renders nil as '-'" do
+      expect(described_class.format_value(nil)).to eq("-")
+    end
+
+    it "passes numerics + booleans + symbols through verbatim" do
+      expect(described_class.format_value(42)).to eq("42")
+      expect(described_class.format_value(true)).to eq("true")
+      expect(described_class.format_value(false)).to eq("false")
+      expect(described_class.format_value(:sym)).to eq("sym")
+    end
+
+    it "JSON-dumps Hashes and Arrays" do
+      expect(described_class.format_value({ a: 1 })).to eq('{"a":1}')
+      expect(described_class.format_value([1, 2])).to eq("[1,2]")
+    end
+  end
+
+  describe Prouterd::Logger::Ring do
+    it "drops the oldest entry when over capacity" do
+      ring = described_class.new(2)
+      ring.push(id: 1, severity: 6, facility: "T")
+      ring.push(id: 2, severity: 6, facility: "T")
+      ring.push(id: 3, severity: 6, facility: "T")
+      expect(ring.tail.map { |e| e[:id] }).to eq([2, 3])
+    end
+
+    it "tail filters by severity <= n" do
+      ring = described_class.new
+      ring.push(id: 1, severity: 7, facility: "T")
+      ring.push(id: 2, severity: 4, facility: "T")
+      expect(ring.tail(severity: 5).map { |e| e[:id] }).to eq([2])
+    end
+  end
+
+  describe Prouterd::Logger::Tagged do
+    it "stacks additional baseline context via .with" do
+      base = Prouterd::Logger.build(StringIO.new)
+      tagged = base.with(facility: "RUN").with(run_uid: "run_42")
+      expect(base).to receive(:info).with("hi", facility: "RUN", mnemonic: "M", run_uid: "run_42")
+      tagged.info("hi", mnemonic: "M")
+    end
+  end
+
+  describe Prouterd::NullLogger do
+    it "with returns self" do
+      n = described_class.new
+      expect(n.with(facility: "X")).to be(n)
+    end
+  end
 end

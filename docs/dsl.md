@@ -187,6 +187,56 @@ exit
   Final aggregated `output_json` is unchanged for downstream
   blocks regardless of this setting.
 
+## Parallel: declare a fan-out group inline
+
+`parallel <name>` declares a group of member blocks inline plus a
+synthesized barrier that aggregates their outputs. Members run
+concurrently. Routing into the group name fans out to every member
+as a single edge — one external route triggers the whole group,
+one barrier output flows downstream.
+
+```prc
+process incident
+ block upstream
+  interface http monitor
+  method GET
+  path "/health/{{event.id}}"
+ exit
+
+ parallel after_health
+  join-strategy all-best-effort     ! all-required | all-best-effort | merge-children
+  block check_cpu
+   interface http monitor
+   method GET
+   path "/cpu/{{event.id}}"
+  exit
+  block check_disk
+   interface http monitor
+   method GET
+   path "/disk/{{event.id}}"
+  exit
+  block check_logs
+   interface shell host
+   exec "tail-recent-logs.sh {{event.id}}"
+  exit
+ exit
+
+ block summarize
+  interface llm claude
+  prompt "{{after_health.members.check_cpu}} {{after_health.members.check_disk}}"
+ exit
+
+ route upstream after_health     match upstream.ok eq true
+ route after_health summarize
+exit
+```
+
+A single `route upstream after_health` triggers every member of the
+group; the `match` condition applies once to the fan-out rather
+than being copy-pasted across N per-member routes. The barrier
+fires after the members finish per the chosen `join-strategy` and
+flows into `summarize` via the standard barrier→downstream route.
+
 ## Merge: barrier over existing sibling blocks
 
 `merge <name>` aggregates the outputs of existing sibling blocks

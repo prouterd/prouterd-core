@@ -2070,10 +2070,41 @@ Eight independent additions, one commit each.
 new feature specs and the test suite that grew between Phase 40
 and Phase 41 baseline).
 
+### Phase 42: `route X parallel_name` fans out to the group's members
+
+`parallel <name>` synthesizes a barrier block plus member blocks
+plus member→barrier routes. Before this phase, routing into the
+group name (`route upstream after_health`) only added an incoming
+edge to the barrier — the barrier sat waiting for member outputs
+that never produced, because the members had no incoming routes of
+their own. The verbose equivalent required one route per member
+(`route upstream a / route upstream b / route upstream c`),
+duplicating any `match` condition across them.
+
+Scheduler now fans out: when a route's `to_block` resolves to a
+parallel-kind barrier AND the incoming edge is not a synthesized
+member→barrier route, every member of the group is enqueued
+instead. Members are deduplicated across multiple external routes;
+the barrier itself enqueues normally once members finish. `match`
+conditions on the external route gate the fan-out — fail the
+match, no member runs, barrier never fires.
+
+`entry_blocks` learns to exclude members of parallel groups whose
+barrier has an external incoming route; without this, members
+would auto-fire at run start before the upstream had a chance to
+gate them.
+
+DSL unchanged — `parallel` already parses cleanly; only the runtime
+interpretation of a route targeting a parallel-barrier changes.
+`merge` barriers stay literal (their members are existing standalone
+blocks the operator wires up directly).
+
+1007 / 0 (was 1002 + 5).
+
 ## Status
 
-- 41 phases shipped, one git commit per fix or feature
-- 1002 RSpec specs, 0 failures
+- 42 phases shipped, one git commit per fix or feature
+- 1007 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

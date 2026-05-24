@@ -392,6 +392,21 @@ module Prouterd
                 next
               end
 
+              # Routing into a `parallel` barrier fans out to the
+              # group's members. The barrier itself enqueues normally
+              # once its members finish, via the synthesized member→
+              # barrier routes. Without this fan-out, members of a
+              # parallel group that's downstream of some upstream
+              # never get triggered (they have no incoming routes of
+              # their own) and the barrier sits waiting for outputs
+              # that never produce. `merge` barriers stay literal —
+              # their members are existing standalone blocks wired
+              # up by the operator.
+              if (members = parallel_members_to_fan_out(process, r.to_block, r.from_block, executed, next_ready))
+                next_ready.concat(members)
+                next
+              end
+
               next_ready << r.to_block
             end
           end
@@ -524,6 +539,22 @@ module Prouterd
         members.any? { |m| !executed.include?(m) }
       end
 
+      # When `to_block` resolves to a parallel-kind barrier AND the
+      # incoming edge is NOT one of the synthesized member→barrier
+      # routes, return the list of member names that should be enqueued
+      # (skipping any already executed or queued). That way a single
+      # external `route X parallel_name` triggers the whole group while
+      # the member→barrier synth routes still enqueue the barrier
+      # itself as before. Returns nil otherwise so the caller falls
+      # through to the default enqueue path.
+      def parallel_members_to_fan_out(process, to_block, from_block, executed, next_ready)
+        group = process.parallel_groups.find { |g| g.name == to_block }
+        return nil unless group
+        return nil if group.member_block_names.include?(from_block)
+
+        group.member_block_names.reject { |m| executed.include?(m) || next_ready.include?(m) }
+      end
+
       def route_passes?(route, context, ctx_mutex)
         ctx_mutex.synchronize { MatchEvaluator.passes?(route.matches, context) }
       end
@@ -562,7 +593,23 @@ module Prouterd
 
       def entry_blocks(process)
         with_incoming = process.routes.map(&:to_block).to_set
-        process.blocks.reject { |b| with_incoming.include?(b.name) }.map(&:name)
+
+        # Parallel members have no incoming routes of their own (they
+        # only appear as `from` on the synthesized member→barrier
+        # routes), so by the with_incoming rule they'd qualify as entry
+        # blocks. When the barrier has any external incoming route,
+        # though, the members are meant to be gated by that route via
+        # the parallel-fan-out path in the scheduler. Excluding them
+        # here keeps them from auto-firing at run start.
+        gated_members = process.parallel_groups.select do |g|
+          process.routes.any? do |r|
+            r.to_block == g.name && !g.member_block_names.include?(r.from_block)
+          end
+        end.flat_map(&:member_block_names).to_set
+
+        process.blocks.reject do |b|
+          with_incoming.include?(b.name) || gated_members.include?(b.name)
+        end.map(&:name)
       end
 
       def downstream_blocks(process, from_block)

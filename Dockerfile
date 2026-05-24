@@ -33,6 +33,10 @@ RUN bundle config set --local without 'development' \
 COPY lib lib
 COPY exe exe
 
+# Source files may be checked out with restrictive local modes. The runtime
+# image runs as the non-root `prouterd` user, so normalize read/execute bits.
+RUN chmod -R a+rX lib exe Gemfile Gemfile.lock prouterd.gemspec
+
 # ---- runtime stage ----
 FROM ruby:3.4-slim-bookworm
 
@@ -58,7 +62,18 @@ RUN mkdir -p /data && chown prouterd:prouterd /data
 ENV PROUTERD_DB=/data/prouterd.db
 ENV BUNDLE_PATH=/usr/local/bundle
 ENV BUNDLE_GEMFILE=/app/Gemfile
-ENV PATH="/app/exe:${PATH}"
+
+# Make `docker exec prouterd prouter ...` work without teaching operators
+# about Bundler internals.
+RUN printf '%s\n' \
+      '#!/bin/sh' \
+      'exec bundle exec ruby /app/exe/prouter "$@"' \
+      > /usr/local/bin/prouter \
+ && printf '%s\n' \
+      '#!/bin/sh' \
+      'exec bundle exec ruby /app/exe/prouterd "$@"' \
+      > /usr/local/bin/prouterd \
+ && chmod 0755 /usr/local/bin/prouter /usr/local/bin/prouterd
 
 USER prouterd
 

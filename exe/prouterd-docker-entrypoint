@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -eq 0 ]; then
+  set -- prouterd
+fi
+
+case "$1" in
+  prouterd)
+    shift
+    exec bundle exec ruby exe/prouterd "$@"
+    ;;
+  prouter)
+    shift
+    exec bundle exec ruby exe/prouter "$@"
+    ;;
+  check|render|shell|apply|validate|trigger|replay|resume|cancel|diff|version|help)
+    exec bundle exec ruby exe/prouter "$@"
+    ;;
+  --*)
+    exec bundle exec ruby exe/prouterd "$@"
+    ;;
+  *)
+    exec "$@"
+    ;;
+esac

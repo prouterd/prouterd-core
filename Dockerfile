@@ -1,9 +1,9 @@
-# prouterd daemon — single-process container
+# prouterd docker-first distribution image.
 # Two-stage build: builder installs gems with native extensions; runtime
-# image is slim and only carries the runtime libs needed.
+# image is slim and carries the daemon, CLI, and optional caller deps.
 #
-#   docker build -t prouterd:latest .
-#   docker run -p 8080:8080 -v prouterd-data:/data prouterd:latest
+#   docker run -p 127.0.0.1:8080:8080 -v prouterd-data:/data ghcr.io/prouterd/prouterd:latest
+#   docker run --rm -v "$PWD:/work" ghcr.io/prouterd/prouterd:latest check /work/router.prc
 #
 # To allow `interface docker` blocks (which spawn child containers on the host),
 # mount the host Docker socket:
@@ -63,11 +63,8 @@ USER prouterd
 EXPOSE 8080
 VOLUME ["/data"]
 
-# Default: long-running daemon (exe/prouterd). For one-shot operator
-# commands (check, render, apply, shell, trigger, replay, resume, cancel,
-# diff), override the entrypoint:
-#   printf "enable\nshow running-config\n" | docker run --rm -i \
-#     -v prouterd-data:/data --entrypoint=bundle prouterd:latest \
-#     exec ruby exe/prouter shell --db /data/prouterd.db
-ENTRYPOINT ["bundle", "exec", "ruby", "exe/prouterd"]
+# Default: long-running daemon. The entrypoint also understands the
+# operator CLI, so `docker run ... prouter check file.prc` and
+# `docker run ... check file.prc` work without overriding entrypoint.
+ENTRYPOINT ["exe/prouterd-docker-entrypoint"]
 CMD ["--bind", "0.0.0.0", "--port", "8080", "--db", "/data/prouterd.db"]

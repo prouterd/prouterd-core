@@ -1934,10 +1934,146 @@ editor that nobody used is gone.
 
 864 / 0 (was 900 — 36 specs deleted as part of the purge).
 
+### Phase 41: subprocess-LLM polish + merge construct + retry-sweep correctness
+
+Eight independent additions, one commit each.
+
+1. **Codex 0.129 final-message parsing.** Codex CLI ≥ 0.129 wraps
+   the assistant reply as `{type:"item.completed", item:{type:
+   "agent_message", text:"..."}}` and emits several intermediate
+   `agent_message` events per turn before the final structured
+   reply. The pre-existing parser matched only `item.type ==
+   "message"` (older shape) and concatenated text across events, so
+   0.129 streams extracted no text at all and downstream blocks
+   consuming `{{<block>.text}}` got `""`. Recognises both the
+   wrapped and the older flat `{type:"agent_message", text:"..."}`
+   shape; applies last-wins across agent_message events so the
+   final reply shadows the empty preamble. Mixed streams prefer the
+   new shape's terminal event.
+
+2. **Preserve output_json on block failure.** Failed steps used to
+   drop any structured output the failing block had already
+   produced — `output_json` was set to nil regardless of whether
+   the block wrote `/prouter/output.json` or streamed JSON to
+   stdout before bailing. Now ShellRunner / DockerRunner extract a
+   partial Hash/Array payload from output.json or stdout on
+   non-zero exit and surface it on the ExecutionResult;
+   LlmSubprocess preserves captured text + usage when the
+   subprocess dies mid-turn. Downstream context propagation stays
+   gated on success in BlockExecutor — failed blocks still do not
+   seed downstream templating; this only changes what lands in the
+   persisted step row.
+
+3. **`replay --use-current-config`.** `prouter replay run <uid>` /
+   `from <block>` re-execute against the *original* config commit
+   pinned to the source run, which is right for reproducibility
+   but blocks the natural iteration loop. Adds the flag to the CLI
+   (and `use_current_config: true` to the `POST /v1/runs/:uid/replay`
+   body) to re-bind the replay to whatever the running pointer
+   points at now. Combined with `from <block>`, the seeded
+   upstream context from the original run flows through unchanged
+   — only the document and routes change.
+
+4. **Block-level `cwd` + `reasoning-effort` for subprocess LLMs.**
+   Subprocess providers had no portable way to tell the agent
+   which repository to treat as its workspace, and no DSL knob for
+   codex's reasoning-effort default. Adds two block-level
+   call-fields on `interface llm`:
+
+   - `cwd <path>` — chdirs the subprocess via Open3's `:chdir`
+     option; symmetric across both providers; HTTP providers
+     silently ignore. Rejects up-front with `invalid_cwd` when
+     the directory does not exist.
+   - `reasoning-effort <low|medium|high|xhigh>` — codex-only,
+     appended as `-c model_reasoning_effort=<level>` (the stable
+     config-override form). Claude Code silently ignores.
+
+   Both fields template against the run context, so
+   `cwd "{{event.repo_path}}"` works. Threaded through both the
+   synchronous LlmCaller path and the agentic multi-turn loop.
+
+5. **`env` / `env-forward` / `secret` on `interface llm`, opt-in
+   sandbox.** Subprocess LLMs previously inherited the daemon's
+   full environment because Open3.popen3 merges the passed env
+   hash on top of the parent env — any var the daemon was started
+   with was visible to the agent and reachable through tool calls
+   or plain stdout. Adds three interface-level directives symmetric
+   with what `interface mcp` / `interface shell` already accept:
+
+       env KEY VALUE          # static (templates against context)
+       env-forward KEY        # pass through ENV[KEY] iff set
+       secret <NAME>          # resolved secret as env var
+
+   When ANY of the three is declared, the driver flips the spawn
+   to `unsetenv_others: true`. The subprocess then sees ONLY:
+   HOME (the iface's `home`, else the daemon's HOME), the `env`
+   pairs, the `env-forward` whitelisted vars, and the resolved
+   secrets. Declare nothing → back-compat behaviour. Generalises
+   `BlockExecutor.build_env` to resolve any `:secret_ref` field
+   on an outbound iface via the registered plugin so the
+   resolution stays plugin-driven. Validator rejects these
+   directives on non-subprocess providers and requires each
+   `secret <NAME>` to reference a declared secret.
+
+6. **Streaming subprocess LLMs — `stream on` tees JSONL to
+   run_logs.** Long agent runs were a black box: the daemon held
+   the subprocess open for the full duration and only persisted
+   stdout at the end. Adds the block-level call-field `stream on`.
+   When set on a subprocess provider, the driver invokes the CLI
+   in JSONL streaming mode (codex already JSONL under `--json`;
+   claude flips from `--output-format json` to
+   `--output-format stream-json --verbose`), tees each parsed
+   line into the per-step run_logs as it arrives via a new
+   `log_sink` proc threaded through RunRequest, and publishes
+   `:log_appended` on the events bus per line. Final aggregated
+   `output_json` (text / usage / stop_reason) is unchanged for
+   downstream consumers — blocks that don't opt in are
+   byte-for-byte identical to before.
+
+7. **`merge <name>` construct with any / all-required /
+   all-best-effort.** `parallel <name>` declares its own member
+   blocks inline; the new `merge <name>` references existing
+   sibling blocks via `from a, b, c` and synthesizes a barrier +
+   member→barrier routes. Three strategies:
+
+   - `any` — OR-join. Barrier fires on the first member's
+     passing route; output is `{winner:, output:, join_strategy:}`.
+   - `all-required` — AND-join, fail-fast. Wait for every member
+     terminal; any failure aborts the run.
+   - `all-best-effort` — AND-join, fault-tolerant. Survivors
+     under `succeeded`, failed members under `failed`.
+
+   The orchestrator's level-BFS scheduler defers AND-style merge
+   barriers until every member is in `executed` — without this, a
+   cross-level member set (members in different chains finishing
+   at different BFS levels) would fire the barrier on a partially-
+   populated context. `parallel` barriers and `any`-strategy
+   merge barriers keep the eager enqueue. New `barrier_kind` field
+   on the Block AST disambiguates :parallel vs :merge barriers.
+
+8. **Race-free barrier under cross-block retry.** When a `retry
+   policy` references a downstream block's output
+   (`retry when verify.status eq "fail"`) and the cross-block
+   sweep re-triggers an upstream generator, the sweep cleared
+   context for the upstream + downstream-reachable set but left
+   eager-enqueued barriers in `next_ready`. The barrier then
+   fired on a partially-cleared context on the next iteration,
+   recording an empty / stale `output_json` — every downstream
+   block reading `{{barrier.field}}` saw `{}` permanently. Sweep
+   now returns `{retriggered:, cleared:}` where `cleared` is the
+   full closure; orchestrator rejects cleared names from
+   `next_ready` before prepending the retriggered blocks. Verified
+   with a temporary one-line revert: the new regression spec fails
+   with `got nil` for the barrier's member, passes with the purge.
+
+1002 / 0 (was 864 + 138 over the eight commits — combination of
+new feature specs and the test suite that grew between Phase 40
+and Phase 41 baseline).
+
 ## Status
 
-- 40 phases shipped, one git commit per phase
-- 864 RSpec specs, 0 failures
+- 41 phases shipped, one git commit per fix or feature
+- 1002 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

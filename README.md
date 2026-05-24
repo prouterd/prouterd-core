@@ -179,7 +179,10 @@ class — no edits to parser/validator/renderer/CLI. See
   run.cost_usd gt N` breaks a runaway retry loop on cost regardless
   of attempts left.
 - **Replay.** Re-run a finished run with the same input + same config
-  commit, or start mid-pipeline from a chosen block.
+  commit, or start mid-pipeline from a chosen block. Add
+  `--use-current-config` to rebind the replay against the current
+  running config — iterate on a prompt or route, keep the seeded
+  upstream context from the original run.
 - **Pause + resume.** A `pause "<reason>"` block halts the run with
   `status="paused"`; `prouter resume <run> --value <json>` injects an
   output and continues. Foundation for human-in-the-loop.
@@ -187,6 +190,12 @@ class — no edits to parser/validator/renderer/CLI. See
   block fetch_slack ... exit` runs siblings concurrently with
   `all-required` or `all-best-effort` join semantics — routing flows
   in/out of the group as if it were one block.
+- **Merge barriers.** `merge evidence / from jira, slack, sentry /
+  strategy any|all-required|all-best-effort / exit` aggregates the
+  outputs of existing sibling blocks (members live elsewhere in the
+  process, possibly inside longer chains). AND-style strategies hold
+  the barrier in the scheduler until every member is terminal even
+  when members finish at different DAG depths.
 - **Fan-out with `map` / `dedupe` / `rate-limit`.** `fan-out from
   issues into analyze_ticket` opens a sub-section: project upstream
   fields onto child events, skip dupes inside a window keyed by
@@ -200,6 +209,14 @@ class — no edits to parser/validator/renderer/CLI. See
   Multi-turn tool use with `agentic on` + `allowed-tools` +
   `tool-call-limit`. Per-run token usage aggregated into
   `runs.tokens_in/out` and surfaced in `/v1`.
+- **Subprocess LLM controls.** Block-level `cwd <path>` and
+  `reasoning-effort <low|medium|high|xhigh>` on Codex / Claude Code
+  blocks; interface-level `env` / `env-forward` / `secret` opt the
+  spawn into `unsetenv_others: true` so the agent sees only the
+  declared env. `stream on` tees JSONL events into the per-step
+  `run_logs` as they arrive — `prouter logs <run_uid> --follow`
+  shows live agent progress instead of waiting until the subprocess
+  terminates.
 - **Prompts in their own files.** `system file "prompts/x.system.md"`
   + `prompt file "prompts/x.user.md.tmpl"` keeps prose out of the
   `.prc`; `vars { evidence "{{event.body.evidence}}" }` exposes local

@@ -84,6 +84,19 @@ interface llm claude                          ! default install
  auth bearer secret CLAUDE_KEY
 exit
 
+interface llm researcher                      ! subprocess provider
+ provider codex_cli                            ! or claude_cli
+ model gpt-5-codex
+ home /var/lib/prouterd/codex                  ! HOME for subscription state
+ sandbox read-only                             ! `-s <mode>`
+ env JIRA_URL "https://example.atlassian.net"  ! static var
+ env-forward GITLAB_TOKEN                      ! pass through if set
+ env-forward PATH                              ! whitelist daemon PATH
+ secret SENTRY_AUTH                            ! resolved → env SENTRY_AUTH
+exit                                           ! declaring any env/env-forward/
+                                                ! secret flips the spawn into
+                                                ! `unsetenv_others: true` mode
+
 interface docker scorer                       ! gem install docker-api
  image registry.local/blocks/score:v2
  memory 512m
@@ -142,6 +155,89 @@ route interface leads_in process lead_pipeline
  match event.type eq "lead.created"
 exit
 ```
+
+## Subprocess LLM blocks
+
+`interface llm` with `provider codex_cli` or `provider claude_cli`
+spawns the local CLI binary instead of speaking HTTP. The block can
+tune the spawn with these call-fields:
+
+```prc
+block investigate
+ interface llm researcher
+ prompt "Triage incident {{event.id}} in the repo at {{event.repo_path}}"
+ system "you are terse"
+ cwd "{{event.repo_path}}"      ! chdir for the agent's workspace view
+ reasoning-effort low           ! codex_cli only; -c model_reasoning_effort=low
+ stream on                      ! tee JSONL events into run_logs as they arrive
+exit
+```
+
+- `cwd <path>` — chdirs the spawn. Both subprocess providers
+  inherit it; HTTP providers ignore. `invalid_cwd` at runtime if
+  the directory does not exist.
+- `reasoning-effort <low|medium|high|xhigh>` — codex_cli only;
+  appended as `-c model_reasoning_effort=<level>`. Silently ignored
+  for `claude_cli`.
+- `stream on` — invokes the CLI in JSONL streaming mode
+  (codex_cli is already JSONL; claude_cli flips to
+  `--output-format stream-json --verbose`) and writes each line
+  into the per-step `run_logs` as it arrives. `prouter logs
+  <run_uid> --follow` then sees agent progress in real time.
+  Final aggregated `output_json` is unchanged for downstream
+  blocks regardless of this setting.
+
+## Merge: barrier over existing sibling blocks
+
+`merge <name>` aggregates the outputs of existing sibling blocks
+into a single barrier. Differs from `parallel <name>` in that the
+members are referenced (`from a, b, c`), not declared inline —
+useful when the members already participate in longer chains.
+
+```prc
+process triage
+ block fetch_jira
+  interface http jira
+  method GET
+  path "/issue/{{event.key}}"
+ exit
+ block fetch_sentry
+  interface http sentry
+  method GET
+  path "/issues/{{event.key}}/"
+ exit
+ block fetch_logs
+  interface shell host
+  exec "tail-logs.sh {{event.key}}"
+ exit
+
+ merge evidence
+  from fetch_jira, fetch_sentry, fetch_logs
+  strategy all-best-effort           ! any | all-required | all-best-effort
+ exit
+
+ block summarize
+  interface llm claude
+  prompt "{{evidence.members.fetch_jira.fields.summary}}"
+ exit
+
+ route evidence summarize
+exit
+```
+
+Strategies:
+
+| Strategy          | Readiness                                  | Failure handling                                   | Barrier output shape                                                  |
+| ----------------- | ------------------------------------------ | -------------------------------------------------- | --------------------------------------------------------------------- |
+| `any`             | first member's route fires                 | failure on one member doesn't block the survivors  | `{winner, output, join_strategy: "any"}`                              |
+| `all-required`    | every member is in a terminal state        | any member failure aborts the run (on_failure=stop)| `{members, succeeded, failed, join_strategy: "all-required"}`         |
+| `all-best-effort` | every member is in a terminal state        | never fails the run; failures listed under `failed`| `{members, succeeded, failed, join_strategy: "all-best-effort"}`      |
+
+AND-style strategies (`all-required` / `all-best-effort`) hold
+the barrier in the scheduler until every named member has finished,
+even if members finish at different BFS levels. `parallel` keeps
+its eager-enqueue semantics because its members are guaranteed
+same-level siblings.
 
 ## Templating
 

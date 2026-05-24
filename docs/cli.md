@@ -19,7 +19,7 @@ prouter shell    [--db PATH] [--config FILE]  read-only operator shell
 
 prouter trigger  process <name> input <file>  enqueue a run
 
-prouter replay   run <uid> [from <block>]
+prouter replay   run <uid> [from <block>] [--use-current-config]
 prouter resume   run <uid>          [--value <json>]
 prouter resume   run-by-thread <id> [--value <json>]
 prouter cancel   run <uid>                    soft cancel (between-level)
@@ -40,6 +40,20 @@ the recipe.
 | `--db PATH`      | SQLite path (default `var/prouterd.db`, env `PROUTERD_DB`)    |
 | `--config FILE`  | load this `.prc` file as the running config (in-memory)       |
 | `--no-db`        | in-memory mode for read-only commands; mutating commands need `--db` |
+
+### Replay flags
+
+`prouter replay run <uid>` re-binds the new run to the config commit
+the original was pinned to (reproducible). Add `--use-current-config`
+to re-bind to whatever the running pointer points at now —
+combined with `from <block>`, the seeded upstream context from the
+original step flows through, only the routes and prompts change.
+Errors if no running config is set.
+
+`POST /v1/runs/:uid/replay` mirrors this: body `{from_block?,
+use_current_config?}`; the response carries `config_commit_id` and
+`use_current_config` so the caller can confirm which document was
+used.
 
 ## prouterd (daemon)
 

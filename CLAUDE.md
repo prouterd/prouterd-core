@@ -69,6 +69,35 @@ no `block.execution_type` / `block.image` / `block.command` accessor
 either — the block carries an `interface_ref` plus a `type_fields`
 hash whose schema is owned by the referenced iface plugin.
 
+## Barriers and grouping constructs (parallel / merge)
+
+Two in-process containers synthesize a barrier block + member→barrier
+routes. Both produce a `Block` with `barrier_for` (member names) and
+`barrier_join_strategy`; they're distinguished by `barrier_kind`:
+
+- `:parallel` — `parallel <name> ... block X ... block Y ... exit`
+  declares member blocks inline. The parser guarantees members are
+  same-level siblings; the scheduler eager-enqueues the barrier as
+  soon as one member's route passes (correct because all members
+  finish in the same BFS level).
+- `:merge` — `merge <name> / from a, b, c / strategy <s> / exit`
+  references existing sibling blocks. Members may live at different
+  BFS depths. `Orchestrator#and_style_merge_barrier?` defers
+  enqueuing AND-style barriers (`all-required` / `all-best-effort`)
+  until every member is in `executed`; `any` strategy keeps the
+  eager enqueue.
+
+`BlockExecutor#execute_barrier_block` reads `barrier_join_strategy`
+and produces the strategy-specific output shape (members/succeeded/
+failed for AND, winner/output for `any`, merged for `merge-children`).
+
+If you ever add a third grouping construct, mirror this split:
+  - source-form record on `Process` (`@<kind>_groups`)
+  - synthesized barrier with a new `barrier_kind` value
+  - renderer skips the synth barrier + member→barrier routes by
+    consuming the group records
+  - if members can span BFS levels, gate readiness in the scheduler
+
 ## Adding a new shell command
 
 1. Add the dispatch entry in the relevant mode's `commands` hash
@@ -217,6 +246,12 @@ Field kinds:
 - `:enum` — must match `enum:` list
 - `:command` — joins all remaining tokens, always quoted in canonical render
 - `:env_pair` — `KEY value` accumulating into a Hash<String,String>
+- `:env_forward` — single `KEY`, accumulating into an Array<String>
+  (whitelist of env var names to pass through from the daemon env)
+- `:secret_ref` — single `<NAME>`, accumulating into an Array<String>;
+  `BlockExecutor#build_env` resolves each name through `secret <NAME>`
+  declarations and exposes the value under env key `<NAME>` (no
+  hardcoded type-name dispatch — plugin-driven via `Iface::Registry`)
 - `:path`, `:http_method`, `:auth_bearer` — used by webhook/http plugins
 
 Pass `caller` as a class OR a String class name. Strings are resolved
@@ -302,6 +337,45 @@ be removed without breaking POSIX shell quoting rules.
 not supported there). All file-backed DBs use WAL so concurrent reads
 don't block writes. The condition lives in `lib/prouterd/storage/db.rb`.
 
+### Subprocess LLM env: strict mode is opt-in
+
+`Open3.popen3(env_hash, *argv)` merges `env_hash` on top of the
+parent process's full env. So `LlmSubprocess` with a plain
+`env = {"HOME" => "/x"}` still leaks every var the daemon was
+started with into the subprocess. To get a tight env, pass
+`unsetenv_others: true` in the spawn options hash; only the keys
+in `env_hash` are then visible to the child.
+
+The strict path is gated on the operator declaring at least one
+of `env` / `env-forward` / `secret` on `interface llm`. Absent any
+of these, the spawn keeps the inherit-all behaviour for
+back-compat. If you add a new env-related directive to a
+subprocess iface plugin, add it to the strict-mode trigger in
+`LlmCaller#build_subprocess_env` (and the agentic-path mirror in
+`AgenticRunner#build_subprocess_env`) — otherwise the operator
+gets a half-sandboxed spawn.
+
+Also: `unsetenv_others: true` drops `PATH`. If the agent shells
+out (codex frequently does), the operator needs to
+`env-forward PATH` explicitly. Document this on any new sandbox
+opt-in field too.
+
+### Streaming subprocess LLM: log_sink on RunRequest
+
+`RunRequest#log_sink` is an optional `Proc<(content, stream)>` that
+`BlockExecutor` builds per step (captures step.id, run.id,
+db_mutex, redactor). Runners that want to emit log lines as they
+arrive — currently only `LlmSubprocess` with `stream on` — invoke
+the sink per JSONL line. The sink wraps `@runs.append_log` in
+db_mutex AND publishes `:log_appended` on the events bus, so a
+single call gives both persistence and live-tail via `/v1/events`.
+
+The runner is responsible for not double-writing: when the sink is
+used, set `result.stdout = ""` so `BlockExecutor#persist_logs`
+doesn't bulk-write the same content again at end-of-step.
+LlmSubprocess already returns `stdout: ""` for all paths, so this
+is automatic; if you add another streaming runner, mirror that.
+
 ### Cron schedules: timezone in expression
 
 Fugit doesn't take a separate timezone parameter. We append the
@@ -317,7 +391,7 @@ If you change how timezones are stored, update
 ## Testing
 
 ```bash
-bundle exec rspec                  # full suite (~865 specs)
+bundle exec rspec                  # full suite (~1000 specs)
 bundle exec rspec spec/prouterd/runtime/   # one subsystem
 bundle exec rspec spec/prouterd/runtime/orchestrator_spec.rb:42  # one example
 ```

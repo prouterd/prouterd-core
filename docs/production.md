@@ -61,6 +61,38 @@ as the auth header value (for http / llm). Rendered config never
 contains the secret value — only the source pointer. All log streams
 go through `Redactor`, which scrubs every declared secret value.
 
+## Subprocess LLM spawn isolation
+
+`interface llm` with `provider codex_cli` / `provider claude_cli`
+spawns a local CLI binary. By default the spawn inherits the daemon's
+full environment (Open3.popen3 merges the env hash on top of the
+parent process env). Declare any of `env` / `env-forward` / `secret`
+on the interface to flip the spawn into strict mode
+(`unsetenv_others: true`); the subprocess then sees only:
+
+  1. HOME (the iface's `home`, else the daemon's HOME)
+  2. each `env KEY VALUE` (templated against the run context)
+  3. each `env-forward KEY` (passed through only if set on the daemon)
+  4. each `secret <NAME>` (resolved at spawn time)
+
+Strict mode is the recommended posture whenever the prompt or any
+templated call-field could contain attacker-controlled text — without
+it, a prompt-injection in the input event can ask the agent to read
+arbitrary daemon env vars and exfiltrate them via tool calls or
+plain stdout. Note that strict mode also drops `PATH`; if the agent
+needs to fork sub-commands, add `env-forward PATH` explicitly.
+
+```prc
+interface llm researcher
+ provider codex_cli
+ model gpt-5-codex
+ home /var/lib/prouterd/codex
+ env-forward PATH                ! the agent shells out to git
+ env-forward HTTPS_PROXY         ! corp egress
+ secret SENTRY_AUTH              ! resolved → env SENTRY_AUTH=<value>
+exit
+```
+
 ## Retention
 
 Run retention is driven externally — host cron + a small Ruby script

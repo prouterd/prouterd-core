@@ -250,8 +250,27 @@ module Prouterd
       end
 
       # Codex emits JSONL: one event per line, multiple events per run.
+      #
+      # Two text shapes coexist here:
+      #
+      #   * `agent_message` events — codex 0.129+ wraps the assistant's
+      #     reply as `{type:"item.completed", item:{type:"agent_message",
+      #     text:"..."}}`. Older codex used the flat `{type:"agent_message",
+      #     text:"..."}` (no item wrapper). Codex emits several of these
+      #     during a turn — intermediate progress messages followed by the
+      #     final structured reply. Only the LAST one carries the full
+      #     assistant text; earlier ones are partials or empty preambles.
+      #   * `message`-with-content events — older codex shape
+      #     `{item:{type:"message", content:[{text:"..."}]}}` builds the
+      #     reply from concatenated content blocks across events. Kept as
+      #     accumulation semantics for back-compat.
+      #
+      # When any `agent_message` event is seen, its last-wins text takes
+      # precedence over any `message`-content accumulation. Mixed streams
+      # therefore prefer the new shape's terminal event.
       def parse_output_codex(stdout_lines)
-        text = String.new(encoding: Encoding::UTF_8)
+        legacy_text = String.new(encoding: Encoding::UTF_8)
+        last_agent_message_text = nil
         in_tokens = 0
         out_tokens = 0
         stop_reason = nil
@@ -266,8 +285,12 @@ module Prouterd
             next
           end
 
-          collected = extract_text(parsed)
-          text << collected if collected
+          if (agent_text = extract_codex_agent_message_text(parsed))
+            last_agent_message_text = agent_text
+          else
+            collected = extract_text(parsed)
+            legacy_text << collected if collected
+          end
 
           if (u = parsed["usage"]).is_a?(Hash)
             in_tokens  += (u["input_tokens"]  || u["prompt_tokens"]    || 0).to_i
@@ -277,7 +300,23 @@ module Prouterd
           stop_reason = parsed["stop_reason"] || parsed["finish_reason"] || stop_reason
         end
 
+        text = last_agent_message_text || legacy_text
         [text, { "input_tokens" => in_tokens, "output_tokens" => out_tokens }, stop_reason, unparsed]
+      end
+
+      # Codex agent_message text, in either the 0.129+ wrapped shape
+      # (`{item:{type:"agent_message", text:"..."}}`) or the older flat
+      # shape (`{type:"agent_message", text:"..."}`). Returns nil for any
+      # other event so the legacy accumulator path can handle it.
+      def extract_codex_agent_message_text(event)
+        item = event["item"]
+        if item.is_a?(Hash) && item["type"] == "agent_message" && item["text"].is_a?(String)
+          return item["text"]
+        end
+        if event["type"] == "agent_message" && event["text"].is_a?(String)
+          return event["text"]
+        end
+        nil
       end
 
       # Recognise text in the few JSONL event shapes both Codex and Claude

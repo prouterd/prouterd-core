@@ -126,6 +126,73 @@ RSpec.describe Prouterd::Iface::LlmSubprocess do
     expect(result[:error_message]).to include("not found")
   end
 
+  # Codex 0.129+ wraps the assistant's final message as
+  #   {type:"item.completed", item:{type:"agent_message", text:"..."}}
+  # and emits several such events during a turn — intermediate progress
+  # before the final structured reply. Driver picks the LAST one.
+  it "picks the last codex agent_message text when several arrive" do
+    bin = fake_binary([
+      '{"type":"thread.started","thread_id":"t1"}',
+      '{"type":"item.completed","item":{"type":"agent_message","text":""}}',
+      '{"type":"item.completed","item":{"type":"agent_message","text":"thinking..."}}',
+      '{"type":"item.completed","item":{"type":"agent_message","text":"final answer"}}',
+      '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}'
+    ])
+
+    result = described_class.call(
+      provider: "codex_cli", model: "gpt-5-codex",
+      binary: bin, home: nil, sandbox: nil,
+      prompt: "go", system_msg: "",
+      timeout_ms: 5_000
+    )
+
+    expect(result[:exit_code]).to eq(0)
+    expect(result[:output_json]["text"]).to eq("final answer")
+    expect(result[:output_json]["usage"]).to eq("input_tokens" => 10, "output_tokens" => 5)
+
+    File.unlink(bin)
+  end
+
+  # Older codex shape — flat `{type:"agent_message", text:"..."}` with no
+  # `item` wrapper — still triggers last-wins, so a mid-turn empty preamble
+  # doesn't shadow the final reply.
+  it "applies last-wins to the flat agent_message shape too" do
+    bin = fake_binary([
+      '{"type":"agent_message","text":""}',
+      '{"type":"agent_message","text":"final"}'
+    ])
+
+    result = described_class.call(
+      provider: "codex_cli", model: "x",
+      binary: bin, home: nil, sandbox: nil,
+      prompt: "go", system_msg: "",
+      timeout_ms: 5_000
+    )
+
+    expect(result[:output_json]["text"]).to eq("final")
+    File.unlink(bin)
+  end
+
+  # When a stream mixes old `message`-with-content events and new
+  # `agent_message` events, the agent_message last-wins text takes
+  # precedence — the new shape is canonical when present.
+  it "prefers agent_message text over legacy message-content accumulation" do
+    bin = fake_binary([
+      '{"type":"item.completed","item":{"type":"message","content":[{"type":"text","text":"old "}]}}',
+      '{"type":"item.completed","item":{"type":"agent_message","text":"new answer"}}'
+    ])
+
+    result = described_class.call(
+      provider: "codex_cli", model: "x",
+      binary: bin, home: nil, sandbox: nil,
+      prompt: "go", system_msg: "",
+      timeout_ms: 5_000
+    )
+
+    expect(result[:output_json]["text"]).to eq("new answer")
+    File.unlink(bin)
+  end
+
   it "surfaces a non-zero exit as llm_error" do
     bin = fake_binary(['{"type":"error","message":"oops"}'], exit_code: 7)
 

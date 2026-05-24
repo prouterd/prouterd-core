@@ -291,6 +291,28 @@ RSpec.describe Prouterd::Shell::Shell do
     end
   end
 
+  describe "@output without #flush" do
+    it "skips the flush call when output doesn't respond to it" do
+      out_no_flush = Class.new do
+        attr_reader :string
+        def initialize; @string = ""; end
+        def puts(s); @string << s.to_s << "\n"; end
+        def print(s); @string << s.to_s; end
+        # intentionally no :flush
+      end.new
+      session = Prouterd::Shell::Session.new
+      shell = described_class.new(
+        session: session,
+        input: StringIO.new("exit\n"),
+        output: out_no_flush,
+        error: StringIO.new,
+        interactive: false,
+        banner: false
+      )
+      expect { shell.run }.not_to raise_error
+    end
+  end
+
   describe "run loop swallows Config::ConfigError" do
     it "writes the error to @error and continues" do
       bad_mode = Class.new(Prouterd::Shell::Modes::User) {

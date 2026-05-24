@@ -126,6 +126,76 @@ RSpec.describe Prouterd::Daemon::Main do
     end
   end
 
+  describe "build_runner failure" do
+    it "exits 1 when build_runner returns :error" do
+      Tempfile.create(["prouterd", ".sqlite3"]) do |db|
+        db.close
+        instance = described_class.new(
+          ["--db", db.path, "--runner", "totally-bogus-kind"],
+          StringIO.new, StringIO.new, (err = StringIO.new)
+        )
+        allow(Prouterd::Daemon::Lock).to receive(:acquire).and_return(IO.sysopen("/dev/null"))
+        expect(instance.run).to eq(1)
+        expect(err.string).to include("unknown runner") .or include("runner")
+      end
+    end
+  end
+
+  describe "PROUTERD_ADMIN_TOKEN env handling" do
+    it "doesn't log the open-auth warning when admin_token is set" do
+      Tempfile.create(["prouterd-tok-", ".sqlite3"]) do |db|
+        db.close
+        ENV["PROUTERD_ADMIN_TOKEN"] = "set-token"
+        allow(Prouterd::Daemon::Lock).to receive(:acquire).and_return(IO.sysopen("/dev/null"))
+        allow_any_instance_of(Prouterd::Runtime::WorkerPool).to receive(:run)
+        allow_any_instance_of(Prouterd::Runtime::WorkerPool).to receive(:stop)
+        allow_any_instance_of(Prouterd::Runtime::Scheduler).to receive(:run)
+        allow_any_instance_of(Prouterd::Runtime::Scheduler).to receive(:stop)
+        allow_any_instance_of(Prouterd::Iface::Mcp::Pool).to receive(:start_or_reconcile)
+        allow_any_instance_of(Prouterd::Iface::Mcp::Pool).to receive(:stop)
+        allow_any_instance_of(Prouterd::API::App).to receive(:start_storage_probe)
+        allow_any_instance_of(Prouterd::API::App).to receive(:stop_storage_probe)
+        allow(Prouterd::API::Server).to receive(:run)
+        out = StringIO.new
+        code = described_class.run(["--db", db.path],
+                                    stdin: StringIO.new, stdout: out, stderr: StringIO.new)
+        expect(code).to eq(0)
+        expect(out.string).not_to include("OPEN_AUTH")
+      ensure
+        ENV.delete("PROUTERD_ADMIN_TOKEN")
+      end
+    end
+  end
+
+  describe "system_url scheme: https when PROUTERD_SSL_CERT set" do
+    it "passes https://... as system_url to App.new" do
+      Tempfile.create(["prouterd-ssl-", ".sqlite3"]) do |db|
+        db.close
+        ENV["PROUTERD_SSL_CERT"] = "/tmp/fake.crt"
+        allow(Prouterd::Daemon::Lock).to receive(:acquire).and_return(IO.sysopen("/dev/null"))
+        allow_any_instance_of(Prouterd::Runtime::WorkerPool).to receive(:run)
+        allow_any_instance_of(Prouterd::Runtime::WorkerPool).to receive(:stop)
+        allow_any_instance_of(Prouterd::Runtime::Scheduler).to receive(:run)
+        allow_any_instance_of(Prouterd::Runtime::Scheduler).to receive(:stop)
+        allow_any_instance_of(Prouterd::Iface::Mcp::Pool).to receive(:start_or_reconcile)
+        allow_any_instance_of(Prouterd::Iface::Mcp::Pool).to receive(:stop)
+        allow_any_instance_of(Prouterd::API::App).to receive(:start_storage_probe)
+        allow_any_instance_of(Prouterd::API::App).to receive(:stop_storage_probe)
+        allow(Prouterd::API::Server).to receive(:run)
+        captured = nil
+        allow(Prouterd::API::App).to receive(:new).and_wrap_original do |orig, **kwargs|
+          captured = kwargs[:system_url]
+          orig.call(**kwargs)
+        end
+        described_class.run(["--db", db.path, "--bind", "127.0.0.1", "--port", "443"],
+                            stdin: StringIO.new, stdout: StringIO.new, stderr: StringIO.new)
+        expect(captured).to start_with("https://")
+      ensure
+        ENV.delete("PROUTERD_SSL_CERT")
+      end
+    end
+  end
+
   # Drives `run` end-to-end with the heavy components (Puma, worker
   # threads, MCP subprocesses) injected as no-ops so the daemon's
   # boot-and-shutdown sequence executes inline. Hits the

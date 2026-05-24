@@ -237,6 +237,48 @@ RSpec.describe Prouterd::Runtime::AgenticRunner do
       expect(captured_tools.map(&:full_name)).to contain_exactly("mid.search", "mid.fetch")
     end
 
+    it "passes non-String call_field values through untemplated and clears empty base-url" do
+      doc = make_doc(<<~PRC)
+        router demo
+        exit
+        interface llm m
+         provider anthropic
+         base-url ""
+        exit
+        process p
+         block b
+          interface llm m
+          prompt "hi"
+          agentic on
+         exit
+        exit
+      PRC
+      # set a non-String value on the templated_call key so the
+      # `raw.is_a?(String) ? render : raw` else branch fires
+      doc.processes.first.blocks.first.type_fields["cwd"] = 42
+
+      block_executor = Prouterd::Runtime::BlockExecutor.new(
+        db: db, runs: runs, runner: runner_stub,
+        artifact_store: Prouterd::Runtime::ArtifactStore.new,
+        secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+        events: Prouterd::Events.default,
+        logger: Prouterd::NullLogger.new, mcp_pool: nil,
+        retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+      )
+      ar = described_class.new(runs: runs, runner: runner_stub, mcp_pool: nil, host: block_executor)
+      captured = nil
+      allow(Prouterd::Iface::LlmAgentic).to receive(:run) do |**kwargs|
+        captured = kwargs
+        { ok: true, output_json: { "text" => "ok" }, exit_code: 0,
+          stdout: "", stderr: "", error_type: nil, error_message: nil }
+      end
+      process = doc.processes.first
+      block = process.blocks.first
+      ar.execute(run, process, block, context, doc, db_mutex, ctx_mutex, redactor, 1)
+      expect(captured[:base_url]).to eq("https://api.anthropic.com")
+      expect(captured[:cwd]).to eq(42)
+    end
+
     it "clamps max-tokens < 1 to the default 1024 and forwards failure outcomes" do
       doc = make_doc(<<~PRC)
         router demo

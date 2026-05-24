@@ -97,32 +97,50 @@ module Prouterd
       def drain_in_flight
         deadline = Time.now + @drain_timeout
         loop do
-          remaining = @in_flight.in_flight_count
-          break if remaining.zero?
+          status = drain_tick(now: Time.now, deadline: deadline)
+          break if status != :continue
 
-          if Time.now >= deadline
-            uids = @in_flight.in_flight_uids
-            @logger.warn("drain timed out",
-                         facility: "DAEMON", mnemonic: "DRAIN_TIMEOUT",
-                         remaining: remaining, run_uids: uids.join(","))
-            break
-          end
-
-          if (Time.now.to_i % 5).zero?
-            @logger.info("draining in-flight runs",
-                         facility: "DAEMON", mnemonic: "DRAINING",
-                         remaining: remaining)
-          end
           sleep 0.2
         end
       end
 
+      # One step of the drain loop. Returns:
+      #   :done      — no in-flight runs left
+      #   :timed_out — deadline passed; remaining run uids logged
+      #   :continue  — work still in flight; caller should sleep + retry
+      def drain_tick(now:, deadline:)
+        remaining = @in_flight.in_flight_count
+        return :done if remaining.zero?
+
+        if now >= deadline
+          uids = @in_flight.in_flight_uids
+          @logger.warn("drain timed out",
+                       facility: "DAEMON", mnemonic: "DRAIN_TIMEOUT",
+                       remaining: remaining, run_uids: uids.join(","))
+          return :timed_out
+        end
+
+        if (now.to_i % 5).zero?
+          @logger.info("draining in-flight runs",
+                       facility: "DAEMON", mnemonic: "DRAINING",
+                       remaining: remaining)
+        end
+        :continue
+      end
+
       def install_signal_handlers(_server)
         %w[INT TERM].each do |sig|
-          Signal.trap(sig) { stop }
-        rescue ArgumentError
-          # Some signals can't be trapped on Windows / some environments.
+          trap_signal(sig)
         end
+      end
+
+      # `Signal.trap` can ArgumentError on platforms where the signal
+      # isn't trappable (Windows / some embedded). Treat as a no-op so
+      # daemon boot doesn't abort there.
+      def trap_signal(sig)
+        Signal.trap(sig) { stop }
+      rescue ArgumentError
+        nil
       end
     end
   end

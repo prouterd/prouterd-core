@@ -66,17 +66,30 @@ module Prouterd
       def run
         Thread.new do
           warmup
-          loop do
-            break if @stopping
-
-            tick
-            sleep(@tick_seconds)
-          rescue StandardError => e
-            @logger.error("tick error",
-                          facility: "SCHED", mnemonic: "TICK_ERR",
-                          error: e.class.name, message: e.message)
-          end
+          tick_loop
         end
+      end
+
+      # Bounded body of the background tick thread, hoisted out so
+      # specs can invoke it without spawning a real thread (stub
+      # `loop` to yield once with @stopping=true at the end).
+      # Per-iteration rescue keeps the loop alive across transient
+      # errors; each error surfaces as %SCHED-TICK_ERR.
+      def tick_loop
+        loop do
+          break if @stopping
+
+          tick_with_rescue
+          sleep(@tick_seconds)
+        end
+      end
+
+      def tick_with_rescue
+        tick
+      rescue StandardError => e
+        @logger.error("tick error",
+                      facility: "SCHED", mnemonic: "TICK_ERR",
+                      error: e.class.name, message: e.message)
       end
 
       # Single-tick scan, exposed as public for testability.

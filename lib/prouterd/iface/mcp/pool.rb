@@ -148,12 +148,10 @@ module Prouterd
 
         def spawn_or_keep(name, iface, document)
           existing = @entries_lock.synchronize { @entries[name] }
-          if existing && existing.state == :ready &&
-             existing.session.alive? && config_unchanged?(existing, iface, document)
-            return
-          end
-
-          # Stop stale before respawn.
+          # v0 reconciliation policy: always stop + respawn the existing
+          # session when start_or_reconcile is invoked. A future phase
+          # can compare the spec (argv + cwd + env + secret set) and
+          # keep matching sessions hot.
           if existing
             @entries_lock.synchronize { stop_entry(existing) }
           end
@@ -253,18 +251,25 @@ module Prouterd
         def ensure_retry_thread
           return if @retry_thread&.alive?
 
-          @retry_thread = Thread.new do
-            loop do
-              break if @stopping
+          @retry_thread = Thread.new { retry_loop }
+        end
 
-              tick
-              sleep RETRY_TICK_SECONDS
-            end
-          rescue StandardError => e
-            @logger.error("mcp retry thread crashed",
-                          facility: "MCP", mnemonic: "RETRY_CRASH",
-                          error: e.class.name, message: e.message)
+        # Bounded loop body of the background retry thread, hoisted out
+        # so it can be invoked by specs without spawning a thread.
+        # Stops when `@stopping` flips true (set by Pool#stop) or when
+        # an unexpected error escapes — logged and surfaced as
+        # %MCP-RETRY_CRASH for the operator.
+        def retry_loop
+          loop do
+            break if @stopping
+
+            tick
+            sleep RETRY_TICK_SECONDS
           end
+        rescue StandardError => e
+          @logger.error("mcp retry thread crashed",
+                        facility: "MCP", mnemonic: "RETRY_CRASH",
+                        error: e.class.name, message: e.message)
         end
 
         def tick
@@ -289,16 +294,6 @@ module Prouterd
                          iface: name)
             spawn_session(name, iface, document)
           end
-        end
-
-        # Pool keeps the original iface struct on the entry so we can
-        # short-circuit reconciliation if the spec didn't change.
-        # Kept simple: signature is server-spec + cwd + env + secret list.
-        def config_unchanged?(_existing, _iface, _document)
-          # v0: always reconcile by stopping + respawning if reconcile is
-          # called. (Fast enough; agentic blocks aren't constant.)
-          # A future Phase can compare the signature and keep hot.
-          false
         end
 
         def resolve_secrets(names, document)

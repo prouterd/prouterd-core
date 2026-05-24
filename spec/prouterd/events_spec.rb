@@ -65,6 +65,14 @@ RSpec.describe Prouterd::Events do
     it "is a no-op for nil handles" do
       expect { bus.unsubscribe(nil) }.not_to raise_error
     end
+
+    it "keeps the topic bucket when other subscribers remain" do
+      h1 = bus.subscribe(:t) { }
+      _h2 = bus.subscribe(:t) { }
+      bus.unsubscribe(h1)
+      expect(bus.has_subscribers?(:t)).to be(true)
+      expect(bus.subscribers_count(:t)).to eq(1)
+    end
   end
 
   describe "#has_subscribers? / #subscribers_count" do

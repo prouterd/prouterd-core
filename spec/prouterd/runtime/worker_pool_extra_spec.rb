@@ -126,6 +126,30 @@ RSpec.describe Prouterd::Runtime::WorkerPool do
     pool.stop
   end
 
+  it "rescues a Runs repo construction failure so jobs.fail still runs" do
+    pool = described_class.new(store: store, runner: runner, workers: 1, logger: Prouterd::NullLogger.new)
+    run = runs_repo.create_run(process_name: "p", input_event: {})
+    job = jobs_repo.enqueue(run_id: run.id)
+
+    # Make line 79's `Storage::Repositories::Runs.new(@store.db)` raise
+    # so runs_repo stays nil; the rescue block's `runs_repo&.update_run`
+    # then takes the `nil` branch (else: 0) instead of the happy path.
+    call_count = 0
+    original = Prouterd::Storage::Repositories::Runs.method(:new)
+    allow(Prouterd::Storage::Repositories::Runs).to receive(:new) do |arg|
+      call_count += 1
+      raise "ctor blew up" if call_count == 1
+
+      original.call(arg)
+    end
+
+    pool.run
+    expect(wait_for { jobs_repo.get(job.id).status == "failed" }).to be(true)
+    pool.stop
+
+    expect(jobs_repo.get(job.id).error_message).to include("ctor blew up")
+  end
+
   it "returns empty kwargs for an unrecognized job kind" do
     pool = described_class.new(store: store, runner: runner, workers: 1, logger: Prouterd::NullLogger.new)
     runner.default(&Prouterd::Runner::StubRunner.success)

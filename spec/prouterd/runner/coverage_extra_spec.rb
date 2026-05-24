@@ -153,6 +153,22 @@ RSpec.describe Prouterd::Runner::IOLimits do
       expect(err).to be_nil
     end
   end
+
+  describe "append_capped at-the-cap boundary" do
+    it "drops the entire chunk when buffer already equals cap (remaining=0)" do
+      buf = String.new("xxxxx", encoding: Encoding::BINARY)
+      ok = described_class.append_capped(buf, "yyy", 5)
+      expect(ok).to be(false)
+      expect(buf).to eq("xxxxx")
+    end
+
+    it "partially appends when only some remaining bytes fit" do
+      buf = String.new("xx", encoding: Encoding::BINARY)
+      ok = described_class.append_capped(buf, "abcdef", 5)
+      expect(ok).to be(false)
+      expect(buf).to eq("xxabc")
+    end
+  end
 end
 
 RSpec.describe Prouterd::Runner::DockerStop do

@@ -1,3 +1,27 @@
+# Opt-in coverage. `COVERAGE=1 bundle exec rspec` produces a report at
+# coverage/index.html; plain `bundle exec rspec` skips the overhead.
+# SimpleCov must boot BEFORE prouterd is required so it can hook every
+# line load.
+if ENV["COVERAGE"]
+  require "simplecov"
+  SimpleCov.start do
+    add_filter "/spec/"
+    add_filter "/vendor/"
+    add_filter "/examples/"
+    enable_coverage :branch
+
+    add_group "Config",   "lib/prouterd/config"
+    add_group "Runtime",  "lib/prouterd/runtime"
+    add_group "Runner",   "lib/prouterd/runner"
+    add_group "Iface",    "lib/prouterd/iface"
+    add_group "API",      "lib/prouterd/api"
+    add_group "Shell",    "lib/prouterd/shell"
+    add_group "Storage",  "lib/prouterd/storage"
+    add_group "CLI",      "lib/prouterd/cli"
+    add_group "Util",     "lib/prouterd/util"
+  end
+end
+
 $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 
 require "prouterd"

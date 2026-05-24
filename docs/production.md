@@ -1,5 +1,44 @@
 # Production deployment
 
+prouterd is distributed Docker-first. The published image contains the
+daemon, the operator CLI, SQLite support, and the optional docker /
+postgres / cron callers. Bare `gem install prouterd` remains useful for
+plugin development, but production deployments should start from the
+container image.
+
+## Docker quickstart
+
+```bash
+docker pull ghcr.io/prouterd/prouterd:latest
+
+docker run --name prouterd -d \
+  -p 127.0.0.1:8080:8080 \
+  -v prouterd-data:/data \
+  -e PROUTERD_ADMIN_TOKEN=change-me \
+  ghcr.io/prouterd/prouterd:latest
+```
+
+For `interface docker` blocks, also mount the host socket:
+`-v /var/run/docker.sock:/var/run/docker.sock`. On Linux, add
+`--group-add "$(stat -c '%g' /var/run/docker.sock)"` so the non-root
+container user can access it.
+
+Operator commands use the same image and persistent volume:
+
+```bash
+docker run --rm -v prouterd-data:/data -v "$PWD:/work" \
+  ghcr.io/prouterd/prouterd:latest apply /work/router.prc --db /data/prouterd.db
+
+docker exec -it prouterd prouter shell --db /data/prouterd.db
+```
+
+The repository's `docker-compose.yml` points at the published image:
+
+```bash
+docker compose up -d
+docker compose logs -f
+```
+
 ## Environment variables
 
 Everything operationally tunable comes from the environment so secrets
@@ -31,19 +70,24 @@ generous container-stop window so blocks can flush `output.json` before
 SIGKILL.
 
 ```bash
-export PROUTERD_ADMIN_TOKEN="$(cat /run/secrets/prouterd_admin)"
-export PROUTERD_SSL_CERT=/etc/prouterd/tls/cert.pem
-export PROUTERD_SSL_KEY=/etc/prouterd/tls/key.pem
-export PROUTERD_LOG_LEVEL=info
-export PROUTERD_LOG_CAPTURE_BYTES=4194304       # 4 MB per stream
-export PROUTERD_CONTAINER_STOP_TIMEOUT=30       # 30s graceful SIGTERM
-export PROUTERD_ARTIFACTS_ROOT=/var/lib/prouterd/artifacts
-
-prouterd \
-  --bind 0.0.0.0 --port 8443 \
-  --db /var/lib/prouterd/prouterd.db \
-  --workers 8
+docker run --name prouterd -d \
+  -p 0.0.0.0:8443:8443 \
+  -v prouterd-data:/data \
+  -v /etc/prouterd/tls:/tls:ro \
+  -v /run/secrets:/run/secrets:ro \
+  -e PROUTERD_ADMIN_TOKEN="$(cat /run/secrets/prouterd_admin)" \
+  -e PROUTERD_SSL_CERT=/tls/cert.pem \
+  -e PROUTERD_SSL_KEY=/tls/key.pem \
+  -e PROUTERD_LOG_LEVEL=info \
+  -e PROUTERD_LOG_CAPTURE_BYTES=4194304 \
+  -e PROUTERD_CONTAINER_STOP_TIMEOUT=30 \
+  -e PROUTERD_ARTIFACTS_ROOT=/data/artifacts \
+  ghcr.io/prouterd/prouterd:latest \
+  --bind 0.0.0.0 --port 8443 --workers 8
 ```
+
+If this deployment uses `interface docker`, add the socket mount and
+Linux `--group-add` line from the quickstart.
 
 ## Secrets
 

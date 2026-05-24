@@ -5,6 +5,16 @@ Two binaries:
 - `prouter` — operator CLI, one-shot subcommands
 - `prouterd` — long-running daemon (HTTP + cron + workers)
 
+The published Docker image exposes both. With the default entrypoint,
+daemon flags run `prouterd`, while CLI verbs run `prouter`:
+
+```bash
+docker run --rm ghcr.io/prouterd/prouterd:latest help
+docker run --rm ghcr.io/prouterd/prouterd:latest --help
+docker run --rm -v "$PWD:/work" ghcr.io/prouterd/prouterd:latest check /work/router.prc
+docker exec -it prouterd prouter shell --db /data/prouterd.db
+```
+
 ## prouter (operator CLI)
 
 ```

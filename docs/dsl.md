@@ -54,7 +54,7 @@ interface webhook leads_in
  no shutdown
 exit
 
-interface cron daily_report     ! requires gem install fugit
+interface cron daily_report     ! bundled in Docker image
  schedule "0 9 * * *"
  timezone "Europe/Berlin"
  no shutdown
@@ -68,17 +68,17 @@ exit
 ## Outbound interfaces (called by blocks)
 
 ```prc
-interface shell host                          ! default install
+interface shell host                          ! bundled in Docker image
  cwd /opt/blocks
  env API_BASE https://api.example.com
 exit
 
-interface http jira                           ! default install
+interface http jira                           ! bundled in Docker image
  base-url https://acme.atlassian.net/rest/api/3
  auth bearer secret JIRA_TOKEN
 exit
 
-interface llm claude                          ! default install
+interface llm claude                          ! bundled in Docker image
  provider anthropic
  model claude-haiku-4-5-20251001
  auth bearer secret CLAUDE_KEY
@@ -97,12 +97,12 @@ exit                                           ! declaring any env/env-forward/
                                                 ! secret flips the spawn into
                                                 ! `unsetenv_others: true` mode
 
-interface docker scorer                       ! gem install docker-api
+interface docker scorer                       ! bundled; mount Docker socket to use
  image registry.local/blocks/score:v2
  memory 512m
 exit
 
-interface postgres warehouse                  ! gem install pg
+interface postgres warehouse                  ! bundled in Docker image
  dsn "{{secret.PG_DSN}}"
  statement-timeout 5000
 exit

@@ -2,9 +2,10 @@
 
 **Pipelines as config, not code.**
 
-A single-binary orchestrator for ops automation: webhooks, cron,
+A Docker-first orchestrator for ops automation: webhooks, cron,
 LLM calls, HTTP, shell, docker — all declared in a `.prc` text file
-committed to git. No Python, no YAML, no SaaS dashboard.
+committed to git. No Python, no YAML, no SaaS dashboard, no local Ruby
+toolchain required.
 
 > Like Airflow, without the Python.
 >
@@ -79,7 +80,7 @@ Temporal, Argo, or n8n.
 | GitHub Actions          | YAML                     | yes                    | external (lives at GitHub) | yes                            |
 | Argo Workflows / Tekton | YAML + jinja + kustomize | yes, behind templating | k8s-bound | DevOps engineer required              |
 | AWS Step Functions      | JSON ASL                 | yes                    | AWS-only   | no                                    |
-| **prouterd**            | **text DSL (`.prc`)**    | **yes, instantly**     | **single binary, SQLite** | **yes — config IS the truth** |
+| **prouterd**            | **text DSL (`.prc`)**    | **yes, instantly**     | **single image, SQLite** | **yes — config IS the truth** |
 
 The whole quadrant of *"text DSL + standalone + readable"* was empty.
 That's the niche. That's what prouterd is.
@@ -87,10 +88,12 @@ That's the niche. That's what prouterd is.
 ## 30-second demo
 
 ```bash
-gem install prouterd
-echo '{"name":"world"}' > /tmp/event.json
+IMG=ghcr.io/prouterd/prouterd:latest
+WORK=/tmp/prouterd-demo
+mkdir -p "$WORK"
+echo '{"name":"world"}' > "$WORK/event.json"
 
-cat > /tmp/hello.prc <<'EOF'
+cat > "$WORK/hello.prc" <<'EOF'
 router demo
 exit
 interface manual cli
@@ -108,10 +111,12 @@ route interface cli process hello
 exit
 EOF
 
-prouter apply /tmp/hello.prc --db /tmp/p.db
-prouter trigger process hello input /tmp/event.json --db /tmp/p.db --runner shell
-# → Run run_xxx: success
-#     greet  success  3ms     [stdout: hello, world!]
+docker volume create prouterd-demo >/dev/null
+docker run --rm -v prouterd-demo:/data -v "$WORK:/work" "$IMG" \
+  apply /work/hello.prc --db /data/prouterd.db
+docker run --rm -v prouterd-demo:/data -v "$WORK:/work" "$IMG" \
+  trigger process hello input /work/event.json --db /data/prouterd.db --runner shell
+# {"run_id":"run_xxx","status":"success","steps":[{"block":"greet","status":"success",...}]}
 ```
 
 That's the whole loop: declare → apply → trigger → inspect. The same
@@ -144,20 +149,21 @@ would change before you apply.
 
 ## Built-in interfaces
 
-The base install runs on Ruby stdlib — no Docker daemon required.
-Heavier callers are `gem install` away.
+The published Docker image includes the full caller set. The bare Ruby
+gem is still available for plugin authors and local hacking; in that
+mode docker/postgres/cron remain optional gems.
 
 | `interface …`        | Does what                                       | Needs                    |
 | -------------------- | ----------------------------------------------- | ------------------------ |
-| `shell <name>`       | Host process via `Open3`                        | _(default)_              |
-| `http <name>`        | `Net::HTTP` GET/POST/… JSON APIs                | _(default)_              |
-| `llm <name>`         | Anthropic / OpenAI HTTP, or Codex / Claude CLI  | _(default)_              |
-| `webhook <name>`     | Inbound HTTPS endpoint with bearer auth         | _(default)_              |
-| `manual <name>`      | Inbound entry for `prouter trigger`             | _(default)_              |
-| `local_repo <name>`  | Read commits, files, grep in whitelisted git repos | `git` on PATH         |
-| `docker <name>`      | OCI container with image / memory / cpu         | `gem install docker-api` |
-| `postgres <name>`    | SQL with `$1..$N` bind params                   | `gem install pg`         |
-| `cron <name>`        | Inbound cron schedule                           | `gem install fugit`      |
+| `shell <name>`       | Host process via `Open3`                        | bundled                  |
+| `http <name>`        | `Net::HTTP` GET/POST/… JSON APIs                | bundled                  |
+| `llm <name>`         | Anthropic / OpenAI HTTP, or Codex / Claude CLI  | bundled                  |
+| `webhook <name>`     | Inbound HTTPS endpoint with bearer auth         | bundled                  |
+| `manual <name>`      | Inbound entry for `prouter trigger`             | bundled                  |
+| `local_repo <name>`  | Read commits, files, grep in whitelisted git repos | `git` on PATH in image |
+| `docker <name>`      | OCI container with image / memory / cpu         | bundled; mount socket for use |
+| `postgres <name>`    | SQL with `$1..$N` bind params                   | bundled                  |
+| `cron <name>`        | Inbound cron schedule                           | bundled                  |
 
 Adding your own block-callable type is one plugin file + one caller
 class — no edits to parser/validator/renderer/CLI. See
@@ -251,21 +257,48 @@ class — no edits to parser/validator/renderer/CLI. See
 ## Install
 
 ```bash
+docker pull ghcr.io/prouterd/prouterd:latest
+```
+
+Run the daemon with persistent state in `/data`:
+
+```bash
+docker run --name prouterd -d \
+  -p 127.0.0.1:8080:8080 \
+  -v prouterd-data:/data \
+  -e PROUTERD_ADMIN_TOKEN=change-me \
+  ghcr.io/prouterd/prouterd:latest
+```
+
+For `interface docker` blocks, also mount the host socket:
+`-v /var/run/docker.sock:/var/run/docker.sock`. On Linux, add
+`--group-add "$(stat -c '%g' /var/run/docker.sock)"` so the non-root
+container user can access it.
+
+Use the same image for operator commands:
+
+```bash
+docker run --rm -v prouterd-data:/data -v "$PWD:/work" \
+  ghcr.io/prouterd/prouterd:latest check /work/router.prc
+
+docker exec -it prouterd prouter shell --db /data/prouterd.db
+```
+
+Or use Compose:
+
+```bash
+docker compose up -d
+```
+
+Bare Ruby install is secondary:
+
+```bash
 gem install prouterd
 ```
 
-Requires Ruby ≥ 3.2 + `libsqlite3-dev`. SQLite is the only hard runtime
-dep (plus rack + puma for the daemon). Docker / Postgres / cron features
-are opt-in (table above).
-
-Or as a container:
-
-```bash
-docker run --rm -p 127.0.0.1:8080:8080 \
-  -v prouterd-data:/data \
-  -e PROUTERD_ADMIN_TOKEN=demo \
-  ghcr.io/prouterd/prouterd:latest
-```
+It requires Ruby >= 3.3 and SQLite headers. For bare-gem installs,
+Docker / Postgres / cron callers are still optional gems
+(`docker-api`, `pg`, `fugit`).
 
 ## Documentation
 
@@ -283,7 +316,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 
 ## Status
 
-Production-ready core. 865 specs, 0 failures. End-to-end smoke-tested
+Production-ready core. 1025 specs, 0 failures. End-to-end smoke-tested
 against real Docker, Puma, cron, and shell exec. Web console
 (`prouterd-web`) ships separately; browser login and artifact downloads
 use HTTP, while console data and live updates ride `/v1/events` WS-RPC.
@@ -291,7 +324,7 @@ use HTTP, while console data and live updates ride `/v1/events` WS-RPC.
 Out of scope for v0.1 (the plugin interfaces are ready — write a plugin
 file and a caller class, no core edits): KubernetesCaller, S3
 ArtifactStore, Vault / AWS Secrets Manager, RBAC / mTLS / OIDC,
-idempotency keys. Storage is SQLite, by design — single binary, no
+idempotency keys. Storage is SQLite, by design — single image/binary, no
 external DB dependency.
 
 See [CHANGELOG.md](CHANGELOG.md) for the per-version breakdown

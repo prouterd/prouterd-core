@@ -346,7 +346,9 @@ config. Tick dropped.
 
 Severity 4. Format: `cron support disabled (fugit gem not loaded)`
 
-`gem install fugit` is missing. All cron interfaces are no-ops until
+The `fugit` gem is missing. This should not happen in the published
+Docker image; it usually means a bare Ruby install or custom image left
+the optional cron dependency out. All cron interfaces are no-ops until
 the gem is available.
 
 #### %SCHED-4-AUTOPULL_BAD

@@ -419,6 +419,43 @@ RSpec.describe Prouterd::Runtime::BlockExecutor do
     end
   end
 
+  describe "#build_env: iface secret_ref pointing to an undeclared secret" do
+    it "skips silently (next unless secret) instead of raising" do
+      doc = parse(<<~PRC)
+        router demo
+        exit
+        secret DECLARED
+         source env DECLARED_VAL
+        exit
+        interface llm m
+         provider claude_cli
+         secret DECLARED
+         secret GHOST
+        exit
+        process p
+         block b
+          interface llm m
+          prompt "hi"
+         exit
+        exit
+      PRC
+      ENV["DECLARED_VAL"] = "tok"
+      # Strip the GHOST secret declaration in-place so the iface's
+      # `secret GHOST` ref points at nothing. (Validator would reject
+      # at apply time, but build_env keeps a defensive `next unless`.)
+      doc.secrets.reject! { |s| s.name == "GHOST" }
+      run = runs.create_run(process_name: "p", input_event: {})
+      process = doc.processes.first
+      block = process.blocks.first
+      iface = doc.interfaces.find { |i| i.name == "m" }
+      env = executor.build_env(run, process, block, iface, doc, 1)
+      expect(env["DECLARED"]).to eq("tok")
+      expect(env).not_to have_key("GHOST")
+    ensure
+      ENV.delete("DECLARED_VAL")
+    end
+  end
+
   describe "#execute_single_attempt defensive guards" do
     let(:run) { runs.create_run(process_name: "p", input_event: {}) }
     let(:process) { double(name: "p") }

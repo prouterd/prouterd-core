@@ -432,6 +432,18 @@ RSpec.describe Prouterd::Shell::Modes::Privileged do
       mode.cmd_cancel(tokens("cancel run #{r.uid}"), session, out, err)
       expect(out.string).to include("Cancelled run #{r.uid}")
     end
+
+    it "leaves a terminal step alone while canceling the pending one" do
+      runs = Prouterd::Storage::Repositories::Runs.new(db)
+      r = runs.create_run(process_name: "p", process_config_commit_id: nil, input_event: {}, parent_run_id: nil, thread_id: nil)
+      done = runs.create_step(run_id: r.id, block_name: "done")
+      runs.update_step(done.id, status: "success", finished_at: Time.now.utc.iso8601(3))
+      runs.create_step(run_id: r.id, block_name: "pending")
+      mode.cmd_cancel(tokens("cancel run #{r.uid}"), session, out, err)
+      steps = runs.list_steps(r.id)
+      expect(steps.find { |s| s.block_name == "done" }.status).to eq("success")
+      expect(steps.find { |s| s.block_name == "pending" }.status).to eq("canceled")
+    end
   end
 
   describe "#cmd_diff" do

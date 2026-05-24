@@ -379,6 +379,32 @@ RSpec.describe Prouterd::Runtime::Orchestrator do
     end
   end
 
+  describe "#finalize_run with status=canceled" do
+    it "logs with the CANCELED mnemonic" do
+      logger = double
+      allow(logger).to receive(:info)
+      allow(logger).to receive(:notice)
+      allow(logger).to receive(:warn)
+      allow(logger).to receive(:error)
+      orch = described_class.new(db: db, runner: runner, logger: logger)
+      run = repo.create_run(process_name: "p", input_event: {})
+      expect(logger).to receive(:info).with("run canceled", hash_including(mnemonic: "CANCELED"))
+      orch.send(:finalize_run, run, status: "canceled", error: nil)
+    end
+
+    it "logs with the DONE mnemonic for unknown statuses" do
+      logger = double
+      allow(logger).to receive(:info)
+      allow(logger).to receive(:notice)
+      allow(logger).to receive(:warn)
+      allow(logger).to receive(:error)
+      orch = described_class.new(db: db, runner: runner, logger: logger)
+      run = repo.create_run(process_name: "p", input_event: {})
+      expect(logger).to receive(:info).with("run weird-status", hash_including(mnemonic: "DONE"))
+      orch.send(:finalize_run, run, status: "weird-status", error: nil)
+    end
+  end
+
   describe "EnvSecretResolver" do
     let(:resolver) { Prouterd::Runtime::EnvSecretResolver.new }
 

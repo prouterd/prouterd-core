@@ -307,6 +307,28 @@ RSpec.describe Prouterd::Shell::Completer do
     end
   end
 
+  describe "show blocks <something-other-than-process>" do
+    it "suggests 'process' as the next keyword" do
+      expect(completer.call("", "show blocks anything ")).to eq(["process"])
+    end
+  end
+
+  describe "blocks_for_replay / blocks_in_process_of_run without a store" do
+    it "returns [] for replay <uid> from completion when session has no store" do
+      bare = Prouterd::Shell::Session.new(store: nil)
+      bare.mode_stack << Prouterd::Shell::Modes::Privileged.new
+      c = described_class.new(bare)
+      expect(c.call("", "replay run abc from ")).to eq([])
+    end
+
+    it "returns [] for show logs run <uid> block completion when session has no store" do
+      bare = Prouterd::Shell::Session.new(store: nil)
+      bare.mode_stack << Prouterd::Shell::Modes::Privileged.new
+      c = described_class.new(bare)
+      expect(c.call("", "show logs run abc block ")).to eq([])
+    end
+  end
+
   describe "show <unknown> at depth 4 / 5" do
     it "returns [] for unknown subtopic at depth 4 ('show foo bar baz ')" do
       expect(completer.call("", "show foo bar baz ")).to eq([])

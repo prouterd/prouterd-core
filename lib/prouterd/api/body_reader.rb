@@ -15,7 +15,8 @@ module Prouterd
       CHUNK_SIZE = 64 * 1024
 
       def read_bounded_body(request)
-        cap = request.env["prouterd.max_body_bytes"].to_i
+        env = request.respond_to?(:env) ? request.env : {}
+        cap = env["prouterd.max_body_bytes"].to_i
         cap = App::DEFAULT_MAX_BODY_BYTES unless cap.positive?
 
         body_io = request.body

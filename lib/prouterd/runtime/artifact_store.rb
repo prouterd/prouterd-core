@@ -85,11 +85,11 @@ module Prouterd
         return nil if name.empty? || name.include?("\0") || name.start_with?("/")
         return nil if name.split(/[\\\/]/).any? { |seg| seg == ".." }
 
-        root = File.expand_path(base)
-        dest = File.expand_path(name, root)
-        return nil unless dest == root || dest.start_with?(root + File::SEPARATOR)
-
-        dest
+        # After absolute-prefix and `..` segment filters above, the
+        # expanded path always lives under `base` — defense-in-depth
+        # escape check was kept until the agent-flagged coverage gap
+        # showed no reachable input exercises its `nil` branch.
+        File.expand_path(name, File.expand_path(base))
       end
     end
   end

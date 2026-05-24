@@ -38,8 +38,10 @@ module Prouterd
       def validate(contract, output)
         violations = []
         contract.requirements.each do |req|
-          v = check_requirement(req, output)
-          violations.concat(v) if v
+          # check_requirement always returns an Array (possibly empty);
+          # the historical `if v` guard would have masked a nil return
+          # but is unreachable from any reachable code path.
+          violations.concat(check_requirement(req, output))
         end
         violations
       end

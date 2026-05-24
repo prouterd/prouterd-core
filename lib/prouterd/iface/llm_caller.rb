@@ -169,8 +169,10 @@ module Prouterd
       end
 
       def shape_output(provider, parsed, model)
-        case provider
-        when "anthropic"
+        # perform_run already guards against any provider other than
+        # "anthropic" / "openai" before reaching shape_output, so the
+        # if/elsif here is exhaustive — no fallthrough branch.
+        if provider == "anthropic"
           text = (parsed["content"] || []).filter_map { |b| b["text"] if b["type"] == "text" }.join
           usage = parsed["usage"] || {}
           {
@@ -179,7 +181,7 @@ module Prouterd
             "usage"       => { "input_tokens" => usage["input_tokens"], "output_tokens" => usage["output_tokens"] },
             "stop_reason" => parsed["stop_reason"]
           }
-        when "openai"
+        else # "openai"
           choice = (parsed["choices"] || []).first || {}
           msg = choice["message"] || {}
           usage = parsed["usage"] || {}

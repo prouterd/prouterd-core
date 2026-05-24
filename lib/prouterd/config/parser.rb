@@ -516,8 +516,12 @@ module Prouterd
       def parse_parallel_group(process_node, header)
         expect_token_count(header, 2, "parallel <name>")
         name = expect_identifier(header.tokens[1], "parallel group name")
-        if process_node.blocks.any? { |b| b.name == name } ||
-           process_node.parallel_groups.any? { |g| g.name == name }
+        # A previous parallel / merge group with the same name already
+        # appended a synthesized barrier block of that name to
+        # process_node.blocks, so the blocks-collision check below
+        # subsumes both the parallel_groups and merge_groups collision
+        # cases.
+        if process_node.blocks.any? { |b| b.name == name }
           raise ParseError.new("name '#{name}' is already declared in process '#{process_node.name}'", line: header.number)
         end
 
@@ -596,9 +600,11 @@ module Prouterd
       def parse_merge_group(process_node, header)
         expect_token_count(header, 2, "merge <name>")
         name = expect_identifier(header.tokens[1], "merge group name")
-        if process_node.blocks.any? { |b| b.name == name } ||
-           process_node.parallel_groups.any? { |g| g.name == name } ||
-           process_node.merge_groups.any? { |g| g.name == name }
+        # A previous parallel / merge group with the same name already
+        # appended its synthesized barrier block of that name to
+        # process_node.blocks; the blocks-collision check below
+        # subsumes both the parallel_groups and merge_groups cases.
+        if process_node.blocks.any? { |b| b.name == name }
           raise ParseError.new("name '#{name}' is already declared in process '#{process_node.name}'", line: header.number)
         end
 
@@ -1585,10 +1591,6 @@ module Prouterd
       # ----- traversal helpers -----
 
       def current_line
-        @lines[@pos]
-      end
-
-      def peek
         @lines[@pos]
       end
 

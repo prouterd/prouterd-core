@@ -213,7 +213,10 @@ module Prouterd
               )
               next
             end
-            if target&.barrier?
+            # `target` is non-nil here: the `unless block_names.include?
+            # (member); next; end` above guarantees `member` resolved
+            # to a real block on this process.
+            if target.barrier?
               @result.error(
                 "merge '#{process.name}/#{group.name}' member '#{member}' is itself a barrier block; chain through an intermediate block",
                 line: group.line
@@ -573,8 +576,10 @@ module Prouterd
         end
         unreachable = block_names - reachable.to_a
         unreachable.each do |name|
+          # `block_names` is `process.blocks.map(&:name)`, so the lookup
+          # is guaranteed to resolve — no safe-nav needed for `.line`.
           block = process.block(name)
-          @result.warning("block '#{process.name}/#{name}' is unreachable from any entry block", line: block&.line)
+          @result.warning("block '#{process.name}/#{name}' is unreachable from any entry block", line: block.line)
         end
       end
 
@@ -601,8 +606,10 @@ module Prouterd
             neighbor = neighbors.shift
             case color[neighbor]
             when :gray
+              # `neighbor` is colored :gray exactly when it's currently
+              # on `path`, so the index is guaranteed to resolve.
               cycle_start = path.index(neighbor)
-              return path[cycle_start..] + [neighbor] if cycle_start
+              return path[cycle_start..] + [neighbor]
             when nil
               color[neighbor] = :gray
               path << neighbor

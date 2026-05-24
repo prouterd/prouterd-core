@@ -98,11 +98,10 @@ module Prouterd
 
           Change.new(kind: kind, name: name, reason: "changed: #{summarize_change(ls, rs)}")
         end
-        plural = case kind
-                 when :secret then :secrets
-                 when :policy then :policies
-                 when :queue then :queues
-                 end
+        # `kind` is always one of :secret/:policy/:queue at the call
+        # site — every caller of diff_secrets_or_policies_or_queues
+        # passes a literal symbol.
+        plural = { secret: :secrets, policy: :policies, queue: :queues }.fetch(kind)
         result = { :"#{plural}_added" => added, :"#{plural}_removed" => removed }
         result[:"#{plural}_changed"] = changed if kind != :secret
         result

@@ -134,7 +134,9 @@ module Prouterd
       end
 
       def close
-        synchronize { @sqlite&.close }
+        # `@sqlite` is set in the constructor and never reassigned to
+        # nil; the safe-nav was historical defensive code.
+        synchronize { @sqlite.close }
       end
 
       def closed?

@@ -72,11 +72,12 @@ module Prouterd
               parent_run_id: run.id,
               thread_id:     child_thread_id
             )
-            available_at = if rate_limit_ms && rate_limit_n.positive?
+            available_at = if rate_limit_ms
                              # `rate-limit N/window` → space groups of N
                              # children one window apart. group_idx 0
                              # available now, group_idx 1 after window,
-                             # etc.
+                             # etc. Parser guarantees N >= 1, so the
+                             # division is safe.
                              group_idx = spawned / rate_limit_n
                              Time.now + (group_idx * rate_limit_ms / 1000.0)
                            end

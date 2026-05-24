@@ -516,8 +516,10 @@ module Prouterd
         msg = event["message"]
         if msg.is_a?(Hash)
           parts = Array(msg["content"])
+          # `Array("x")` is `["x"]`, not empty — so a String `content`
+          # falls into the filter_map branch above and produces "".
+          # No separate String-fallback branch is reachable.
           return parts.filter_map { |p| p["text"] if p.is_a?(Hash) && p["text"].is_a?(String) }.join unless parts.empty?
-          return msg["content"] if msg["content"].is_a?(String)
         end
 
         nil

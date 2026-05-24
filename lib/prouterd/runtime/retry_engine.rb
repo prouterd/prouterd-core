@@ -177,6 +177,7 @@ module Prouterd
       def sweep_cross_block(process, document, block_results, executed,
                             context, ctx_mutex, outer_attempts, outer_overlays)
         retriggered = []
+        cleared = Set.new
         executed.to_a.each do |bn|
           block = process.block(bn)
           next unless block
@@ -218,8 +219,10 @@ module Prouterd
           dirty.each { |n| executed.delete(n); block_results.delete(n); outer_overlays.delete(n) }
           executed.delete(bn)
           retriggered << bn
+          cleared << bn
+          dirty.each { |n| cleared << n }
         end
-        retriggered
+        { retriggered: retriggered, cleared: cleared }
       end
 
       # Evaluate the policy's retry-when matches against the unified

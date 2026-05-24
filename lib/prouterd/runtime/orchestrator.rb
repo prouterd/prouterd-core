@@ -406,10 +406,22 @@ module Prouterd
           # from `executed`, prepend X to `next_ready`. Bounded by
           # policy.retry_attempts; bypassed entirely when no policy
           # references foreign-block paths.
-          retriggered = @retry_engine.sweep_cross_block(
+          sweep = @retry_engine.sweep_cross_block(
             process, document, block_results, executed, context, ctx_mutex,
             outer_attempts, outer_overlays
           )
+          retriggered = sweep[:retriggered]
+          cleared     = sweep[:cleared]
+
+          # Purge any cleared block (the retriggered upstream + every
+          # downstream-reachable block) from next_ready. Without this,
+          # a barrier / parallel / merge member that was eager-enqueued
+          # via the just-finished level's routes would fire on the
+          # cleared context — recording a stale or empty output_json.
+          # Race-free because next_ready is built and consumed under
+          # the orchestrator's single thread.
+          next_ready.reject! { |bn| cleared.include?(bn) } unless cleared.empty?
+
           retriggered.each do |block_name|
             db_mutex.synchronize do
               @runs.append_log(

@@ -373,43 +373,7 @@ module Prouterd
           # pass-through, not a halt. Failed (no on-failure stop) blocks
           # have no output to feed.
           successful = level.reject { |b| failed_blocks.include?(b.name) } + skipped
-          next_ready = []
-          successful.each do |block|
-            passing_routes = process.routes.select do |r|
-              r.from_block == block.name && route_passes?(r, context, ctx_mutex)
-            end
-            passing_routes.each do |r|
-              next if executed.include?(r.to_block) || next_ready.include?(r.to_block)
-              # AND-style merge barriers may span BFS levels (their
-              # members are existing standalone blocks, not enclosed
-              # group children). Defer enqueueing the barrier until
-              # every member has reached a terminal state — without
-              # this, the first member's route fires the barrier on
-              # a partially-populated context. `parallel` barriers and
-              # `any`-strategy merge barriers stay opt-in to the
-              # eager-enqueue semantics.
-              if and_style_merge_barrier?(process, r.to_block, executed)
-                next
-              end
-
-              # Routing into a `parallel` barrier fans out to the
-              # group's members. The barrier itself enqueues normally
-              # once its members finish, via the synthesized member→
-              # barrier routes. Without this fan-out, members of a
-              # parallel group that's downstream of some upstream
-              # never get triggered (they have no incoming routes of
-              # their own) and the barrier sits waiting for outputs
-              # that never produce. `merge` barriers stay literal —
-              # their members are existing standalone blocks wired
-              # up by the operator.
-              if (members = parallel_members_to_fan_out(process, r.to_block, r.from_block, executed, next_ready))
-                next_ready.concat(members)
-                next
-              end
-
-              next_ready << r.to_block
-            end
-          end
+          next_ready = build_next_ready(process, successful, executed, context, ctx_mutex)
 
           # Cross-block retry sweep: a policy on block X may declare
           # `retry when Y.field eq "fail"` where Y is downstream of X.
@@ -517,6 +481,41 @@ module Prouterd
         return outgoing_to_barrier.on_failure if outgoing_to_barrier
 
         "stop"
+      end
+
+      # Walks routes outgoing from each successful/skipped block in the
+      # just-finished level and returns the deduplicated list of block
+      # names that should fire on the next BFS pass. Encapsulates the
+      # three special cases that compound on top of plain "next route's
+      # to_block":
+      #
+      #   1. AND-style merge barriers (`all-required` / `all-best-effort`)
+      #      defer until every member is terminal — without this the
+      #      barrier fires on the first member's route with a
+      #      partially-populated context.
+      #   2. Routing into a `parallel` barrier fans out to the group's
+      #      members; the barrier enqueues normally through the
+      #      synthesized member→barrier routes when members finish.
+      #   3. Already-executed and already-queued blocks are skipped.
+      def build_next_ready(process, successful, executed, context, ctx_mutex)
+        next_ready = []
+        successful.each do |block|
+          passing_routes = process.routes.select do |r|
+            r.from_block == block.name && route_passes?(r, context, ctx_mutex)
+          end
+          passing_routes.each do |r|
+            next if executed.include?(r.to_block) || next_ready.include?(r.to_block)
+            next if and_style_merge_barrier?(process, r.to_block, executed)
+
+            if (members = parallel_members_to_fan_out(process, r.to_block, r.from_block, executed, next_ready))
+              next_ready.concat(members)
+              next
+            end
+
+            next_ready << r.to_block
+          end
+        end
+        next_ready
       end
 
       def barrier_block?(process, name)

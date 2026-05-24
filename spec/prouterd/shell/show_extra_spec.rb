@@ -856,6 +856,13 @@ RSpec.describe Prouterd::Shell::Show do
         described_class.show_artifacts([], session, out)
       }.to raise_error(Prouterd::Shell::CommandError, /syntax: show artifacts/)
     end
+
+    it "show_artifacts short-circuits when there's no DB attached" do
+      session = Prouterd::Shell::Session.new(store: nil)
+      described_class.show_artifacts(["run", "anything"], session, out)
+      expect(out.string).to include("no DB attached")
+      expect(out.string).to include("artifacts")
+    end
   end
 
   # ---------- show_commit ----------

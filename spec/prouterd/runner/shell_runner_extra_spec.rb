@@ -188,6 +188,18 @@ RSpec.describe Prouterd::Runner::ShellRunner do
     end
   end
 
+  describe "classify_outcome: explicit empty output.json on success" do
+    it "treats an empty output.json file as {} (mirrors the docker contract)" do
+      req = request(
+        command: %q[sh -c ': > $PROUTER_OUTPUT_PATH']
+      )
+      result = runner.run(req)
+      expect(result.exit_code).to eq(0)
+      expect(result.error_type).to be_nil
+      expect(result.output_json).to eq({})
+    end
+  end
+
   describe "collect_artifacts SystemCallError rescue" do
     let(:work_dir) { Dir.mktmpdir("prouter-art-err-") }
     after { FileUtils.remove_entry(work_dir) if File.directory?(work_dir) }

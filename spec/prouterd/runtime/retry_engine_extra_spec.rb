@@ -322,5 +322,33 @@ RSpec.describe Prouterd::Runtime::RetryEngine do
                                      ctx, ctx_mutex, { "a" => 0 }, {})
       expect(out[:retriggered]).to be_empty
     end
+
+    it "skips an executed name that's no longer in the process (block lookup returns nil)" do
+      process = double
+      allow(process).to receive(:block).with("ghost").and_return(nil)
+      ctx_mutex = Monitor.new
+      ctx = Prouterd::Runtime::Context.new({})
+      out = engine.sweep_cross_block(process, double, { "ghost" => double },
+                                     ["ghost"], ctx, ctx_mutex, { "ghost" => 0 }, {})
+      expect(out[:retriggered]).to eq([])
+      expect(out[:cleared]).to be_empty
+    end
+
+    it "skips an executed block whose result is missing from block_results" do
+      # Build a real policy + match so we reach the `next unless result` line.
+      match = Prouterd::Config::AST::Match.new(path: "other.field", operator: "eq", values: ["x"], line: 1)
+      policy = double(retry_when_matches: [match], retry_attempts: 3, retry_feedbacks: [])
+      block = double(retry_policy_name: "r")
+      process = double
+      allow(process).to receive(:block).with("b").and_return(block)
+      doc = double(policies: [double(name: "r")])
+      allow(engine).to receive(:lookup_policy).with(doc, "r").and_return(policy)
+
+      ctx_mutex = Monitor.new
+      ctx = Prouterd::Runtime::Context.new({})
+      out = engine.sweep_cross_block(process, doc, {}, # block_results empty
+                                     ["b"], ctx, ctx_mutex, { "b" => 0 }, {})
+      expect(out[:retriggered]).to eq([])
+    end
   end
 end

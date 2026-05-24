@@ -282,5 +282,69 @@ RSpec.describe Prouterd::Shell::Shell do
       expect(Kernel).not_to receive(:require)
       expect(shell.send(:reline_available?)).to be(false)
     end
+
+    it "returns false when require raises LoadError" do
+      shell = build
+      shell.instance_variable_set(:@reline_available, nil)
+      allow(shell).to receive(:require).with("reline").and_raise(LoadError)
+      expect(shell.send(:reline_available?)).to be(false)
+    end
+  end
+
+  describe "run loop swallows Config::ConfigError" do
+    it "writes the error to @error and continues" do
+      bad_mode = Class.new(Prouterd::Shell::Modes::User) {
+        def commands; super.merge("boom" => :cmd_boom); end
+        def cmd_boom(*)
+          raise Prouterd::Config::ConfigError.new("explicit config error", line: 5)
+        end
+      }
+      input = StringIO.new("boom\nexit\n")
+      output = StringIO.new
+      error = StringIO.new
+      session = Prouterd::Shell::Session.new
+      session.mode_stack << bad_mode.new
+      shell = described_class.new(
+        session: session, input: input, output: output, error: error,
+        interactive: false, banner: false
+      )
+      expect(shell.run).to eq(1)
+      expect(error.string).to include("explicit config error")
+    end
+  end
+
+  describe "#install_completer" do
+    it "wires Reline#completion_proc to a lambda that delegates to Completer#call" do
+      session = Prouterd::Shell::Session.new
+      shell = described_class.new(
+        session: session,
+        input: StringIO.new, output: StringIO.new, error: StringIO.new,
+        interactive: true, banner: false
+      )
+      reline = Module.new
+      captured = nil
+      reline.define_singleton_method(:completion_proc=) { |proc| captured = proc }
+      reline.define_singleton_method(:line_buffer) { "show ver" }
+      reline.define_singleton_method(:respond_to?) do |sym|
+        %i[completion_proc= line_buffer].include?(sym)
+      end
+      stub_const("Reline", reline)
+      shell.send(:install_completer)
+      session.mode_stack << Prouterd::Shell::Modes::Privileged.new
+      result = captured.call("ver")
+      expect(result).to include("version")
+    end
+
+    it "rescues StandardError from Reline configuration and only warns once" do
+      shell = build(interactive: true)
+      reline = Module.new
+      reline.define_singleton_method(:completion_proc=) { |_| raise StandardError, "boom" }
+      reline.define_singleton_method(:respond_to?) { |_| false }
+      stub_const("Reline", reline)
+      shell.send(:install_completer)
+      shell.send(:install_completer) # second call must be a no-op
+      expect(@_err.string).to include("tab completion not installed")
+      expect(@_err.string.scan(/tab completion not installed/).size).to eq(1)
+    end
   end
 end

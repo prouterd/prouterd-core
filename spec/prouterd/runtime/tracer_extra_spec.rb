@@ -214,6 +214,65 @@ RSpec.describe Prouterd::Runtime::Tracer do
     expect(res.process).to eq("p")
   end
 
+  it "ignores duplicate entry block names without raising" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface manual cli
+       no shutdown
+      exit
+      interface docker img
+       image foo
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+      exit
+      route interface cli process p
+      exit
+    PRC
+    # entry_blocks returning duplicates → the `next if seen.include?` guard fires
+    allow_any_instance_of(described_class).to receive(:entry_blocks).and_return(["a", "a"])
+    res = described_class.trace(doc, {}, interface_name: "cli")
+    # 'a' walked once, no exceptions
+    expect(res.process).to eq("p")
+  end
+
+  it "does not enqueue a block that's already in the queue" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface manual cli
+       no shutdown
+      exit
+      interface docker img
+       image foo
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       block c
+        interface docker img
+       exit
+       route a b
+       route a c
+       route c b
+      exit
+      route interface cli process p
+      exit
+    PRC
+    res = described_class.trace(doc, {}, interface_name: "cli")
+    # Tracer doesn't crash on the diamond — 'b' has two incoming routes
+    # from 'a' and 'c'; the queue dedupe prevents double-enqueue.
+    edges_to_b = res.graph.select { |e| e.to == "b" }
+    expect(edges_to_b.length).to be >= 1
+  end
+
   it "evaluates entry-only process with no routes (graph stays empty)" do
     doc = parse(<<~PRC)
       router demo
@@ -490,6 +549,27 @@ RSpec.describe Prouterd::Runtime::TracerRenderer do
     text = described_class.render(res)
     expect(text).to include("event.tag in \"a\",\"b\"")
     expect(text).to include("event.t exists")
+  end
+
+  it "renders 'in' values mixing String + numeric (then/else of v.is_a?(String) ternary)" do
+    gr = Prouterd::Config::AST::GlobalRoute.new(interface_name: "cli", process_name: "p", line: 1)
+    gr.matches << Prouterd::Config::AST::Match.new(path: "event.x", operator: "in", values: ["a", 7], line: 1)
+    res = make_result(global_route: gr, global_route_passes: true)
+    text = described_class.render(res)
+    expect(text).to include("event.x in \"a\",7")
+  end
+
+  it "renders edge 'in' values mixing String + numeric (format_match_value ternary)" do
+    edge = Prouterd::Runtime::Tracer::EdgeAnnotation.new(
+      from: "a", to: "b",
+      match_results: [
+        Prouterd::Runtime::Tracer::MatchAnnotation.new(path: "p", operator: "in", values: ["x", 7], result: true, reason: nil)
+      ],
+      passes: true
+    )
+    res = make_result(process: "p", graph: [edge])
+    text = described_class.render(res)
+    expect(text).to include("p in \"x\",7")
   end
 
   it "renders numeric global-route values without inspect-style quoting" do

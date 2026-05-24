@@ -313,6 +313,29 @@ RSpec.describe Prouterd::Shell::Shell do
     end
   end
 
+  describe "run loop swallows Config::ConfigError in interactive mode" do
+    it "writes the error to @error but keeps exit_code at 0" do
+      bad_mode = Class.new(Prouterd::Shell::Modes::User) {
+        def commands; super.merge("boom" => :cmd_boom); end
+        def cmd_boom(*)
+          raise Prouterd::Config::ConfigError.new("oops", line: 1)
+        end
+      }
+      input = StringIO.new("boom\nexit\n")
+      def input.isatty; true; end
+      session = Prouterd::Shell::Session.new
+      session.mode_stack << bad_mode.new
+      shell = described_class.new(
+        session: session, input: input, output: StringIO.new,
+        error: (err = StringIO.new),
+        interactive: true, banner: false
+      )
+      allow(shell).to receive(:reline_available?).and_return(false)
+      expect(shell.run).to eq(0)
+      expect(err.string).to include("oops")
+    end
+  end
+
   describe "run loop swallows Config::ConfigError" do
     it "writes the error to @error and continues" do
       bad_mode = Class.new(Prouterd::Shell::Modes::User) {

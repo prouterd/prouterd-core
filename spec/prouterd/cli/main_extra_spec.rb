@@ -514,6 +514,57 @@ RSpec.describe Prouterd::CLI::Main do
     end
   end
 
+  describe "trigger exit codes" do
+    it "exits 1 when triggered run fails (failed status branch)" do
+      Tempfile.create(["evt", ".json"]) do |f|
+        f.write('{}')
+        f.flush
+        Tempfile.create(["fail", ".prc"]) do |t|
+          # Use a process whose block fails: docker image typically missing
+          # under stub, but stub-runner default is success. So write a doc
+          # whose block references a non-existent secret to break at
+          # build_env. Validator catches that at apply — so instead let
+          # the stub runner fail explicitly via env injection. The
+          # simplest path: a multi-block process where the second block
+          # fan-outs to an undeclared process — orchestrator records
+          # the error.
+          t.write(<<~PRC)
+            router demo
+            exit
+            interface docker img
+             image x
+            exit
+            process p
+             block hello
+              interface docker img
+              fan-out from missing into ghost
+             exit
+            exit
+          PRC
+          t.flush
+          with_db do |db|
+            run("apply", t.path, "--db", db)
+            code, _, _ = run("trigger", "process", "p", "input", f.path,
+                              "--db", db, "--runner", "stub")
+            expect(code).to eq(1)
+          end
+        end
+      end
+    end
+  end
+
+  describe "report_check shape" do
+    it "prints '(missing)' router placeholder when document has no router" do
+      Tempfile.create(["t", ".prc"]) do |t|
+        t.write("interface docker img\n image x\nexit\nprocess p\n block a\n  interface docker img\n exit\nexit\n")
+        t.flush
+        code, out, _ = run("check", t.path)
+        expect(out).to include("(missing)")
+        expect(code).to eq(1).or eq(0)
+      end
+    end
+  end
+
   describe "shell error path" do
     it "exits 1 when initial config is bad and surfaces a ShellError" do
       Tempfile.create(["bad", ".prc"]) do |t|

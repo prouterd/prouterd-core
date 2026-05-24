@@ -444,6 +444,76 @@ RSpec.describe Prouterd::CLI::Main do
     end
   end
 
+  describe "diff edge cases" do
+    it "exits 1 when --config target file fails to parse" do
+      Tempfile.create(["bad", ".prc"]) do |bad|
+        bad.write("router x\n color red\nexit\n")
+        bad.flush
+        code, _, err = run("diff", fixture_path("minimal.prc"), "--config", bad.path)
+        expect(code).to eq(1)
+        expect(err).to include("unknown directive")
+      end
+    end
+
+    it "exits 1 when --no-db is set (store nil branch in cmd_diff)" do
+      code, _, _err = run("diff", fixture_path("minimal.prc"), "--no-db")
+      expect(code).to eq(1)
+    end
+  end
+
+  describe "cancel updates a step that is non-terminal" do
+    it "leaves a terminal step alone (next-on-terminal branch)" do
+      with_db do |db|
+        run("apply", fixture_path("minimal.prc"), "--db", db)
+        sql_db = Prouterd::Storage::DB.open(db)
+        runs = Prouterd::Storage::Repositories::Runs.new(sql_db)
+        r = runs.create_run(process_name: "p", process_config_commit_id: nil, input_event: {}, parent_run_id: nil, thread_id: nil)
+        s1 = runs.create_step(run_id: r.id, block_name: "hello")
+        runs.update_step(s1.id, status: "success", finished_at: Time.now.utc.iso8601(3))
+        runs.create_step(run_id: r.id, block_name: "tail") # status: pending
+        sql_db.close
+        code, _, _ = run("cancel", "run", r.uid, "--db", db)
+        expect(code).to eq(0)
+        sql_db2 = Prouterd::Storage::DB.open(db)
+        runs2 = Prouterd::Storage::Repositories::Runs.new(sql_db2)
+        steps = runs2.list_steps(r.id)
+        expect(steps.find { |s| s.block_name == "hello" }.status).to eq("success") # untouched
+        expect(steps.find { |s| s.block_name == "tail" }.status).to eq("canceled")
+        sql_db2.close
+      end
+    end
+  end
+
+
+  describe "emit_run_summary error footer" do
+    it "prints 'error:' line in human mode when the run carries an error_summary" do
+      with_db do |db|
+        run("apply", fixture_path("minimal.prc"), "--db", db)
+        sql_db = Prouterd::Storage::DB.open(db)
+        runs = Prouterd::Storage::Repositories::Runs.new(sql_db)
+        r = runs.create_run(process_name: "p", process_config_commit_id: nil, input_event: {}, parent_run_id: nil, thread_id: nil)
+        runs.update_run(r.id, error_summary: "block oops failed", status: "failed",
+                              finished_at: Time.now.utc.iso8601(3))
+        step = runs.create_step(run_id: r.id, block_name: "hello", attempt: 1)
+        runs.update_step(step.id, status: "failed", finished_at: Time.now.utc.iso8601(3),
+                                  duration_ms: 25)
+        sql_db.close
+
+        out = StringIO.new
+        def out.tty?; true; end
+        err = StringIO.new
+        m = described_class.new([], StringIO.new, out, err)
+        sql_db2 = Prouterd::Storage::DB.open(db)
+        runs2 = Prouterd::Storage::Repositories::Runs.new(sql_db2)
+        r2 = runs2.get_run_by_uid(r.uid)
+        m.send(:emit_run_summary, r2, runs2)
+        expect(out.string).to include("error: block oops failed")
+        expect(out.string).to include("25ms")
+        sql_db2.close
+      end
+    end
+  end
+
   describe "shell error path" do
     it "exits 1 when initial config is bad and surfaces a ShellError" do
       Tempfile.create(["bad", ".prc"]) do |t|

@@ -419,6 +419,155 @@ RSpec.describe Prouterd::Runtime::BlockExecutor do
     end
   end
 
+  describe "#execute_single_attempt defensive guards" do
+    let(:run) { runs.create_run(process_name: "p", input_event: {}) }
+    let(:process) { double(name: "p") }
+    let(:db_mutex) { Mutex.new }
+    let(:ctx_mutex) { Mutex.new }
+    let(:context) { Prouterd::Runtime::Context.new({}) }
+    let(:redactor) { Prouterd::Runtime::Redactor.new([]) }
+    let(:document) { Prouterd::Config::AST::Document.new }
+
+    it "returns invalid_block when the block has no interface_ref" do
+      block = Prouterd::Config::AST::Block.new(name: "b", line: 1)
+      block.interface_ref = nil
+      result = executor.execute_single_attempt(run, process, block, 1, context, document,
+                                                db_mutex, ctx_mutex, redactor)
+      expect(result.error_type).to eq("invalid_block")
+      expect(result.error_message).to include("no `interface` directive")
+    end
+
+    it "returns invalid_interface when interface_ref points to an undeclared iface" do
+      block = Prouterd::Config::AST::Block.new(name: "b", line: 1)
+      block.interface_ref = Prouterd::Config::AST::InterfaceRef.new(type: "docker", name: "ghost", line: 1)
+      result = executor.execute_single_attempt(run, process, block, 1, context, document,
+                                                db_mutex, ctx_mutex, redactor)
+      expect(result.error_type).to eq("invalid_interface")
+      expect(result.error_message).to include("docker ghost")
+    end
+  end
+
+  describe "#build_env: empty secret list paths" do
+    let(:doc) do
+      parse(<<~PRC)
+        router demo
+        exit
+        interface docker img
+         image x
+        exit
+        process p
+         block b
+          interface docker img
+         exit
+        exit
+      PRC
+    end
+    let(:run) { runs.create_run(process_name: "p", input_event: {}) }
+    let(:process) { doc.processes.first }
+    let(:block) { process.blocks.first }
+    let(:iface) { doc.interfaces.first }
+
+    it "returns just the PROUTER_* env when the iface has no secret_ref fields set" do
+      env = executor.build_env(run, process, block, iface, doc, 1)
+      expect(env.keys).to include("PROUTER_RUN_ID", "PROUTER_BLOCK_NAME")
+      expect(env.keys).not_to include(match(/SECRET/))
+    end
+  end
+
+  describe "max-cost-usd enforcement" do
+    let(:doc) do
+      parse(<<~PRC)
+        router demo
+        exit
+        interface docker img
+         image x
+        exit
+        process p
+         block b
+          interface docker img
+          max-cost-usd 0.01
+         exit
+        exit
+      PRC
+    end
+
+    it "rewrites the result into cost_cap_exceeded when accumulated cost passes the cap" do
+      run = runs.create_run(process_name: "p", input_event: {})
+      runs.add_run_usage(run.id, cost_usd: 1.5) # bump cost above the cap
+      process = doc.processes.first
+      block = process.blocks.first
+
+      runner = Class.new do
+        def run(_req)
+          Prouterd::Runner::ExecutionResult.new(
+            exit_code: 0, stdout: "", stderr: "",
+            output_json: { "ok" => true }, artifacts: [],
+            error_type: nil, error_message: nil,
+            duration_ms: 0, started_at: nil, finished_at: nil
+          )
+        end
+      end.new
+      ex = described_class.new(
+        db: db, runs: runs, runner: runner,
+        artifact_store: Prouterd::Runtime::ArtifactStore.new,
+        secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+        events: Prouterd::Events.default,
+        logger: Prouterd::NullLogger.new, mcp_pool: nil,
+        retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+      )
+      result = ex.execute_single_attempt(run, process, block, 1,
+                                          Prouterd::Runtime::Context.new({}),
+                                          doc, Mutex.new, Mutex.new,
+                                          Prouterd::Runtime::Redactor.new([]))
+      expect(result.error_type).to eq("cost_cap_exceeded")
+    end
+  end
+
+  describe "#build_log_sink" do
+    let(:run) { runs.create_run(process_name: "p", input_event: {}) }
+    let(:step) { runs.create_step(run_id: run.id, block_name: "b") }
+    let(:db_mutex) { Mutex.new }
+    let(:redactor) { Prouterd::Runtime::Redactor.new([]) }
+
+    it "returns a proc that no-ops on nil / empty content" do
+      sink = executor.send(:build_log_sink, run, step, db_mutex, redactor)
+      expect { sink.call(nil) }.not_to raise_error
+      expect { sink.call("") }.not_to raise_error
+      expect(runs.list_logs(run.id)).to be_empty
+    end
+
+    it "persists non-empty content and publishes a :log_appended event" do
+      received = []
+      events = Prouterd::Events.new
+      handle = events.subscribe(:log_appended) { |_t, p| received << p[:content] }
+      ex = described_class.new(
+        db: db, runs: runs, runner: Prouterd::Runner::StubRunner.new,
+        artifact_store: Prouterd::Runtime::ArtifactStore.new,
+        secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+        events: events, logger: Prouterd::NullLogger.new, mcp_pool: nil,
+        retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+      )
+      sink = ex.send(:build_log_sink, run, step, db_mutex, redactor)
+      sink.call("hello", "stdout")
+      events.unsubscribe(handle)
+      expect(received).to eq(["hello"])
+      expect(runs.list_logs(run.id).map(&:content)).to include("hello")
+    end
+
+    it "swallows publish when @events is nil" do
+      ex_no_events = described_class.new(
+        db: db, runs: runs, runner: Prouterd::Runner::StubRunner.new,
+        artifact_store: Prouterd::Runtime::ArtifactStore.new,
+        secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+        events: nil, logger: Prouterd::NullLogger.new, mcp_pool: nil,
+        retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+      )
+      sink = ex_no_events.send(:build_log_sink, run, step, db_mutex, redactor)
+      expect { sink.call("hi") }.not_to raise_error
+      expect(runs.list_logs(run.id).map(&:content)).to include("hi")
+    end
+  end
+
   describe "#stage_artifact_inputs" do
     let(:run) { runs.create_run(process_name: "p", process_config_commit_id: nil, input_event: {}, parent_run_id: nil, thread_id: nil) }
     let(:db_mutex) { Mutex.new }

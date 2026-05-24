@@ -3,6 +3,7 @@
 require_relative "shell/errors"
 require_relative "shell/command_line"
 require_relative "shell/session"
+require_relative "shell/table"
 require_relative "shell/show"
 require_relative "shell/mode"
 

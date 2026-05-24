@@ -360,14 +360,13 @@ module Prouterd
                    end
           return
         end
-        out.puts "%-15s %-20s %-15s %-10s %-19s %s" % ["UID", "PROCESS", "THREAD", "STATUS", "STARTED", "DURATION"]
-        runs.each do |r|
-          dur = r.duration_ms ? "#{r.duration_ms}ms" : "-"
-          out.puts "%-15s %-20s %-15s %-10s %-19s %s" % [
-            r.uid, r.process_name[0, 20], (r.thread_id || "-")[0, 15], r.status,
-            (r.started_at || r.created_at).to_s[0, 19], dur
-          ]
-        end
+        Table.render(out,
+          { "UID" => 15, "PROCESS" => 20, "THREAD" => 15, "STATUS" => 10, "STARTED" => 19, "DURATION" => nil },
+          runs.map do |r|
+            [r.uid, r.process_name[0, 20], (r.thread_id || "-")[0, 15], r.status,
+             (r.started_at || r.created_at).to_s[0, 19],
+             r.duration_ms ? "#{r.duration_ms}ms" : "-"]
+          end)
       end
 
       def show_run(rest, session, out)
@@ -444,10 +443,9 @@ module Prouterd
           out.puts "No artifacts."
           return
         end
-        out.puts "%-25s %-30s %-10s %-12s" % ["BLOCK", "NAME", "SIZE", "CHECKSUM"]
-        artifacts.each do |a|
-          out.puts "%-25s %-30s %-10s %-12s" % [a.block_name, a.name, "#{a.size_bytes}B", a.checksum.to_s[0, 12]]
-        end
+        Table.render(out,
+          { "BLOCK" => 25, "NAME" => 30, "SIZE" => 10, "CHECKSUM" => nil },
+          artifacts.map { |a| [a.block_name, a.name, "#{a.size_bytes}B", a.checksum.to_s[0, 12]] })
       end
 
       # `show logs run <uid> [block <name>]` and `show artifacts run
@@ -538,12 +536,9 @@ module Prouterd
           out.puts "No processes defined."
           return
         end
-        out.puts "%-30s %-12s %-8s %-8s" % ["NAME", "QUEUE", "BLOCKS", "ROUTES"]
-        processes.each do |p|
-          out.puts "%-30s %-12s %-8d %-8d" % [
-            p.name, p.queue_name || "-", p.blocks.length, p.routes.length
-          ]
-        end
+        Table.render(out,
+          { "NAME" => 30, "QUEUE" => 12, "BLOCKS" => 8, "ROUTES" => nil },
+          processes.map { |p| [p.name, p.queue_name || "-", p.blocks.length, p.routes.length] })
       end
 
       def show_process(rest, session, out)
@@ -612,16 +607,15 @@ module Prouterd
           out.puts "No policies defined."
           return
         end
-        out.puts "%-25s %-10s %-12s %-12s %-10s" % ["NAME", "ATTEMPTS", "BACKOFF", "INIT", "MAX"]
-        ps.each do |p|
-          out.puts "%-25s %-10s %-12s %-12s %-10s" % [
-            p.name,
-            p.retry_attempts || "-",
-            p.retry_backoff || "-",
-            p.retry_initial_delay_ms ? Util::DurationParser.render(p.retry_initial_delay_ms) : "-",
-            p.retry_max_delay_ms ? Util::DurationParser.render(p.retry_max_delay_ms) : "-"
-          ]
-        end
+        Table.render(out,
+          { "NAME" => 25, "ATTEMPTS" => 10, "BACKOFF" => 12, "INIT" => 12, "MAX" => nil },
+          ps.map do |p|
+            [p.name,
+             p.retry_attempts || "-",
+             p.retry_backoff || "-",
+             p.retry_initial_delay_ms ? Util::DurationParser.render(p.retry_initial_delay_ms) : "-",
+             p.retry_max_delay_ms ? Util::DurationParser.render(p.retry_max_delay_ms) : "-"]
+          end)
       end
 
       def show_policy(rest, session, out)
@@ -650,14 +644,13 @@ module Prouterd
           out.puts "No queues defined."
           return
         end
-        out.puts "%-25s %-12s %-12s" % ["NAME", "CONCURRENCY", "TIMEOUT"]
-        qs.each do |q|
-          out.puts "%-25s %-12s %-12s" % [
-            q.name,
-            q.concurrency || "-",
-            q.timeout_ms ? Util::DurationParser.render(q.timeout_ms) : "-"
-          ]
-        end
+        Table.render(out,
+          { "NAME" => 25, "CONCURRENCY" => 12, "TIMEOUT" => nil },
+          qs.map do |q|
+            [q.name,
+             q.concurrency || "-",
+             q.timeout_ms ? Util::DurationParser.render(q.timeout_ms) : "-"]
+          end)
       end
 
       def show_queue(rest, session, out)
@@ -676,10 +669,9 @@ module Prouterd
           out.puts "No secrets defined."
           return
         end
-        out.puts "%-30s %-10s %s" % ["NAME", "SOURCE", "REF"]
-        ss.each do |s|
-          out.puts "%-30s %-10s %s" % [s.name, s.source_type || "-", s.source_value || "-"]
-        end
+        Table.render(out,
+          { "NAME" => 30, "SOURCE" => 10, "REF" => nil },
+          ss.map { |s| [s.name, s.source_type || "-", s.source_value || "-"] })
       end
 
       def show_secret(rest, session, out)

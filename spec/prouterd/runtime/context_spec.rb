@@ -49,4 +49,41 @@ RSpec.describe Prouterd::Runtime::Context do
     ctx = described_class.new(event: { type: "foo" })
     expect(ctx.get("event.type")).to eq("foo")
   end
+
+  it "get with a nil or empty path returns the whole tree" do
+    ctx = described_class.new("a" => 1)
+    expect(ctx.get(nil)).to eq("a" => 1)
+    expect(ctx.get("")).to eq("a" => 1)
+  end
+
+  it "get walks Array indices via numeric string path segments" do
+    ctx = described_class.new("xs" => [{ "v" => 10 }, { "v" => 20 }])
+    expect(ctx.get("xs.1.v")).to eq(20)
+  end
+
+  it "set raises when the path is nil or empty" do
+    ctx = described_class.new
+    expect { ctx.set(nil, 1) }.to raise_error(ArgumentError, /non-empty/)
+    expect { ctx.set("",  1) }.to raise_error(ArgumentError, /non-empty/)
+  end
+
+  it "merge_into overwrites when the existing value is non-Hash" do
+    ctx = described_class.new("a" => "scalar")
+    ctx.merge_into("a", { "k" => "v" })
+    expect(ctx.get("a")).to eq("k" => "v")
+  end
+
+  it "merge_into overwrites when the incoming value is non-Hash" do
+    ctx = described_class.new("a" => { "k" => "v" })
+    ctx.merge_into("a", "scalar")
+    expect(ctx.get("a")).to eq("scalar")
+  end
+
+  it "to_h deep-dups Arrays as well as Hashes" do
+    ctx = described_class.new("xs" => [{ "v" => 1 }])
+    snap = ctx.to_h
+    ctx.get("xs").first["v"] = 99
+    # snap['xs'] keys are stringified during deep_dup; ensure independence
+    expect(snap["xs"].first["v"]).to eq(1)
+  end
 end

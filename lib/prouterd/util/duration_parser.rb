@@ -32,12 +32,12 @@ module Prouterd
 
         return "0s" if ms.zero?
 
+        # The "ms" case at the end of the loop always matches because
+        # every integer divides by 1; the loop is guaranteed to return.
         %w[h m s ms].each do |unit|
           divisor = UNITS_MS.fetch(unit)
           return "#{ms / divisor}#{unit}" if (ms % divisor).zero?
         end
-
-        "#{ms}ms"
       end
     end
   end

@@ -46,6 +46,15 @@ RSpec.describe Prouterd::Runtime::InFlightRegistry do
     expect(r.in_flight?("run_b")).to be(false)
   end
 
+  it "container_ids_for returns [] for an unknown run" do
+    expect(described_class.new.container_ids_for("ghost")).to eq([])
+  end
+
+  it "detach_container is a no-op when the run is unknown" do
+    r = described_class.new
+    expect { r.detach_container("ghost", "abc") }.not_to raise_error
+  end
+
   it "is thread-safe under concurrent register/unregister" do
     r = described_class.new
     threads = 20.times.map do |i|

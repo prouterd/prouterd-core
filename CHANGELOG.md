@@ -2101,10 +2101,42 @@ blocks the operator wires up directly).
 
 1007 / 0 (was 1002 + 5).
 
+### Phase 43: UTF-8-safe subprocess LLM stdout/stderr decode
+
+Subprocess LLM blocks (codex_cli / claude_cli) read the child's
+stdout via `IO#each_line` and the stderr via `IO#read`. Both arrive
+in the IO's external encoding — typically ASCII-8BIT when the
+daemon was started without `LANG` / `LC_ALL`. Any non-ASCII byte
+in the model's JSONL stream then raises
+`Encoding::CompatibilityError` either during stderr aggregation
+(append into a UTF-8 buffer), during the `stream_sink` log path
+(redactor walks a non-UTF-8 string), or during `JSON.parse` on a
+chunk with multibyte content. A block whose model output contained
+an em-dash, a quoted non-Latin identifier, or any character outside
+US-ASCII failed at the daemon, not the model.
+
+Fix is two-part, both in `iface/llm_subprocess` (and mirrored in
+the agentic loop's reader):
+
+1. Every chunk read off the subprocess stdout or stderr passes
+   through `utf8_safe` — force-tags `Encoding::UTF_8` and scrubs
+   any invalid byte sequence (`?` replacement). Valid UTF-8 input
+   is unchanged.
+2. `build_env` defaults the spawn's `LANG` and `LC_ALL` to
+   `C.UTF-8` so the CLI itself doesn't fall back to an ASCII
+   output path inside a minimal locale. Either var can be
+   overridden through `env KEY VALUE` / `env-forward KEY` since
+   those merge on top.
+
+The fix is symmetric across codex_cli and claude_cli, single-shot
+and stream-json modes, and the agentic multi-turn loop.
+
+1012 / 0 (was 1007 + 5).
+
 ## Status
 
-- 42 phases shipped, one git commit per fix or feature
-- 1007 RSpec specs, 0 failures
+- 43 phases shipped, one git commit per fix or feature
+- 1012 RSpec specs, 0 failures
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

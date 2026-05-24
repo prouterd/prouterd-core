@@ -310,7 +310,7 @@ module Prouterd
         options = LlmSubprocess.popen_options(cwd: resolved_cwd, sandbox_env: sandbox_env)
         popen_args = options.empty? ? [env, *argv] : [env, *argv, options]
         Open3.popen3(*popen_args) do |stdin, stdout, stderr, wait_thr|
-          err_thread = Thread.new { stderr_buf << stderr.read.to_s }
+          err_thread = Thread.new { stderr_buf << LlmSubprocess.utf8_safe(stderr.read.to_s) }
 
           # First message: prompt + tools + system. Subsequent messages
           # are tool outputs only; the CLI carries the conversation
@@ -331,6 +331,11 @@ module Prouterd
                               tool_calls: tool_calls, turns: turns)
             end
 
+            # IO chunks land in the IO's external encoding (typically
+            # ASCII-8BIT). Force-tag UTF-8 + scrub so a non-Latin-1
+            # character anywhere in the JSONL event stream doesn't
+            # crash the parser or the text aggregator downstream.
+            raw  = LlmSubprocess.utf8_safe(raw)
             event = (JSON.parse(raw) rescue nil)
             next unless event.is_a?(Hash)
 

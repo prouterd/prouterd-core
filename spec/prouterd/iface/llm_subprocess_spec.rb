@@ -433,6 +433,72 @@ RSpec.describe Prouterd::Iface::LlmSubprocess do
     File.unlink(bin)
   end
 
+  describe "UTF-8 safety" do
+    it "force-tags binary chunks as UTF-8 and preserves multibyte characters" do
+      raw = "hello — world".dup.force_encoding(Encoding::ASCII_8BIT)
+      out = described_class.utf8_safe(raw)
+      expect(out.encoding).to eq(Encoding::UTF_8)
+      expect(out).to eq("hello — world")
+    end
+
+    it "scrubs invalid byte sequences with `?`" do
+      bad = "ok-\xC3-bad".dup.force_encoding(Encoding::ASCII_8BIT)
+      out = described_class.utf8_safe(bad)
+      expect(out.encoding).to eq(Encoding::UTF_8)
+      expect(out).to include("?")
+      expect(out).to be_valid_encoding
+    end
+
+    it "build_env carries LANG and LC_ALL defaults" do
+      env = described_class.build_env(nil)
+      expect(env["LANG"]).to   eq("C.UTF-8")
+      expect(env["LC_ALL"]).to eq("C.UTF-8")
+    end
+
+    it "aggregates multibyte text from codex agent_message events" do
+      bin = fake_binary([
+        '{"type":"item.completed","item":{"type":"agent_message","text":"hello — мир"}}',
+        '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":3}}'
+      ])
+
+      result = described_class.call(
+        provider: "codex_cli", model: "x",
+        binary: bin, home: nil, sandbox: nil,
+        prompt: "go", system_msg: "",
+        timeout_ms: 5_000
+      )
+
+      expect(result[:exit_code]).to eq(0)
+      expect(result[:error_type]).to be_nil
+      expect(result[:output_json]["text"]).to eq("hello — мир")
+      expect(result[:output_json]["text"].encoding).to eq(Encoding::UTF_8)
+
+      File.unlink(bin)
+    end
+
+    it "streams multibyte lines through stream_sink without raising" do
+      bin = fake_binary([
+        '{"type":"item.completed","item":{"type":"agent_message","text":"日本語"}}'
+      ])
+
+      captured = []
+      sink = ->(line, stream = "stdout") { captured << line }
+
+      result = described_class.call(
+        provider: "codex_cli", model: "x",
+        binary: bin, home: nil, sandbox: nil,
+        stream: true, stream_sink: sink,
+        prompt: "go", system_msg: "",
+        timeout_ms: 5_000
+      )
+
+      expect(result[:exit_code]).to eq(0)
+      expect(captured.length).to eq(1)
+      expect(captured.first.encoding).to eq(Encoding::UTF_8)
+      expect(captured.first).to include("日本語")
+    end
+  end
+
   it "keeps output_json nil when the subprocess fails with no captured output" do
     bin = fake_binary([], exit_code: 1)
 

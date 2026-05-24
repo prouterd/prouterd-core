@@ -224,6 +224,16 @@ module Prouterd
       def build_env(home)
         env = {}
         env["HOME"] = home if home && !home.empty?
+        # Default the spawn's locale to a UTF-8-capable one. Without
+        # this, a daemon started without `LANG` / `LC_ALL` in its env
+        # (typical on macOS launchd, minimal Docker images) leaves the
+        # child CLI in the C locale, where it falls back to ASCII
+        # output — every non-ASCII byte in the model's response then
+        # becomes an escape sequence the JSONL parser doesn't expect.
+        # The operator can override either var via `env KEY VALUE` /
+        # `env-forward KEY` (those merge on top of this hash).
+        env["LANG"]   = "C.UTF-8"
+        env["LC_ALL"] = "C.UTF-8"
         env
       end
 
@@ -233,6 +243,16 @@ module Prouterd
         else
           "#{prompt}\n"
         end
+      end
+
+      # Force-tag an arbitrary string as UTF-8, replacing invalid byte
+      # sequences with `?`. Idempotent for already-valid UTF-8.
+      # Centralised so `LlmAgentic` can share the same fix.
+      def utf8_safe(str)
+        s = str.to_s
+        s = s.dup if s.frozen?
+        s.force_encoding(Encoding::UTF_8)
+        s.valid_encoding? ? s : s.scrub("?")
       end
 
       def cli_available?(bin)
@@ -258,7 +278,13 @@ module Prouterd
 
           out_thread = Thread.new do
             stdout.each_line do |raw|
-              line = raw.chomp
+              # IO chunks from Open3 arrive in the IO's default
+              # external encoding — typically ASCII-8BIT under a C
+              # locale. The CLI's JSONL events are UTF-8 by contract,
+              # so we force-tag UTF-8 and scrub any invalid sequence
+              # (replaced with `?`) rather than letting the line
+              # explode the log appender / JSON parser downstream.
+              line = utf8_safe(raw).chomp
               stdout_lines << line
               # When the operator opted into streaming, hand each line
               # to the per-step log writer immediately — `prouter logs
@@ -267,7 +293,7 @@ module Prouterd
               stream_sink&.call(line, "stdout")
             end
           end
-          err_thread = Thread.new { stderr_buf << stderr.read.to_s }
+          err_thread = Thread.new { stderr_buf << utf8_safe(stderr.read.to_s) }
 
           while wait_thr.alive?
             if Time.now > deadline

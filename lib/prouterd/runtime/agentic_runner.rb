@@ -28,7 +28,7 @@ module Prouterd
     # Host contract:
     #   * host.secret_overlay(document) → Hash<String, String>
     #   * host.templated_fields(fields, scope) → Hash
-    #   * host.build_env(run, process, block, iface, document) → Hash<String, String>
+    #   * host.build_env(run, process, block, iface, document, attempt) → Hash<String, String>
     #   * host.accumulate_run_usage(run, scrubbed_output_json, iface, document) → void
     #   * host.update_context_with_output(block, context, scrubbed) → void
     class AgenticRunner
@@ -126,7 +126,7 @@ module Prouterd
         api_key = nil
         auth = templated_iface["auth"]
         if auth && auth.respond_to?(:secret_name)
-          api_key = @host.build_env(run, process, block, iface, document)[auth.secret_name]
+          api_key = @host.build_env(run, process, block, iface, document, attempt)[auth.secret_name]
         end
         base_url = templated_iface["base-url"]
         base_url = nil if base_url.respond_to?(:empty?) && base_url.empty?
@@ -135,7 +135,7 @@ module Prouterd
 
         max_tokens = (block.type_fields["max-tokens"] || "1024").to_i
         max_tokens = 1024 if max_tokens < 1
-        env = @host.build_env(run, process, block, iface, document)
+        env = @host.build_env(run, process, block, iface, document, attempt)
 
         dispatcher = build_tool_dispatcher(run, process, block, document, env)
 

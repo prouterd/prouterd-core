@@ -140,7 +140,7 @@ module Prouterd
 
         staged_inputs = stage_artifact_inputs(run, block, db_mutex)
 
-        env = build_env(run, process, block, iface, document)
+        env = build_env(run, process, block, iface, document, attempt)
         staged_inputs.each_key do |local_name|
           env["PROUTER_INPUT_#{local_name.upcase}"] = "/prouter/inputs/#{local_name}"
         end
@@ -270,12 +270,12 @@ module Prouterd
         end
       end
 
-      def build_env(run, process, block, iface, document)
+      def build_env(run, process, block, iface, document, attempt)
         env = {
           "PROUTER_RUN_ID" => run.uid,
           "PROUTER_PROCESS_NAME" => process.name,
           "PROUTER_BLOCK_NAME" => block.name,
-          "PROUTER_ATTEMPT" => "1",
+          "PROUTER_ATTEMPT" => attempt.to_s,
           "PROUTER_INPUT_PATH" => "/prouter/input.json",
           "PROUTER_OUTPUT_PATH" => "/prouter/output.json",
           "PROUTER_ARTIFACTS_DIR" => "/prouter/artifacts"

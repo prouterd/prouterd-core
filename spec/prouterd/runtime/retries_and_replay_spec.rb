@@ -58,6 +58,23 @@ RSpec.describe "Phase 6: retries, on-failure, dead-letter, replay" do
       expect(steps.map(&:status)).to eq(%w[failed failed success])
     end
 
+    it "passes the current attempt through PROUTER_ATTEMPT" do
+      attempts_seen = []
+      runner.default do |req|
+        attempts_seen << req.env["PROUTER_ATTEMPT"]
+        if attempts_seen.length < 3
+          Prouterd::Runner::StubRunner.failure(error_type: "non_zero_exit").call(req)
+        else
+          Prouterd::Runner::StubRunner.success.call(req)
+        end
+      end
+
+      run = orchestrator.trigger(document, "p", input_event: {})
+
+      expect(run.status).to eq("success")
+      expect(attempts_seen).to eq(%w[1 2 3])
+    end
+
     it "fails the run when all retries exhaust" do
       runner.default(&Prouterd::Runner::StubRunner.failure(error_type: "non_zero_exit", error_message: "boom"))
       run = orchestrator.trigger(document, "p", input_event: {})

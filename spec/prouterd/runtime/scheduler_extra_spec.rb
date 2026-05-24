@@ -19,6 +19,30 @@ RSpec.describe Prouterd::Runtime::Scheduler do
     Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(prc))
   end
 
+  describe ".fugit_available?" do
+    after { described_class.instance_variable_set(:@fugit_available, nil) }
+
+    it "returns false when require raises LoadError" do
+      described_class.instance_variable_set(:@fugit_available, nil)
+      allow(described_class).to receive(:require).with("fugit").and_raise(LoadError)
+      expect(described_class.fugit_available?).to be(false)
+    end
+
+    it "caches the answer" do
+      described_class.instance_variable_set(:@fugit_available, true)
+      expect(described_class).not_to receive(:require)
+      expect(described_class.fugit_available?).to be(true)
+    end
+  end
+
+  describe "#parse_cron error rescue" do
+    it "returns nil and logs warning on invalid cron expression" do
+      sched = described_class.new(store: store, runner: runner, jobs: jobs)
+      iface = double(name: "i", type_fields: { "schedule" => "not-a-valid-cron", "timezone" => nil })
+      expect(sched.send(:parse_cron, iface)).to be_nil
+    end
+  end
+
   describe "tick_loop / tick_with_rescue (background thread body)" do
     let(:document) do
       parse(<<~PRC)
@@ -208,6 +232,7 @@ RSpec.describe Prouterd::Runtime::Scheduler do
 
   describe "auto-pull for interface local_repo" do
     before { Prouterd::Iface::LocalRepoStatus.reset! }
+    after  { Prouterd::Iface::LocalRepoStatus.reset! }
 
     def make_git_repo(root, name)
       dir = File.join(root, name)

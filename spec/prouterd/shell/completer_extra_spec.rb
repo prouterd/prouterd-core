@@ -306,4 +306,18 @@ RSpec.describe Prouterd::Shell::Completer do
       expect(completer.call("", "show block process unknown ")).to eq([])
     end
   end
+
+  describe "show <unknown> at depth 4 / 5" do
+    it "returns [] for unknown subtopic at depth 4 ('show foo bar baz ')" do
+      expect(completer.call("", "show foo bar baz ")).to eq([])
+    end
+
+    it "returns [] for unknown subtopic at depth 5 ('show foo bar baz qux ')" do
+      expect(completer.call("", "show foo bar baz qux ")).to eq([])
+    end
+
+    it "returns [] for tokens length 6+ (show too deep)" do
+      expect(completer.call("", "show a b c d e ")).to eq([])
+    end
+  end
 end

@@ -171,6 +171,37 @@ RSpec.describe Prouterd::Runner::ShellRunner do
     end
   end
 
+  describe "terminate_process — KILL also gets ESRCH" do
+    it "rescues ESRCH from Process.kill('KILL', ...) when both attempts find the pid gone" do
+      fake = Class.new do
+        def pid; 999_999; end
+        def join(*); nil; end
+      end.new
+      # First TERM goes through, but the process exits before KILL fires.
+      kill_calls = 0
+      allow(Process).to receive(:kill) do |sig, _pid|
+        kill_calls += 1
+        raise Errno::ESRCH if sig == "KILL"
+      end
+      expect { runner.send(:terminate_process, fake) }.not_to raise_error
+      expect(kill_calls).to eq(2)
+    end
+  end
+
+  describe "collect_artifacts SystemCallError rescue" do
+    let(:work_dir) { Dir.mktmpdir("prouter-art-err-") }
+    after { FileUtils.remove_entry(work_dir) if File.directory?(work_dir) }
+
+    it "skips files whose lstat raises SystemCallError" do
+      art_dir = File.join(work_dir, "artifacts")
+      FileUtils.mkdir_p(art_dir)
+      File.write(File.join(art_dir, "a.txt"), "x")
+      allow(File).to receive(:lstat).and_call_original
+      allow(File).to receive(:lstat).with(File.join(art_dir, "a.txt")).and_raise(Errno::EACCES.new("denied"))
+      expect { runner.send(:collect_artifacts, work_dir) }.not_to raise_error
+    end
+  end
+
   describe "terminate_process is best-effort" do
     it "ignores Errno::ESRCH when the process is already dead" do
       fake = Class.new do

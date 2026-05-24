@@ -262,7 +262,8 @@ module Prouterd
         return [] unless File.directory?(dir)
 
         Dir.glob(File.join(dir, "**", "*"), File::FNM_DOTMATCH).filter_map do |path|
-          next unless File.file?(path)
+          stat = File.lstat(path)
+          next unless stat.file?
 
           rel = path.sub(/\A#{Regexp.escape(dir)}\/?/, "")
           next if rel.empty?
@@ -270,10 +271,12 @@ module Prouterd
           ArtifactDescriptor.new(
             name: rel,
             host_path: path,
-            size_bytes: File.size(path),
+            size_bytes: stat.size,
             content_type: nil,
             checksum: file_checksum(path)
           )
+        rescue SystemCallError
+          nil
         end
       end
 

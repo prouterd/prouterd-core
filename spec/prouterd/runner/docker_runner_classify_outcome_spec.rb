@@ -106,4 +106,16 @@ RSpec.describe Prouterd::Runner::DockerRunner do
       expect(output).to eq({})
     end
   end
+
+  describe "artifact collection" do
+    it "does not collect symlinks from /prouter/artifacts" do
+      artifacts_dir = File.join(work_dir, "artifacts")
+      FileUtils.mkdir_p(artifacts_dir)
+      File.symlink("/etc/passwd", File.join(artifacts_dir, "leak"))
+
+      artifacts = runner.send(:collect_artifacts, work_dir)
+
+      expect(artifacts.map(&:name)).not_to include("leak")
+    end
+  end
 end

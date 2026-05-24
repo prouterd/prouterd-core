@@ -142,4 +142,11 @@ RSpec.describe Prouterd::Runner::ShellRunner do
     expect(result.artifacts.first.name).to eq("produced.txt")
     expect(result.artifacts.first.size_bytes).to be > 0
   end
+
+  it "does not collect symlinks from $PROUTER_ARTIFACTS_DIR" do
+    cmd = %q[sh -c 'echo "{}" > $PROUTER_OUTPUT_PATH; ln -s /etc/passwd $PROUTER_ARTIFACTS_DIR/leak']
+    result = runner.run(request(command: cmd))
+    expect(result.success?).to be(true)
+    expect(result.artifacts.map(&:name)).not_to include("leak")
+  end
 end

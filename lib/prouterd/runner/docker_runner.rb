@@ -422,12 +422,13 @@ module Prouterd
 
         descriptors = []
         Dir.glob(File.join(dir, "**", "*"), File::FNM_DOTMATCH).each do |path|
-          next unless File.file?(path)
+          stat = File.lstat(path)
+          next unless stat.file?
 
           rel_name = path.sub(/\A#{Regexp.escape(dir)}\/?/, "")
           next if rel_name.empty?
 
-          size = File.size(path)
+          size = stat.size
           checksum = file_checksum(path)
           descriptors << ArtifactDescriptor.new(
             name: rel_name,
@@ -436,6 +437,8 @@ module Prouterd
             content_type: nil,
             checksum: checksum
           )
+        rescue SystemCallError
+          next
         end
         descriptors
       end

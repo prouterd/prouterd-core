@@ -41,8 +41,12 @@ module Prouterd
 
         target_dir = File.join(@root, run_uid, block_name)
         FileUtils.mkdir_p(target_dir)
-        descriptors.map do |d|
-          dest = File.join(target_dir, d.name)
+        descriptors.filter_map do |d|
+          next unless regular_file_without_symlink?(d.host_path)
+
+          dest = safe_join(target_dir, d.name)
+          next unless dest
+
           FileUtils.mkdir_p(File.dirname(dest))
           FileUtils.cp(d.host_path, dest)
           d.dup.tap { |c| c.host_path = dest }
@@ -50,7 +54,9 @@ module Prouterd
       end
 
       def read(run_uid, block_name, name)
-        path = File.join(@root, run_uid, block_name, name)
+        path = safe_join(File.join(@root, run_uid, block_name), name)
+        return nil unless path
+
         File.read(path) if File.exist?(path)
       end
 
@@ -59,6 +65,31 @@ module Prouterd
         return [] unless File.directory?(base)
 
         Dir.glob(File.join(base, "**", "*")).select { |p| File.file?(p) }
+      end
+
+      private
+
+      def regular_file_without_symlink?(path)
+        return false unless path
+
+        stat = File.lstat(path)
+        stat.file? && !stat.symlink?
+      rescue SystemCallError
+        false
+      end
+
+      def safe_join(base, relative_name)
+        return nil unless relative_name
+
+        name = relative_name.to_s
+        return nil if name.empty? || name.include?("\0") || name.start_with?("/")
+        return nil if name.split(/[\\\/]/).any? { |seg| seg == ".." }
+
+        root = File.expand_path(base)
+        dest = File.expand_path(name, root)
+        return nil unless dest == root || dest.start_with?(root + File::SEPARATOR)
+
+        dest
       end
     end
   end

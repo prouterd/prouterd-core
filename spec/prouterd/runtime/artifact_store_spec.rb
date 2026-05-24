@@ -102,6 +102,25 @@ RSpec.describe Prouterd::Runtime::ArtifactStore do
       expect(archived.host_path).to eq(File.join(@root, "run9", "blk", "sub", "dir", "n.txt"))
       expect(File.read(archived.host_path)).to eq("n")
     end
+
+    it "refuses artifact names that would escape the archive directory" do
+      src = src_file("payload.txt", "secret")
+      result = store.archive("run9", "blk", [descriptor("../escape.txt", src)])
+
+      expect(result).to eq([])
+      expect(File.exist?(File.join(@root, "run9", "escape.txt"))).to be(false)
+    end
+
+    it "refuses symlink sources" do
+      target = src_file("target.txt", "secret")
+      link = File.join(@src, "link.txt")
+      File.symlink(target, link)
+
+      result = store.archive("run9", "blk", [descriptor("link.txt", link)])
+
+      expect(result).to eq([])
+      expect(File.exist?(File.join(@root, "run9", "blk", "link.txt"))).to be(false)
+    end
   end
 
   describe "#read" do
@@ -113,6 +132,10 @@ RSpec.describe Prouterd::Runtime::ArtifactStore do
 
     it "returns nil when the file is missing" do
       expect(store.read("missing-run", "missing-block", "missing.txt")).to be_nil
+    end
+
+    it "returns nil for traversal attempts" do
+      expect(store.read("run1", "b1", "../outside.txt")).to be_nil
     end
   end
 

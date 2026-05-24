@@ -301,6 +301,84 @@ RSpec.describe Prouterd::Runtime::Orchestrator do
     end
   end
 
+  describe "#execute_run process lookup" do
+    it "raises TriggerError when the run's process name is no longer in the document" do
+      doc = parse(<<~PRC)
+        router demo
+        exit
+        interface docker img
+         image x
+        exit
+        process p
+         block a
+          interface docker img
+         exit
+        exit
+      PRC
+      run = repo.create_run(process_name: "ghost", process_config_commit_id: nil, input_event: {}, parent_run_id: nil, thread_id: nil)
+      expect { orchestrator.execute_run(run, doc) }.to raise_error(
+        Prouterd::Runtime::TriggerError, /no such process 'ghost'/
+      )
+    end
+  end
+
+  describe "execute: process with no entry blocks" do
+    it "finalises as failed with 'no entry blocks' error" do
+      doc = parse(<<~PRC)
+        router demo
+        exit
+        interface docker img
+         image x
+        exit
+        process p
+         block a
+          interface docker img
+         exit
+         block b
+          interface docker img
+         exit
+         route a b
+         route b a
+        exit
+      PRC
+      run = orchestrator.trigger(doc, "p", input_event: {})
+      expect(run.status).to eq("failed")
+      expect(run.error_summary).to include("no entry blocks")
+    end
+  end
+
+  describe "execute: shutdown block is auto-skipped" do
+    it "marks the run successful after auto-skipping a shutdown block" do
+      doc = parse(<<~PRC)
+        router demo
+        exit
+        interface docker img
+         image x
+        exit
+        process p
+         block a
+          interface docker img
+          shutdown
+         exit
+        exit
+      PRC
+      run = orchestrator.trigger(doc, "p", input_event: {})
+      expect(run.status).to eq("success")
+    end
+  end
+
+  describe "run_timeout_overshoot queue lookup edge" do
+    it "falls through to the env-or-default cap when queue_name resolves to no queue" do
+      doc = parse(<<~PRC)
+        router demo
+        exit
+      PRC
+      process = double(timeout_ms: nil, queue_name: "ghost-queue")
+      # cap defaults: ENV PROUTERD_RUN_DEFAULT_TIMEOUT_MS or 6h
+      expect(orchestrator.send(:run_timeout_overshoot, process, doc, Time.now.utc)).to be_nil
+    end
+  end
+
   describe "EnvSecretResolver" do
     let(:resolver) { Prouterd::Runtime::EnvSecretResolver.new }
 

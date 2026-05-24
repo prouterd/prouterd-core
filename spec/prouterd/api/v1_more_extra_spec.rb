@@ -81,6 +81,100 @@ RSpec.describe "Prouterd::API::V1 deeper coverage" do
     expect(route["matches"].first["path"]).to eq("event.go")
   end
 
+  it "GET /v1/processes/:name surfaces fan_out + agentic + skip_when block detail" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface llm m
+       provider anthropic
+       model claude-X
+      exit
+      interface docker img
+       image foo
+      exit
+      process p
+       block scout
+        interface docker img
+        produces hits.csv
+        fan-out from hits into worker
+       exit
+       block thinker
+        interface llm m
+        prompt "go"
+        agentic on
+        allowed-tools none
+       exit
+       block guarded
+        interface docker img
+        skip-when event.skip eq "yes"
+       exit
+      exit
+      process worker
+       block w
+        interface docker img
+       exit
+      exit
+    PRC
+    # remove the (invalid) `allowed-tools none` setting back to no tools
+    doc.processes.first.block("thinker").allowed_tools.clear
+    # tool resolution would fail validation; commit raw via direct
+    store.instance_variable_get(:@db).execute("UPDATE config_commits SET id=id") rescue nil
+    store.commit(doc) rescue nil
+    allow(store).to receive(:load_running).and_return(doc)
+
+    get "/v1/processes/p"
+    expect(last_response.status).to eq(200)
+    payload = JSON.parse(last_response.body)["data"]
+    scout = payload["blocks"].find { |b| b["name"] == "scout" }
+    expect(scout["fan_out"]).to be_a(Hash)
+    expect(scout["fan_out"]).to include("from" => "hits", "into" => "worker")
+
+    thinker = payload["blocks"].find { |b| b["name"] == "thinker" }
+    expect(thinker["agentic"]).to be_a(Hash)
+
+    guarded = payload["blocks"].find { |b| b["name"] == "guarded" }
+    expect(guarded["skip_when"]).to include("path" => "event.skip")
+  end
+
+  it "GET /v1/secrets surfaces present/missing for env-sourced secrets" do
+    ENV["V1_EXTRA_PRESENT"] = "value"
+    ENV.delete("V1_EXTRA_MISSING")
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      secret PRESENT
+       source env V1_EXTRA_PRESENT
+      exit
+      secret ABSENT
+       source env V1_EXTRA_MISSING
+      exit
+    PRC
+    store.commit(doc)
+    get "/v1/secrets"
+    payload = JSON.parse(last_response.body)["data"]
+    by_name = payload.to_h { |s| [s["name"], s] }
+    expect(by_name["PRESENT"]["status"]).to eq("present")
+    expect(by_name["ABSENT"]["status"]).to eq("missing")
+  ensure
+    ENV.delete("V1_EXTRA_PRESENT")
+  end
+
+  it "GET /v1/interfaces compacts fields with empty-string values" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image foo
+       user ""
+      exit
+    PRC
+    store.commit(doc)
+    get "/v1/interfaces"
+    iface = JSON.parse(last_response.body)["data"].first
+    expect(iface["fields"]).to have_key("image")
+    expect(iface["fields"]).not_to have_key("user")
+  end
+
   it "POST /v1/trace serializes edge.matches in trace_to_payload" do
     doc = parse(<<~PRC)
       router demo

@@ -37,9 +37,19 @@ module Prouterd
 
       DEFAULT_TIMEOUT_MS = 120_000
 
-      def call(provider:, model:, binary:, home:, sandbox:, prompt:, system_msg:, timeout_ms:)
-        argv, stdin_text = build_invocation(provider, binary, model, sandbox, prompt, system_msg)
+      def call(provider:, model:, binary:, home:, sandbox:, prompt:, system_msg:, timeout_ms:,
+               cwd: nil, reasoning_effort: nil)
+        argv, stdin_text = build_invocation(provider, binary, model, sandbox, prompt, system_msg,
+                                             reasoning_effort: reasoning_effort)
         env = build_env(home)
+        resolved_cwd = resolve_cwd(cwd)
+        if cwd && resolved_cwd.nil?
+          return {
+            exit_code: nil, output_json: nil, stdout: "", stderr: "",
+            error_type: "invalid_cwd",
+            error_message: "#{provider} cwd does not exist: #{cwd}"
+          }
+        end
 
         unless cli_available?(argv.first)
           return {
@@ -49,7 +59,8 @@ module Prouterd
           }
         end
 
-        stdout_lines, stderr_text, status = run_subprocess(env, argv, stdin_text, timeout_ms || DEFAULT_TIMEOUT_MS)
+        stdout_lines, stderr_text, status = run_subprocess(env, argv, stdin_text, timeout_ms || DEFAULT_TIMEOUT_MS,
+                                                            cwd: resolved_cwd)
 
         if status == :timeout
           return { exit_code: nil, output_json: nil, stdout: "", stderr: stderr_text,
@@ -99,15 +110,20 @@ module Prouterd
       # prompt via stdin in a JSONL-friendly form; claude_cli (Claude
       # Code) takes the prompt as the positional arg of `-p` and reads
       # nothing from stdin.
-      def build_invocation(provider, binary, model, sandbox, prompt, system_msg)
+      def build_invocation(provider, binary, model, sandbox, prompt, system_msg,
+                           reasoning_effort: nil)
         bin = resolve_binary(provider, binary)
         case provider
         when "codex_cli"
           argv = [bin, "exec", "--json"]
           argv += ["-m", model] unless model.to_s.empty?
           argv += ["-s", sandbox] if sandbox && !sandbox.empty?
+          argv += codex_reasoning_args(reasoning_effort)
           stdin_text = build_codex_stdin(prompt, system_msg)
         when "claude_cli"
+          # reasoning_effort is a codex-only concept; silently ignored
+          # for Claude Code (it has its own thinking-mode toggles via
+          # a different API).
           argv = build_argv_claude(bin, model, prompt, system_msg)
           stdin_text = ""
         else
@@ -122,7 +138,7 @@ module Prouterd
       # `--resume <session>` chaining, which is a different driver.
       # Validator rejects `agentic on` + `provider claude_cli` at apply
       # time so this method is only hit for codex_cli.
-      def build_argv(provider, binary, model, sandbox)
+      def build_argv(provider, binary, model, sandbox, reasoning_effort: nil)
         unless provider == "codex_cli"
           raise ArgumentError, "build_argv only supports codex_cli; " \
                                "claude_cli requires the per-call build_invocation path"
@@ -132,7 +148,25 @@ module Prouterd
         argv = [bin, "exec", "--json"]
         argv += ["-m", model] unless model.to_s.empty?
         argv += ["-s", sandbox] if sandbox && !sandbox.empty?
+        argv += codex_reasoning_args(reasoning_effort)
         argv
+      end
+
+      # `-c model_reasoning_effort=<level>` is codex's stable config-
+      # override flag; works across recent versions without requiring
+      # a top-level `--reasoning-effort` switch the CLI may or may not
+      # expose. Returns [] when no override is requested so the user's
+      # CLI default applies.
+      def codex_reasoning_args(level)
+        return [] if level.nil? || level.to_s.empty?
+
+        ["-c", "model_reasoning_effort=#{level}"]
+      end
+
+      def resolve_cwd(cwd)
+        return nil if cwd.nil? || cwd.to_s.empty?
+
+        File.directory?(cwd) ? cwd : nil
       end
 
       # Real Claude Code CLI 2.1.x invocation:
@@ -181,13 +215,14 @@ module Prouterd
         end
       end
 
-      def run_subprocess(env, argv, stdin_text, timeout_ms)
+      def run_subprocess(env, argv, stdin_text, timeout_ms, cwd: nil)
         stdout_lines = []
         stderr_buf = String.new(encoding: Encoding::UTF_8)
         status = nil
 
         deadline = Time.now + (timeout_ms / 1000.0)
-        Open3.popen3(env, *argv) do |stdin, stdout, stderr, wait_thr|
+        popen_args = cwd ? [env, *argv, { chdir: cwd }] : [env, *argv]
+        Open3.popen3(*popen_args) do |stdin, stdout, stderr, wait_thr|
           stdin.write(stdin_text) rescue nil
           stdin.close rescue nil
 

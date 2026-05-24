@@ -60,6 +60,18 @@ module Prouterd
                                    description: "max tokens to generate (string for templating)"
         call_field :temperature, kind: :string,
                                   description: "sampling temperature (string for templating)"
+        # Subprocess-provider knobs. `cwd` rebinds the spawn's working
+        # directory so an agent CLI (codex_cli / claude_cli) sees a
+        # project-rooted view of the filesystem — without this both CLIs
+        # default to the daemon's cwd, which is rarely the repo the
+        # agent is meant to investigate. `reasoning-effort` is codex's
+        # `-c model_reasoning_effort=<level>` config override; production
+        # runs typically want `low`/`medium` rather than the CLI's
+        # `xhigh` default. Both are silently ignored for HTTP providers.
+        call_field :cwd, kind: :string,
+                          description: "working directory for the spawned subprocess (codex_cli/claude_cli)"
+        call_field :"reasoning-effort", kind: :enum, enum: %w[low medium high xhigh],
+                                         description: "codex_cli reasoning effort (-c model_reasoning_effort=<level>)"
 
         caller "Prouterd::Iface::LlmCaller"
 

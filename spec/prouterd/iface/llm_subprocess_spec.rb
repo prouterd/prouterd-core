@@ -237,6 +237,96 @@ RSpec.describe Prouterd::Iface::LlmSubprocess do
     File.unlink(bin)
   end
 
+  it "passes reasoning_effort as `-c model_reasoning_effort=<level>` to codex_cli" do
+    captured = nil
+    allow(Open3).to receive(:popen3).and_wrap_original do |original, *args, &blk|
+      env = args.first.is_a?(Hash) ? args.shift : {}
+      # Strip a trailing options hash (cwd/chdir) so the argv comparison
+      # is independent of how the spawn was configured.
+      args = args[0..-2] if args.last.is_a?(Hash)
+      captured = args.dup
+      original.call(env, *args, &blk)
+    end
+    bin = fake_binary([
+      '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+    ])
+
+    described_class.call(
+      provider: "codex_cli", model: "gpt-5-codex",
+      binary: bin, home: nil, sandbox: nil,
+      cwd: nil, reasoning_effort: "low",
+      prompt: "ping", system_msg: "",
+      timeout_ms: 5_000
+    )
+
+    expect(captured).to include("-c", "model_reasoning_effort=low")
+    File.unlink(bin)
+  end
+
+  it "omits reasoning_effort args when not set" do
+    captured = nil
+    allow(Open3).to receive(:popen3).and_wrap_original do |original, *args, &blk|
+      env = args.first.is_a?(Hash) ? args.shift : {}
+      args = args[0..-2] if args.last.is_a?(Hash)
+      captured = args.dup
+      original.call(env, *args, &blk)
+    end
+    bin = fake_binary([
+      '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+    ])
+
+    described_class.call(
+      provider: "codex_cli", model: "x",
+      binary: bin, home: nil, sandbox: nil,
+      prompt: "ping", system_msg: "",
+      timeout_ms: 5_000
+    )
+
+    expect(captured).not_to include("model_reasoning_effort=low")
+    expect(captured.find { |a| a.to_s.start_with?("model_reasoning_effort=") }).to be_nil
+    File.unlink(bin)
+  end
+
+  it "chdirs the spawn to cwd when provided" do
+    captured_chdir = nil
+    allow(Open3).to receive(:popen3).and_wrap_original do |original, *args, &blk|
+      opts = args.last.is_a?(Hash) && !args.first.is_a?(Hash) ? nil :
+             (args.last.is_a?(Hash) ? args.last : nil)
+      # popen3 signature here is (env_hash, *cmd, opts_hash?)
+      opts = args.last.is_a?(Hash) ? args.last : nil
+      captured_chdir = opts && opts[:chdir]
+      original.call(*args, &blk)
+    end
+    bin = fake_binary([
+      '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+    ])
+
+    Dir.mktmpdir do |dir|
+      described_class.call(
+        provider: "codex_cli", model: "x",
+        binary: bin, home: nil, sandbox: nil,
+        cwd: dir, reasoning_effort: nil,
+        prompt: "ping", system_msg: "",
+        timeout_ms: 5_000
+      )
+      expect(captured_chdir).to eq(dir)
+    end
+
+    File.unlink(bin)
+  end
+
+  it "rejects an invalid cwd up front" do
+    result = described_class.call(
+      provider: "codex_cli", model: "x",
+      binary: "/usr/bin/true", home: nil, sandbox: nil,
+      cwd: "/no/such/dir/here", reasoning_effort: nil,
+      prompt: "ping", system_msg: "",
+      timeout_ms: 1_000
+    )
+    expect(result[:error_type]).to eq("invalid_cwd")
+    expect(result[:error_message]).to include("/no/such/dir/here")
+  end
+
   it "keeps output_json nil when the subprocess fails with no captured output" do
     bin = fake_binary([], exit_code: 1)
 

@@ -101,16 +101,26 @@ module Prouterd
           end
         end
 
-        # Resolve templated prompt/system + interface fields.
+        # Resolve templated prompt/system + interface fields. The agentic
+        # path doesn't run the per-call args through the same templating
+        # the synchronous LlmCaller path does, because the prompt /
+        # system are read directly off block.type_fields above. Extend
+        # the same hand-templating to the subprocess-only call fields
+        # so an operator can write `cwd "{{event.repo_path}}"`.
         overlay = { "iteration" => attempt, "secret" => @host.secret_overlay(document) }
         scope = RetryEngine::OverlayContext.new(context, overlay)
         prompt    = nil
         system_m  = nil
         templated_iface = nil
+        templated_call  = {}
         ctx_mutex.synchronize do
           prompt    = Prouterd::Util::Templater.render(block.type_fields["prompt"].to_s, scope)
           system_m  = Prouterd::Util::Templater.render(block.type_fields["system"].to_s, scope)
           templated_iface = @host.templated_fields(iface.type_fields || {}, scope)
+          %w[cwd reasoning-effort].each do |k|
+            raw = block.type_fields[k]
+            templated_call[k] = raw.is_a?(String) ? Prouterd::Util::Templater.render(raw, scope) : raw
+          end
         end
 
         api_key = nil
@@ -140,20 +150,22 @@ module Prouterd
         end
 
         outcome = Iface::LlmAgentic.run(
-          provider:   provider,
-          model:      model,
-          base_url:   base_url,
-          api_key:    api_key,
-          binary:     templated_iface["binary"],
-          home:       templated_iface["home"],
-          sandbox:    templated_iface["sandbox"],
-          prompt:     prompt,
-          system_msg: system_m,
-          max_tokens: max_tokens,
-          max_turns:  block.tool_call_limit,
-          tools:      allowed,
-          dispatcher: dispatcher,
-          timeout_ms: block.timeout_ms
+          provider:         provider,
+          model:            model,
+          base_url:         base_url,
+          api_key:          api_key,
+          binary:           templated_iface["binary"],
+          home:             templated_iface["home"],
+          sandbox:          templated_iface["sandbox"],
+          cwd:              templated_call["cwd"],
+          reasoning_effort: templated_call["reasoning-effort"],
+          prompt:           prompt,
+          system_msg:       system_m,
+          max_tokens:       max_tokens,
+          max_turns:        block.tool_call_limit,
+          tools:            allowed,
+          dispatcher:       dispatcher,
+          timeout_ms:       block.timeout_ms
         )
 
         scrubbed = outcome[:output_json] ? redactor.redact_json(outcome[:output_json]) : nil

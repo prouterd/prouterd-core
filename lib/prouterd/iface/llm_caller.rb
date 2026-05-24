@@ -65,14 +65,16 @@ module Prouterd
 
         if %w[codex_cli claude_cli].include?(provider)
           return LlmSubprocess.call(
-            provider:   provider,
-            model:      model,
-            binary:     request.field("binary"),
-            home:       request.field("home"),
-            sandbox:    request.field("sandbox"),
-            prompt:     prompt,
-            system_msg: system_msg,
-            timeout_ms: request.timeout_ms
+            provider:         provider,
+            model:            model,
+            binary:           request.field("binary"),
+            home:             request.field("home"),
+            sandbox:          request.field("sandbox"),
+            cwd:              request.field("cwd"),
+            reasoning_effort: request.field("reasoning-effort"),
+            prompt:           prompt,
+            system_msg:       system_msg,
+            timeout_ms:       request.timeout_ms
           )
         end
 

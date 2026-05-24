@@ -175,6 +175,36 @@ RSpec.describe "Prouterd::API::V1 deeper coverage" do
     expect(iface["fields"]).not_to have_key("user")
   end
 
+  it "GET /v1/config/commits returns meta with nil running/startup when no commits exist" do
+    get "/v1/config/commits"
+    payload = JSON.parse(last_response.body)
+    expect(payload["meta"]).to eq("running" => nil, "startup" => nil)
+  end
+
+  it "GET /v1/config/commits surfaces startup_commit.id after write_memory" do
+    store.commit(parse("router demo\nexit\n"))
+    store.write_memory
+    get "/v1/config/commits"
+    meta = JSON.parse(last_response.body)["meta"]
+    expect(meta["startup"]).to be_a(Integer)
+  end
+
+  it "GET /v1/mcp returns no_pool state when @app.mcp_pool is nil" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface mcp local
+       server bin "true"
+      exit
+    PRC
+    store.commit(doc)
+    # The default v1_more_extra_spec App is built without mcp_pool, so
+    # this hits the `no_pool` ternary branch.
+    get "/v1/mcp"
+    entries = JSON.parse(last_response.body)["data"]
+    expect(entries.first["state"]).to eq("no_pool")
+  end
+
   it "POST /v1/trace serializes edge.matches in trace_to_payload" do
     doc = parse(<<~PRC)
       router demo

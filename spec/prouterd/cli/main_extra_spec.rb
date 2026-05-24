@@ -553,6 +553,50 @@ RSpec.describe Prouterd::CLI::Main do
     end
   end
 
+  describe "validate failure injections" do
+    it "exits 2 with --against running when an unknown option follows" do
+      code, _, err = run("validate", fixture_path("minimal.prc"), "--against", "running", "--bogus")
+      expect(code).to eq(2)
+      expect(err).to include("unknown option '--bogus'")
+    end
+
+    it "exits 2 with --against running when target file is missing" do
+      code, _, _ = run("validate", "/no/such.prc", "--against", "running", "--no-db")
+      expect(code).to eq(2)
+    end
+
+    it "exits 1 with --against running when target file fails to parse" do
+      Tempfile.create(["bad", ".prc"]) do |t|
+        t.write("router x\n color red\nexit\n")
+        t.flush
+        code, _, _ = run("validate", t.path, "--against", "running", "--no-db")
+        expect(code).to eq(1)
+      end
+    end
+  end
+
+  describe "apply failure injections" do
+    it "exits 2 when an unknown option follows the path" do
+      code, _, err = run("apply", fixture_path("minimal.prc"), "--bogus")
+      expect(code).to eq(2)
+      expect(err).to include("unknown option '--bogus'")
+    end
+
+    it "exits 2 when the path file is missing" do
+      code, _, _ = run("apply", "/no/such/file.prc", "--no-db")
+      expect(code).to eq(2)
+    end
+
+    it "exits 1 when the path fails to parse" do
+      Tempfile.create(["bad", ".prc"]) do |t|
+        t.write("router x\n color red\nexit\n")
+        t.flush
+        code, _, _ = run("apply", t.path, "--no-db")
+        expect(code).to eq(1)
+      end
+    end
+  end
+
   describe "report_check shape" do
     it "prints '(missing)' router placeholder when document has no router" do
       Tempfile.create(["t", ".prc"]) do |t|

@@ -103,7 +103,8 @@ RSpec.describe "Phase 36a /v1 contract freeze" do
       expect_keys(data,
                   name: "pipeline", description: NilClass, queue: "default",
                   shutdown: FalseClass, thread_id_template: NilClass,
-                  blocks: Array, routes: Array, parallel_groups: Array)
+                  blocks: Array, routes: Array, parallel_groups: Array,
+                  merge_groups: Array)
 
       block = data["blocks"].first
       expect_keys(block,

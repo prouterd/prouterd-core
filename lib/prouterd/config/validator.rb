@@ -208,6 +208,35 @@ module Prouterd
 
         check_process_routes(process)
         check_process_graph(process)
+        check_merge_groups(process)
+      end
+
+      def check_merge_groups(process)
+        block_names = process.blocks.map(&:name).to_set
+        process.merge_groups.each do |group|
+          group.member_block_names.each do |member|
+            # Members must be real blocks in the same process, and must
+            # not be barriers themselves — barrier→barrier coupling is
+            # legal at the graph level but turns the merge semantics
+            # into "merge of merges", which we don't expand here. Force
+            # the operator to introduce an explicit intermediate block
+            # if they want that chain.
+            target = process.block(member)
+            unless block_names.include?(member)
+              @result.error(
+                "merge '#{process.name}/#{group.name}' references unknown member block '#{member}'",
+                line: group.line
+              )
+              next
+            end
+            if target&.barrier?
+              @result.error(
+                "merge '#{process.name}/#{group.name}' member '#{member}' is itself a barrier block; chain through an intermediate block",
+                line: group.line
+              )
+            end
+          end
+        end
       end
 
       def check_unique_blocks(process)

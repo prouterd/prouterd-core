@@ -380,6 +380,17 @@ module Prouterd
             end
             passing_routes.each do |r|
               next if executed.include?(r.to_block) || next_ready.include?(r.to_block)
+              # AND-style merge barriers may span BFS levels (their
+              # members are existing standalone blocks, not enclosed
+              # group children). Defer enqueueing the barrier until
+              # every member has reached a terminal state — without
+              # this, the first member's route fires the barrier on
+              # a partially-populated context. `parallel` barriers and
+              # `any`-strategy merge barriers stay opt-in to the
+              # eager-enqueue semantics.
+              if and_style_merge_barrier?(process, r.to_block, executed)
+                next
+              end
 
               next_ready << r.to_block
             end
@@ -484,6 +495,21 @@ module Prouterd
       def barrier_block?(process, name)
         block = process.blocks.find { |b| b.name == name }
         block && block.barrier?
+      end
+
+      # True when `name` is a merge-kind barrier with an AND-style join
+      # strategy whose members aren't all terminal yet. Used as a gate
+      # against eager enqueue in the next_ready build — without it, the
+      # barrier would fire on the first member's route and see a
+      # partial context.
+      def and_style_merge_barrier?(process, name, executed)
+        target = process.block(name)
+        return false unless target&.barrier?
+        return false unless target.barrier_kind == :merge
+        return false unless %w[all-required all-best-effort].include?(target.barrier_join_strategy)
+
+        members = target.barrier_for || []
+        members.any? { |m| !executed.include?(m) }
       end
 
       def route_passes?(route, context, ctx_mutex)

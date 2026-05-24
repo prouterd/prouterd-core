@@ -185,7 +185,7 @@ module Prouterd
       class Process
         attr_accessor :name, :description, :queue_name, :shutdown, :timeout_ms,
                       :thread_id_template, :line
-        attr_reader :blocks, :routes, :parallel_groups
+        attr_reader :blocks, :routes, :parallel_groups, :merge_groups
 
         def initialize(name:, line:)
           @name = name
@@ -202,10 +202,45 @@ module Prouterd
           # synthesized barrier block + synthesized routes) lives in
           # @blocks / @routes alongside ordinary content.
           @parallel_groups = []
+          # Source-form record of `merge <name>` sections. Unlike
+          # parallel, merge does NOT own its member blocks — `from a, b,
+          # c` references blocks already declared elsewhere in the
+          # process. A synthesized barrier block + routes member→barrier
+          # land on @blocks / @routes; the barrier carries
+          # barrier_kind = :merge so the scheduler can apply the right
+          # readiness predicate per strategy.
+          @merge_groups = []
         end
 
         def block(name)
           blocks.find { |b| b.name == name }
+        end
+      end
+
+      # Source-form record of a `merge <name>` section. Members are
+      # existing sibling blocks (referenced via `from`, not declared
+      # inline like `parallel`); the parser still synthesizes a barrier
+      # block and member→barrier routes. Strategies:
+      #
+      #   any                first member to terminate supplies the
+      #                      barrier output ({winner, output}); others
+      #                      are discarded. OR-join.
+      #   all-required       wait for every member terminal,
+      #                      fail the run if any failed. AND-join.
+      #   all-best-effort    wait for every member terminal,
+      #                      never fail; failed members listed under
+      #                      `failed: [...]`. AND-join, fault-tolerant.
+      class MergeGroup
+        STRATEGIES = %w[any all-required all-best-effort].freeze
+
+        attr_accessor :name, :strategy, :line
+        attr_reader :member_block_names
+
+        def initialize(name:, line:)
+          @name = name
+          @line = line
+          @strategy = "all-required"
+          @member_block_names = []
         end
       end
 
@@ -252,7 +287,7 @@ module Prouterd
                       :interface_ref, :skip_when, :pause_reason,
                       :fan_out_from, :fan_out_into,
                       :fan_out_maps, :fan_out_dedupe, :fan_out_rate_limit,
-                      :barrier_for, :barrier_join_strategy,
+                      :barrier_for, :barrier_join_strategy, :barrier_kind,
                       :max_cost_usd
         attr_reader :secret_names, :produces, :artifact_inputs, :vars
 
@@ -302,6 +337,13 @@ module Prouterd
           # blocks have @barrier_for == nil.
           @barrier_for = nil
           @barrier_join_strategy = nil
+          # `:parallel` or `:merge`. Drives the scheduler-side readiness
+          # predicate (parallel barriers fire as soon as one member's
+          # route passes — members are guaranteed same-level siblings
+          # by parser expansion. Merge barriers may span BFS levels,
+          # so the scheduler defers AND-style strategies until all
+          # members are in `executed`.).
+          @barrier_kind = nil
           # Agentic-mode controls — only meaningful on `interface llm`
           # blocks. When @agentic is true, the LLM caller switches to
           # multi-turn tool-use against the listed @allowed_tools, with

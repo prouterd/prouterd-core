@@ -533,6 +533,9 @@ module Prouterd
                                        matches: r.matches.map { |m| match_summary(m) } } },
           parallel_groups: p.parallel_groups.map do |g|
             { name: g.name, join_strategy: g.join_strategy, members: g.member_block_names }
+          end,
+          merge_groups: p.merge_groups.map do |g|
+            { name: g.name, strategy: g.strategy, members: g.member_block_names }
           end
         }
       end
@@ -564,7 +567,8 @@ module Prouterd
           pause_reason: b.pause_reason,
           barrier: b.barrier? ? {
             for: b.barrier_for,
-            join_strategy: b.barrier_join_strategy
+            join_strategy: b.barrier_join_strategy,
+            kind: b.barrier_kind
           } : nil,
           max_cost_usd: b.max_cost_usd
         }

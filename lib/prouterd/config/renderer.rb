@@ -137,14 +137,16 @@ module Prouterd
         emit(1, process.shutdown ? "shutdown" : "no shutdown")
 
         # Block-set partition: blocks owned by a `parallel` group render
-        # *inside* that group; synthesized barrier blocks and the
-        # synthesized routes from members to barriers are reproduced
-        # purely from process.parallel_groups, not directly. Standalone
-        # blocks (not in any group, not barriers) render at top level.
+        # *inside* that group; synthesized barrier blocks (from both
+        # `parallel` and `merge`) and the member→barrier routes are
+        # reproduced purely from the group records, not the synth on
+        # @blocks/@routes. Merge members stay rendered as standalone
+        # blocks — `merge` only references them, it doesn't own them.
         member_block_names = process.parallel_groups
                                     .flat_map(&:member_block_names)
                                     .to_set
-        barrier_names = process.parallel_groups.map(&:name).to_set
+        barrier_names = (process.parallel_groups.map(&:name) +
+                          process.merge_groups.map(&:name)).to_set
 
         process.blocks.each do |block|
           next if member_block_names.include?(block.name)
@@ -159,7 +161,12 @@ module Prouterd
           render_parallel_group(process, group, 1)
         end
 
-        synthesized_route_pairs = process.parallel_groups.flat_map do |group|
+        process.merge_groups.each do |group|
+          @lines << ""
+          render_merge_group(group, 1)
+        end
+
+        synthesized_route_pairs = (process.parallel_groups + process.merge_groups).flat_map do |group|
           group.member_block_names.map { |m| [m, group.name] }
         end.to_set
         rendered_routes = process.routes.reject do |r|
@@ -172,6 +179,18 @@ module Prouterd
         end
 
         emit(0, "exit")
+      end
+
+      def render_merge_group(group, level)
+        emit(level, "merge #{group.name}")
+        # `from` always at least once (parser rejects empty merge).
+        # Render as one comma-separated line for compactness — the
+        # parser accepts repeats too, but canonical form is one line.
+        emit(level + 1, "from #{group.member_block_names.join(', ')}")
+        if group.strategy != "all-required"
+          emit(level + 1, "strategy #{group.strategy}")
+        end
+        emit(level, "exit")
       end
 
       def render_parallel_group(process, group, level)

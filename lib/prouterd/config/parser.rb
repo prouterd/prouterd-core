@@ -428,6 +428,9 @@ module Prouterd
           when "parallel"
             parse_parallel_group(node, line)
             next
+          when "merge"
+            parse_merge_group(node, line)
+            next
           else
             apply_process_field(node, line)
           end
@@ -542,6 +545,7 @@ module Prouterd
         barrier = AST::Block.new(name: name, line: header.number)
         barrier.barrier_for = group.member_block_names.dup
         barrier.barrier_join_strategy = group.join_strategy
+        barrier.barrier_kind = :parallel
         process_node.blocks << barrier
 
         # Synthesize routes child -> barrier. all-best-effort and
@@ -557,6 +561,98 @@ module Prouterd
         end
 
         process_node.parallel_groups << group
+      end
+
+      # `merge <name> ... from a, b, c ... [strategy <s>] ... exit`
+      # Side effects on the parent process node:
+      #   - a synthesized barrier block named <name> appended to
+      #     process.blocks; the barrier carries barrier_kind = :merge
+      #     so the orchestrator's readiness check defers AND-style
+      #     strategies until every member is in `executed`
+      #   - synthesized routes from each named member to the barrier
+      #     (on-failure tied to the strategy: `any` and
+      #     `all-best-effort` both `continue` so a failed member does
+      #     not abort the run before the barrier picks up survivors;
+      #     `all-required` keeps the default `stop`)
+      #   - the source-form record is kept on process.merge_groups
+      #     for rendering
+      #
+      # Unlike `parallel`, `merge` does NOT declare its own member
+      # blocks — the names in `from` must reference blocks already
+      # declared (or to be declared) in the same process. The validator
+      # checks the references and rejects cycles.
+      def parse_merge_group(process_node, header)
+        expect_token_count(header, 2, "merge <name>")
+        name = expect_identifier(header.tokens[1], "merge group name")
+        if process_node.blocks.any? { |b| b.name == name } ||
+           process_node.parallel_groups.any? { |g| g.name == name } ||
+           process_node.merge_groups.any? { |g| g.name == name }
+          raise ParseError.new("name '#{name}' is already declared in process '#{process_node.name}'", line: header.number)
+        end
+
+        group = AST::MergeGroup.new(name: name, line: header.number)
+        advance
+
+        each_body_line("merge #{name}") do |line|
+          head = line.head.value
+          case head
+          when "from"
+            expect_min_tokens(line, 2, "from <name>[, <name>...]")
+            raw = line.tokens[1..].map(&:value).join(" ")
+            names = raw.split(",").map(&:strip).reject(&:empty?)
+            names.each do |n|
+              unless n.match?(IDENT_RE)
+                raise ParseError.new("invalid block name '#{n}' in merge from", line: line.number)
+              end
+              if n == name
+                raise ParseError.new("merge '#{name}' cannot include itself in `from`", line: line.number)
+              end
+              if group.member_block_names.include?(n)
+                raise ParseError.new("duplicate member '#{n}' in merge '#{name}'", line: line.number)
+              end
+              group.member_block_names << n
+            end
+          when "strategy"
+            expect_token_count(line, 2, "strategy <#{AST::MergeGroup::STRATEGIES.join('|')}>")
+            value = expect_word(line.tokens[1], "strategy")
+            unless AST::MergeGroup::STRATEGIES.include?(value)
+              raise ParseError.new(
+                "invalid strategy '#{value}' (allowed: #{AST::MergeGroup::STRATEGIES.join(', ')})",
+                line: line.number
+              )
+            end
+            group.strategy = value
+          else
+            raise ParseError.new("unknown directive '#{head}' inside merge '#{name}'", line: line.number)
+          end
+        end
+
+        if group.member_block_names.empty?
+          raise ParseError.new("merge '#{name}' must list at least one member via `from`", line: header.number)
+        end
+
+        # Synthesized barrier block — no interface, executed as an
+        # aggregator by BlockExecutor#execute_barrier_block.
+        barrier = AST::Block.new(name: name, line: header.number)
+        barrier.barrier_for = group.member_block_names.dup
+        barrier.barrier_join_strategy = group.strategy
+        barrier.barrier_kind = :merge
+        process_node.blocks << barrier
+
+        # member → barrier routes. on_failure tracks the strategy:
+        #   any                continue (we want a failed member's
+        #                      route to fire so the next-finished
+        #                      survivor can fill the barrier)
+        #   all-best-effort    continue (survivors form the barrier output)
+        #   all-required       stop (the first failure must abort the run)
+        on_failure = group.strategy == "all-required" ? "stop" : "continue"
+        group.member_block_names.each do |member_name|
+          route = AST::ProcessRoute.new(from_block: member_name, to_block: name, line: header.number)
+          route.on_failure = on_failure
+          process_node.routes << route
+        end
+
+        process_node.merge_groups << group
       end
 
       # A block has three kinds of body directives:

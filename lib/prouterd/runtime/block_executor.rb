@@ -478,7 +478,27 @@ module Prouterd
           end
         end
 
-        if block.barrier_join_strategy == "merge-children"
+        if block.barrier_join_strategy == "any"
+          # OR-join: barrier output is the first-terminated member's
+          # output. The scheduler fires this barrier as soon as a single
+          # member's route passes, so by the time we land here, exactly
+          # the early finishers have context entries; later members
+          # never contribute. Output shape carries the winner's name
+          # explicitly so downstream blocks can branch on it.
+          winner = nil
+          winner_output = nil
+          ctx_mutex.synchronize do
+            members.each do |m|
+              v = context.get(m)
+              next if v.nil?
+
+              winner = m
+              winner_output = v
+              break
+            end
+          end
+          output = { "winner" => winner, "output" => winner_output, "join_strategy" => "any" }
+        elsif block.barrier_join_strategy == "merge-children"
           # Shallow-merge every member's output Hash so the barrier's
           # output is one flat object across all children. Lets a
           # parallel group satisfy a single contract whose shape is

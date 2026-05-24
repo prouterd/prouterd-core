@@ -233,4 +233,45 @@ RSpec.describe Prouterd::API::RpcDispatcher do
       expect(r.request_method).to eq("GET")
     end
   end
+
+  describe "helpers" do
+    let(:dispatcher) { described_class.new(v1: double, app: double, store: double) }
+
+    describe "#str" do
+      it "returns nil when the requested key is absent" do
+        expect(dispatcher.send(:str, { "x" => 1 }, "missing")).to be_nil
+      end
+
+      it "stringifies a present value" do
+        expect(dispatcher.send(:str, { "name" => "abc" }, "name")).to eq("abc")
+      end
+
+      it "reads via symbol key when string key is missing" do
+        expect(dispatcher.send(:str, { foo: 7 }, "foo")).to eq("7")
+      end
+    end
+
+    describe "#read_rack_body" do
+      it "returns the body verbatim when it is already a String" do
+        expect(dispatcher.send(:read_rack_body, "raw")).to eq("raw")
+      end
+
+      it "concatenates Enumerable chunks and closes the body if it responds to #close" do
+        closed = false
+        body = Class.new do
+          define_method(:each) { |&blk| blk.call("a"); blk.call("b") }
+          define_method(:close) { closed = true }
+        end.new
+        expect(dispatcher.send(:read_rack_body, body)).to eq("ab")
+        expect(closed).to be(true)
+      end
+
+      it "skips the close call when the body does not respond to #close" do
+        body = Class.new do
+          def each; yield "x"; end
+        end.new
+        expect { dispatcher.send(:read_rack_body, body) }.not_to raise_error
+      end
+    end
+  end
 end

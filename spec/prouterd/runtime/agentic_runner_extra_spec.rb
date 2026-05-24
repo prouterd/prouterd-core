@@ -237,6 +237,47 @@ RSpec.describe Prouterd::Runtime::AgenticRunner do
       expect(captured_tools.map(&:full_name)).to contain_exactly("mid.search", "mid.fetch")
     end
 
+    it "clamps max-tokens < 1 to the default 1024 and forwards failure outcomes" do
+      doc = make_doc(<<~PRC)
+        router demo
+        exit
+        interface llm m
+         provider anthropic
+        exit
+        process p
+         block b
+          interface llm m
+          prompt "hi"
+          agentic on
+          max-tokens 0
+         exit
+        exit
+      PRC
+      # Block carries a non-String call_field (cwd unset → nil), which
+      # exercises the `raw.is_a?(String) ? ... : raw` else branch.
+      block_executor = Prouterd::Runtime::BlockExecutor.new(
+        db: db, runs: runs, runner: runner_stub,
+        artifact_store: Prouterd::Runtime::ArtifactStore.new,
+        secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+        events: Prouterd::Events.default,
+        logger: Prouterd::NullLogger.new, mcp_pool: nil,
+        retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+      )
+      ar = described_class.new(runs: runs, runner: runner_stub, mcp_pool: nil, host: block_executor)
+      captured = nil
+      allow(Prouterd::Iface::LlmAgentic).to receive(:run) do |**kwargs|
+        captured = kwargs
+        # outcome failure: ok=false, no output_json
+        { ok: false, output_json: nil, exit_code: 1,
+          stdout: "", stderr: "oops", error_type: "llm_error", error_message: "broke" }
+      end
+      process = doc.processes.first
+      block = process.blocks.first
+      res = ar.execute(run, process, block, context, doc, db_mutex, ctx_mutex, redactor, 1)
+      expect(captured[:max_tokens]).to eq(1024)
+      expect(res.error_type).to eq("llm_error")
+    end
+
     it "resolves api_key from build_env when interface declares `auth bearer secret`" do
       doc = make_doc(<<~PRC)
         router demo
@@ -357,6 +398,26 @@ RSpec.describe Prouterd::Runtime::AgenticRunner do
       dispatcher = ar.send(:build_tool_dispatcher, run, process, block, doc, {})
       result = dispatcher.call(name: "mid.search", input: { "q" => "x" })
       expect(result[:output_json]).to eq("hit" => 1)
+    end
+
+    it "rejects a known tool whose implementation references a missing iface" do
+      doc = make_doc(<<~PRC)
+        router demo
+        exit
+        interface shell sh
+        exit
+        tool with_missing_iface
+         description "iface gets stripped after parse"
+         implementation interface shell sh call boom
+        exit
+      PRC
+      doc.interfaces.clear # strip the iface declaration after parse
+      ar = described_class.new(runs: runs, runner: Prouterd::Runner::StubRunner.new, mcp_pool: nil, host: double)
+      block = double(name: "b", timeout_ms: nil)
+      dispatcher = ar.send(:build_tool_dispatcher, run, double(name: "p"), block, doc, {})
+      out = dispatcher.call(name: "with_missing_iface", input: {})
+      expect(out[:error_type]).to eq("unknown_iface")
+      expect(out[:error_message]).to include("shell sh")
     end
 
     it "surfaces tool_failed error_type when a declared tool's runner returns a failure" do

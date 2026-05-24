@@ -155,6 +155,65 @@ RSpec.describe Prouterd::Runtime::Tracer do
     expect(res.warnings).to include(match(/unreachable/))
   end
 
+  it "skips an outgoing route whose target block doesn't exist (defensive)" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface manual cli
+       no shutdown
+      exit
+      interface docker img
+       image foo
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+      exit
+      route interface cli process p
+      exit
+    PRC
+    # Add a dangling route via mutation (referencing a block name that's
+    # not declared) so the tracer's `next unless target` branch fires.
+    rr = Prouterd::Config::AST::ProcessRoute.new(from_block: "a", to_block: "ghost", line: 99)
+    doc.processes.first.routes << rr
+    res = described_class.trace(doc, {}, interface_name: "cli")
+    # `a -> ghost` should NOT appear in the graph (target missing).
+    expect(res.graph.map(&:to)).not_to include("ghost")
+    # Real edge a -> b still present.
+    expect(res.graph.map(&:to)).to include("b")
+  end
+
+  it "skips an entry-block name that's no longer in process.blocks (defensive)" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface manual cli
+       no shutdown
+      exit
+      interface docker img
+       image foo
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+      exit
+      route interface cli process p
+      exit
+    PRC
+    # Inject a phantom block name into the entry queue by stubbing.
+    process = doc.processes.first
+    allow_any_instance_of(described_class).to receive(:entry_blocks).and_return(["a", "ghost"])
+    res = described_class.trace(doc, {}, interface_name: "cli")
+    # Should still walk normally; the ghost is just ignored.
+    expect(res.process).to eq("p")
+  end
+
   it "evaluates entry-only process with no routes (graph stays empty)" do
     doc = parse(<<~PRC)
       router demo
@@ -279,6 +338,56 @@ RSpec.describe Prouterd::Runtime::Tracer do
     expect(text).to include("Policies:")
     expect(text).to include("a: ")
     expect(text).to include("retry_policy=r1")
+  end
+
+  it "drops a call-field whose value equals the call_field's declared default" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface manual cli
+       no shutdown
+      exit
+      interface llm m
+       provider claude_cli
+      exit
+      process p
+       block a
+        interface llm m
+        prompt "hi"
+        max-tokens 1024
+       exit
+      exit
+      route interface cli process p
+      exit
+    PRC
+    res = described_class.trace(doc, {}, interface_name: "cli")
+    summary = res.policies["a"] || {}
+    # max-tokens default is "1024"; value matches default → dropped.
+    expect(summary).not_to have_key("max-tokens")
+  end
+
+  it "drops a call-field whose value is empty (responds_to :empty? && .empty?)" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface manual cli
+       no shutdown
+      exit
+      interface docker img
+       image foo
+      exit
+      process p
+       block a
+        interface docker img
+        command ``
+       exit
+      exit
+      route interface cli process p
+      exit
+    PRC
+    res = described_class.trace(doc, {}, interface_name: "cli")
+    summary = res.policies["a"] || {}
+    expect(summary).not_to have_key("command")
   end
 
   it "renders without a Policies section when no block has anything to summarise" do

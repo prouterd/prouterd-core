@@ -348,6 +348,16 @@ RSpec.describe Prouterd::API::App do
       expect(status).to eq(200)
       expect(JSON.parse(body_str)["in_flight"]).to be_nil
     end
+
+    it "surfaces startup_commit.id when write_memory has blessed a startup" do
+      store.commit(document)
+      store.write_memory
+      env = Rack::MockRequest.env_for("/v1/status", method: "GET")
+      status, _, body = app.call(env)
+      body_str = body.is_a?(Array) ? body.join : body.to_s
+      expect(status).to eq(200)
+      expect(JSON.parse(body_str)["startup_commit"]).to be_a(Integer)
+    end
   end
 
   describe "metrics_response with no metrics configured" do

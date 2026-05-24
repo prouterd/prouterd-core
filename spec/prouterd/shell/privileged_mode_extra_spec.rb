@@ -337,6 +337,63 @@ RSpec.describe Prouterd::Shell::Modes::Privileged do
       mode.cmd_replay(tokens("replay run abc from blk"), session, out, err)
       expect(out.string).to include("Replayed abc as new (success)")
     end
+
+    it "renders per-step duration + error footer when the replayed run has them" do
+      step = double(block_name: "extract", status: "failed", duration_ms: 42)
+      run  = double(uid: "new", status: "failed", id: 1, error_summary: "block extract crashed")
+      allow(session).to receive(:replay).and_return(run)
+      allow(Prouterd::Storage::Repositories::Runs).to receive(:new).and_return(double(list_steps: [step]))
+
+      mode.cmd_replay(tokens("replay run abc"), session, out, err)
+      expect(out.string).to include("Replayed abc as new (failed)")
+      expect(out.string).to include("extract")
+      expect(out.string).to include("42ms")
+      expect(out.string).to include("error: block extract crashed")
+    end
+
+    it "prints '-' for a step with no duration_ms" do
+      step = double(block_name: "extract", status: "queued", duration_ms: nil)
+      run  = double(uid: "new", status: "success", id: 1, error_summary: nil)
+      allow(session).to receive(:replay).and_return(run)
+      allow(Prouterd::Storage::Repositories::Runs).to receive(:new).and_return(double(list_steps: [step]))
+
+      mode.cmd_replay(tokens("replay run abc"), session, out, err)
+      expect(out.string).to match(/extract\s+queued\s+-/)
+    end
+  end
+
+  describe "#cmd_trigger commit_id pass-through" do
+    it "passes nil commit_id when session.store has no running pointer" do
+      Tempfile.create(["evt", ".json"]) do |t|
+        t.write('{"x":1}')
+        t.flush
+        # build a session with a runner but NO commit applied yet
+        session_no_running = Prouterd::Shell::Session.new(store: store, runner: Prouterd::Runner::StubRunner.new)
+        session_no_running.replace_running(
+          Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(<<~PRC))
+            router demo
+            exit
+            interface docker img
+             image x
+            exit
+            process p
+             block hello
+              interface docker img
+             exit
+            exit
+          PRC
+        )
+        # store has no running_commit yet — `session.store.running_commit` returns nil.
+        captured = nil
+        allow_any_instance_of(Prouterd::Runtime::Orchestrator).to receive(:trigger) do |_orch, _doc, _name, **kwargs|
+          captured = kwargs
+          double(uid: "x", status: "success", id: 1, error_summary: nil)
+        end
+        allow(Prouterd::Storage::Repositories::Runs).to receive(:new).and_return(double(list_steps: []))
+        mode.cmd_trigger(tokens("trigger process p input #{t.path}"), session_no_running, out, err)
+        expect(captured[:commit_id]).to be_nil
+      end
+    end
   end
 
   describe "#cmd_cancel" do

@@ -52,6 +52,11 @@ RSpec.describe Prouterd::Config::Lexer do
     expect(lines.first.tokens[1].value).to eq('say "hi" twice')
   end
 
+  it "passes an unrecognised escape (e.g. \\z) through as the literal char" do
+    lines = tokenize('description "got \\z back"')
+    expect(lines.first.tokens[1].value).to eq("got z back")
+  end
+
   it "raises LexError on unterminated string" do
     expect { tokenize('description "oops') }.to raise_error(Prouterd::Config::LexError, /unterminated string/)
   end

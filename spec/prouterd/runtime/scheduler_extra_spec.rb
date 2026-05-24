@@ -41,6 +41,28 @@ RSpec.describe Prouterd::Runtime::Scheduler do
       iface = double(name: "i", type_fields: { "schedule" => "not-a-valid-cron", "timezone" => nil })
       expect(sched.send(:parse_cron, iface)).to be_nil
     end
+
+    it "returns nil immediately when the iface has no schedule field" do
+      sched = described_class.new(store: store, runner: runner, jobs: jobs)
+      iface = double(name: "no-sched", type_fields: {})
+      expect(sched.send(:parse_cron, iface)).to be_nil
+    end
+  end
+
+  describe "#run_auto_pull whitelist-empty short-circuit" do
+    it "returns without touching the filesystem when whitelist is empty" do
+      sched = described_class.new(store: store, runner: runner, jobs: jobs)
+      iface = double(name: "lr", type_fields: { "root" => "/tmp", "whitelist" => "" })
+      expect(Open3).not_to receive(:capture3)
+      sched.send(:run_auto_pull, iface)
+    end
+
+    it "returns without touching the filesystem when root is empty" do
+      sched = described_class.new(store: store, runner: runner, jobs: jobs)
+      iface = double(name: "lr", type_fields: { "root" => "", "whitelist" => "a,b" })
+      expect(Open3).not_to receive(:capture3)
+      sched.send(:run_auto_pull, iface)
+    end
   end
 
   describe "tick_loop / tick_with_rescue (background thread body)" do

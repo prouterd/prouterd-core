@@ -145,6 +145,14 @@ module Prouterd
           env["PROUTER_INPUT_#{local_name.upcase}"] = "/prouter/inputs/#{local_name}"
         end
 
+        # Per-step append-as-you-go log writer for runners that stream
+        # (subprocess LLM with `stream on` is the only consumer today).
+        # Each call lands an immediate row in run_logs so `prouter logs
+        # <run_uid>` can live-tail a long agent run. Runners that finish
+        # synchronously simply leave it untouched and let persist_logs
+        # bulk-write at the end.
+        log_sink = build_log_sink(run, step, db_mutex, redactor)
+
         # Merge templated interface-config with per-call args. iface fields
         # are connection-level (base-url, image, dsn, cwd, ...), block
         # fields are call-specific (method, path, command, query, ...).
@@ -161,7 +169,8 @@ module Prouterd
           input_json: input_payload,
           timeout_ms: block.timeout_ms,
           type_fields: merged_fields,
-          staged_inputs: staged_inputs
+          staged_inputs: staged_inputs,
+          log_sink: log_sink
         )
 
         result = @runner.run(request)
@@ -539,6 +548,32 @@ module Prouterd
           "block" => block.name,
           "context" => context.to_h
         }
+      end
+
+      # Wraps `@runs.append_log` + the events bus into a thread-safe
+      # callable usable from worker threads inside the runner. Each
+      # invocation persists one log line and publishes a `:log_appended`
+      # event so live-tail consumers (WS, CLI follow) see it
+      # immediately. Returns nil — the caller is fire-and-forget.
+      def build_log_sink(run, step, db_mutex, redactor)
+        run_id  = run.id
+        run_uid = run.uid
+        step_id = step.id
+        proc do |content, stream = "stdout"|
+          next if content.nil? || content.to_s.empty?
+
+          redacted = redactor.redact(content.to_s)
+          db_mutex.synchronize do
+            @runs.append_log(run_id: run_id, step_id: step_id, stream: stream, content: redacted)
+          end
+          if @events
+            @events.publish(:log_appended,
+                            run_id:  run_id, run_uid: run_uid, step_id: step_id,
+                            stream:  stream, content: redacted,
+                            ts:      Time.now.utc.iso8601(3))
+          end
+          nil
+        end
       end
 
       def persist_logs(run, step, result, redactor)

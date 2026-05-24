@@ -38,9 +38,11 @@ module Prouterd
       DEFAULT_TIMEOUT_MS = 120_000
 
       def call(provider:, model:, binary:, home:, sandbox:, prompt:, system_msg:, timeout_ms:,
-               cwd: nil, reasoning_effort: nil, extra_env: {}, sandbox_env: false)
+               cwd: nil, reasoning_effort: nil, extra_env: {}, sandbox_env: false,
+               stream: false, stream_sink: nil)
         argv, stdin_text = build_invocation(provider, binary, model, sandbox, prompt, system_msg,
-                                             reasoning_effort: reasoning_effort)
+                                             reasoning_effort: reasoning_effort,
+                                             stream: stream)
         env = build_env(home).merge(extra_env || {})
         resolved_cwd = resolve_cwd(cwd)
         if cwd && resolved_cwd.nil?
@@ -60,7 +62,8 @@ module Prouterd
         end
 
         stdout_lines, stderr_text, status = run_subprocess(env, argv, stdin_text, timeout_ms || DEFAULT_TIMEOUT_MS,
-                                                            cwd: resolved_cwd, sandbox_env: sandbox_env)
+                                                            cwd: resolved_cwd, sandbox_env: sandbox_env,
+                                                            stream_sink: stream_sink)
 
         if status == :timeout
           return { exit_code: nil, output_json: nil, stdout: "", stderr: stderr_text,
@@ -69,8 +72,10 @@ module Prouterd
         end
 
         # Output protocol differs by provider — codex emits JSONL events,
-        # claude (-p mode) emits one wrapper JSON object on stdout.
-        text, usage, stop_reason, raw_stderr_extra = parse_output(provider, stdout_lines)
+        # claude (-p mode) emits one wrapper JSON object on stdout (or
+        # JSONL when `--output-format stream-json` is active).
+        text, usage, stop_reason, raw_stderr_extra =
+          parse_output(provider, stdout_lines, stream: stream)
         stderr_combined = [stderr_text, raw_stderr_extra].reject(&:empty?).join
 
         if !status.success?
@@ -111,10 +116,15 @@ module Prouterd
       # Code) takes the prompt as the positional arg of `-p` and reads
       # nothing from stdin.
       def build_invocation(provider, binary, model, sandbox, prompt, system_msg,
-                           reasoning_effort: nil)
+                           reasoning_effort: nil, stream: false)
         bin = resolve_binary(provider, binary)
         case provider
         when "codex_cli"
+          # Codex CLI emits JSONL events under `--json` regardless of
+          # whether the operator opted into streaming on the prouterd
+          # side — the `stream:` flag here just controls whether the
+          # driver tees each line into the per-step log table as it
+          # arrives, not the codex invocation itself.
           argv = [bin, "exec", "--json"]
           argv += ["-m", model] unless model.to_s.empty?
           argv += ["-s", sandbox] if sandbox && !sandbox.empty?
@@ -124,7 +134,7 @@ module Prouterd
           # reasoning_effort is a codex-only concept; silently ignored
           # for Claude Code (it has its own thinking-mode toggles via
           # a different API).
-          argv = build_argv_claude(bin, model, prompt, system_msg)
+          argv = build_argv_claude(bin, model, prompt, system_msg, stream: stream)
           stdin_text = ""
         else
           raise ArgumentError, "unknown subprocess provider '#{provider}'"
@@ -189,8 +199,15 @@ module Prouterd
       # (no Claude-Code-agent baggage). Without `system_msg` we omit
       # the flag and let Claude Code apply its default — usually fine
       # for one-shot prompts.
-      def build_argv_claude(bin, model, prompt, system_msg)
-        argv = [bin, "-p", prompt.to_s, "--output-format", "json"]
+      def build_argv_claude(bin, model, prompt, system_msg, stream: false)
+        # Claude Code's `-p` print mode requires `--verbose` whenever
+        # `--output-format stream-json` is requested (CLI errors out
+        # otherwise). Aggregated final text is read from the `type:
+        # "result"` event at end-of-stream, same as the single-wrapper
+        # JSON shape.
+        format = stream ? "stream-json" : "json"
+        argv = [bin, "-p", prompt.to_s, "--output-format", format]
+        argv += ["--verbose"] if stream
         argv += ["--model", model] unless model.to_s.empty?
         argv += ["--system-prompt", system_msg] if system_msg && !system_msg.to_s.empty?
         argv
@@ -226,7 +243,8 @@ module Prouterd
         end
       end
 
-      def run_subprocess(env, argv, stdin_text, timeout_ms, cwd: nil, sandbox_env: false)
+      def run_subprocess(env, argv, stdin_text, timeout_ms, cwd: nil, sandbox_env: false,
+                         stream_sink: nil)
         stdout_lines = []
         stderr_buf = String.new(encoding: Encoding::UTF_8)
         status = nil
@@ -238,7 +256,17 @@ module Prouterd
           stdin.write(stdin_text) rescue nil
           stdin.close rescue nil
 
-          out_thread = Thread.new { stdout.each_line { |l| stdout_lines << l.chomp } }
+          out_thread = Thread.new do
+            stdout.each_line do |raw|
+              line = raw.chomp
+              stdout_lines << line
+              # When the operator opted into streaming, hand each line
+              # to the per-step log writer immediately — `prouter logs
+              # <run_uid> --follow` then sees agent progress without
+              # waiting for the subprocess to terminate.
+              stream_sink&.call(line, "stdout")
+            end
+          end
           err_thread = Thread.new { stderr_buf << stderr.read.to_s }
 
           while wait_thr.alive?
@@ -278,14 +306,15 @@ module Prouterd
         }
       end
 
-      # Dispatch per-provider stdout shape. `codex_cli` is a JSONL
-      # stream of events (one per line). `claude_cli` in `-p
-      # --output-format json` mode emits a single wrapper JSON object
-      # on stdout.
-      def parse_output(provider, stdout_lines)
+      # Dispatch per-provider stdout shape. `codex_cli` is always
+      # JSONL (one event per line). `claude_cli` defaults to a single
+      # wrapper JSON object on stdout; `stream: true` flips it to the
+      # JSONL `stream-json` shape, where the final assistant text is
+      # carried by the `type: "result"` event.
+      def parse_output(provider, stdout_lines, stream: false)
         case provider
         when "claude_cli"
-          parse_output_claude(stdout_lines)
+          stream ? parse_output_claude_stream(stdout_lines) : parse_output_claude(stdout_lines)
         else
           parse_output_codex(stdout_lines)
         end
@@ -320,6 +349,48 @@ module Prouterd
         stop_reason = parsed["stop_reason"] || parsed["subtype"]
 
         [text, { "input_tokens" => in_tokens, "output_tokens" => out_tokens }, stop_reason, unparsed]
+      end
+
+      # Claude Code `--output-format stream-json --verbose` emits one
+      # JSON event per line. The final assistant text lives in the
+      # `type: "result"` event under `result`; usage / model arrive on
+      # the same event. Intermediate `type: "assistant"` events carry
+      # streaming content blocks — they're surfaced live via the
+      # stream_sink callback in run_subprocess but ignored here for
+      # aggregation (the result event is canonical).
+      def parse_output_claude_stream(stdout_lines)
+        unparsed = String.new(encoding: Encoding::UTF_8)
+        text = ""
+        usage = { "input_tokens" => 0, "output_tokens" => 0 }
+        stop_reason = nil
+        model = nil
+
+        stdout_lines.each do |raw|
+          next if raw.strip.empty?
+          event = (JSON.parse(raw) rescue nil)
+          unless event.is_a?(Hash)
+            unparsed << raw << "\n"
+            next
+          end
+
+          if event["type"] == "result"
+            text = event["result"].to_s if event.key?("result")
+            if event["structured_output"]
+              text = event["structured_output"].to_json
+            end
+            u = event["usage"]
+            if u.is_a?(Hash)
+              usage = {
+                "input_tokens"  => (u["input_tokens"]  || u["prompt_tokens"]    || 0).to_i,
+                "output_tokens" => (u["output_tokens"] || u["completion_tokens"] || 0).to_i
+              }
+            end
+            stop_reason = event["stop_reason"] || event["subtype"]
+            model ||= event["model"]
+          end
+        end
+
+        [text, usage, stop_reason, unparsed]
       end
 
       # Codex emits JSONL: one event per line, multiple events per run.

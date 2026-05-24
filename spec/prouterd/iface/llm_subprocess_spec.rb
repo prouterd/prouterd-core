@@ -375,6 +375,64 @@ RSpec.describe Prouterd::Iface::LlmSubprocess do
     File.unlink(bin)
   end
 
+  it "tees each codex JSONL line through stream_sink as it arrives" do
+    bin = fake_binary([
+      '{"type":"item.completed","item":{"type":"agent_message","text":"first"}}',
+      '{"type":"item.completed","item":{"type":"agent_message","text":"second"}}',
+      '{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":1}}'
+    ])
+
+    captured = []
+    sink = ->(line, stream = "stdout") { captured << [stream, line] }
+
+    result = described_class.call(
+      provider: "codex_cli", model: "x",
+      binary: bin, home: nil, sandbox: nil,
+      stream: true, stream_sink: sink,
+      prompt: "go", system_msg: "",
+      timeout_ms: 5_000
+    )
+
+    expect(result[:exit_code]).to eq(0)
+    expect(captured.size).to eq(3)
+    expect(captured.first.first).to eq("stdout")
+    expect(captured.first.last).to include("first")
+    expect(captured.last.last).to include("turn.completed")
+    # Final aggregated text is still last-wins, unchanged for downstream.
+    expect(result[:output_json]["text"]).to eq("second")
+
+    File.unlink(bin)
+  end
+
+  it "builds claude_cli argv with --output-format stream-json --verbose when streaming" do
+    captured = nil
+    allow(Open3).to receive(:popen3).and_wrap_original do |original, *args, &blk|
+      args.shift if args.first.is_a?(Hash)
+      args = args[0..-2] if args.last.is_a?(Hash)
+      captured = args.dup
+      original.call(*args, &blk)
+    end
+    bin = fake_binary([
+      JSON.dump("type" => "result", "subtype" => "success", "is_error" => false,
+                "result" => "final stream answer",
+                "usage" => { "input_tokens" => 2, "output_tokens" => 6 })
+    ])
+
+    result = described_class.call(
+      provider: "claude_cli", model: "claude-sonnet-4-6",
+      binary: bin, home: nil, sandbox: nil,
+      stream: true, stream_sink: nil,
+      prompt: "ping", system_msg: "be brief",
+      timeout_ms: 5_000
+    )
+
+    expect(captured).to include("--output-format", "stream-json", "--verbose")
+    expect(result[:output_json]["text"]).to eq("final stream answer")
+    expect(result[:output_json]["usage"]).to eq("input_tokens" => 2, "output_tokens" => 6)
+
+    File.unlink(bin)
+  end
+
   it "keeps output_json nil when the subprocess fails with no captured output" do
     bin = fake_binary([], exit_code: 1)
 

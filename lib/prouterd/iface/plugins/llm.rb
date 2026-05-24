@@ -94,6 +94,17 @@ module Prouterd
                           description: "working directory for the spawned subprocess (codex_cli/claude_cli)"
         call_field :"reasoning-effort", kind: :enum, enum: %w[low medium high xhigh],
                                          description: "codex_cli reasoning effort (-c model_reasoning_effort=<level>)"
+        # `stream on` turns a subprocess LLM block into a live-tail
+        # source: the driver invokes the CLI in JSONL streaming mode
+        # (codex_cli already uses --json; claude_cli flips from
+        # --output-format json to --output-format stream-json) and
+        # writes each parsed line as a row in run_logs as it arrives,
+        # so `prouter logs <run_uid> --follow` shows progress for a
+        # 10-minute agent run without bypassing the daemon. The final
+        # aggregated output_json (text, usage, stop_reason) is unchanged
+        # — downstream blocks see the same shape regardless of stream.
+        call_field :stream, kind: :enum, enum: %w[on off], default: "off",
+                            description: "stream JSONL events to run_logs as they arrive (codex_cli / claude_cli)"
 
         caller "Prouterd::Iface::LlmCaller"
 

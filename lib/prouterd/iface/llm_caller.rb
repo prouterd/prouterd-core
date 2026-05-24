@@ -65,6 +65,8 @@ module Prouterd
 
         if %w[codex_cli claude_cli].include?(provider)
           extra_env, sandbox_env = build_subprocess_env(request)
+          stream = request.field("stream").to_s == "on"
+          stream_sink = stream ? request.log_sink : nil
           return LlmSubprocess.call(
             provider:         provider,
             model:            model,
@@ -75,6 +77,8 @@ module Prouterd
             reasoning_effort: request.field("reasoning-effort"),
             extra_env:        extra_env,
             sandbox_env:      sandbox_env,
+            stream:           stream,
+            stream_sink:      stream_sink,
             prompt:           prompt,
             system_msg:       system_msg,
             timeout_ms:       request.timeout_ms

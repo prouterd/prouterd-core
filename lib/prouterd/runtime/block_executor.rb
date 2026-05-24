@@ -250,7 +250,7 @@ module Prouterd
       # promoted to a proper interface module.
 
       def secret_overlay(document)
-        @secret_overlay_cache ||= document.secrets.each_with_object({}) do |secret, h|
+        document.secrets.each_with_object({}) do |secret, h|
           h[secret.name] = @secret_resolver.resolve(secret).to_s
         end
       end

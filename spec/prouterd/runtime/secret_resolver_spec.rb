@@ -87,3 +87,51 @@ RSpec.describe "secret DSL parser accepts source file" do
     end.to raise_error(Prouterd::Config::ParseError, /unsupported secret source 'vault'/)
   end
 end
+
+RSpec.describe "secret templating across config changes" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:runner) { Prouterd::Runner::StubRunner.new }
+  let(:orchestrator) { Prouterd::Runtime::Orchestrator.new(db: db, runner: runner) }
+
+  after { db.close }
+
+  def parse(prc)
+    Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(prc))
+  end
+
+  def document_for(env_name)
+    parse(<<~PRC)
+      router demo
+      exit
+      secret TOKEN
+       source env #{env_name}
+      exit
+      interface shell host
+      exit
+      process p
+       block a
+        interface shell host
+        exec "{{secret.TOKEN}}"
+       exit
+      exit
+    PRC
+  end
+
+  it "resolves the current document's secret source for every run" do
+    ENV["PROUTERD_SPEC_TOKEN_A"] = "alpha"
+    ENV["PROUTERD_SPEC_TOKEN_B"] = "bravo"
+    seen = []
+    runner.default do |req|
+      seen << req.field("exec")
+      Prouterd::Runner::StubRunner.success.call(req)
+    end
+
+    orchestrator.trigger(document_for("PROUTERD_SPEC_TOKEN_A"), "p", input_event: {})
+    orchestrator.trigger(document_for("PROUTERD_SPEC_TOKEN_B"), "p", input_event: {})
+
+    expect(seen).to eq(%w[alpha bravo])
+  ensure
+    ENV.delete("PROUTERD_SPEC_TOKEN_A")
+    ENV.delete("PROUTERD_SPEC_TOKEN_B")
+  end
+end

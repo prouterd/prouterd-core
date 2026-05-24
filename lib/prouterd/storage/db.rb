@@ -4,6 +4,7 @@ require "sqlite3"
 require "fileutils"
 require "set"
 require "time"
+require "monitor"
 
 module Prouterd
   module Storage
@@ -49,6 +50,7 @@ module Prouterd
       def initialize(path, run_migrations: true)
         @path = path
         ensure_directory(path) unless path == ":memory:"
+        @lock = Monitor.new
 
         @sqlite = SQLite3::Database.new(path)
         @sqlite.results_as_hash = false
@@ -62,13 +64,13 @@ module Prouterd
       # ----- delegation to underlying SQLite3::Database -----
 
       def execute(sql, params = [])
-        @sqlite.execute(sql, normalize_params(params))
+        synchronize { @sqlite.execute(sql, normalize_params(params)) }
       rescue *DISK_UNAVAILABLE_EXCEPTIONS => e
         raise DiskUnavailableError, "storage write failed (#{e.class}): #{e.message}"
       end
 
       def execute_batch(sql)
-        @sqlite.execute_batch(sql)
+        synchronize { @sqlite.execute_batch(sql) }
       rescue *DISK_UNAVAILABLE_EXCEPTIONS => e
         raise DiskUnavailableError, "storage write failed (#{e.class}): #{e.message}"
       end
@@ -82,15 +84,17 @@ module Prouterd
       # writers, the storage works, this probe is just losing the
       # contention race.
       def healthy?
-        @sqlite.execute("SELECT 1")
-        @sqlite.execute("BEGIN IMMEDIATE")
-        @sqlite.execute("ROLLBACK")
-        true
+        synchronize do
+          @sqlite.execute("SELECT 1")
+          @sqlite.execute("BEGIN IMMEDIATE")
+          @sqlite.execute("ROLLBACK")
+          true
+        end
       rescue *DISK_UNAVAILABLE_EXCEPTIONS
-        @sqlite.execute("ROLLBACK") rescue nil
+        synchronize { @sqlite.execute("ROLLBACK") rescue nil }
         false
       rescue SQLite3::BusyException
-        @sqlite.execute("ROLLBACK") rescue nil
+        synchronize { @sqlite.execute("ROLLBACK") rescue nil }
         true
       end
 
@@ -114,25 +118,31 @@ module Prouterd
       end
 
       def last_insert_row_id
-        @sqlite.last_insert_row_id
+        synchronize { @sqlite.last_insert_row_id }
       end
 
       def transaction
-        if @sqlite.transaction_active?
-          yield self
-        else
-          @sqlite.transaction do
+        synchronize do
+          if @sqlite.transaction_active?
             yield self
+          else
+            @sqlite.transaction do
+              yield self
+            end
           end
         end
       end
 
       def close
-        @sqlite&.close
+        synchronize { @sqlite&.close }
       end
 
       def closed?
-        @sqlite.nil? || @sqlite.closed?
+        synchronize { @sqlite.nil? || @sqlite.closed? }
+      end
+
+      def synchronize(&block)
+        @lock.synchronize(&block)
       end
 
       private

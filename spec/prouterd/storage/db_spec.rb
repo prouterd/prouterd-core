@@ -51,4 +51,36 @@ RSpec.describe Prouterd::Storage::DB do
     expect(db.execute("SELECT COUNT(*) FROM config_commits").first.first).to eq(1)
     db.close
   end
+
+  it "does not let another thread join an active transaction on the shared connection" do
+    db = described_class.open(":memory:")
+    db.execute("CREATE TABLE tx_guard (id INTEGER PRIMARY KEY, val TEXT)")
+    db.execute("INSERT INTO tx_guard (id, val) VALUES (1, 'initial')")
+
+    ready = Queue.new
+
+    first = Thread.new do
+      begin
+        db.transaction do
+          db.execute("UPDATE tx_guard SET val = 'first' WHERE id = 1")
+          ready << true
+          sleep 0.2
+          raise "rollback first"
+        end
+      rescue RuntimeError
+        nil
+      end
+    end
+
+    second = Thread.new do
+      ready.pop
+      db.transaction do
+        db.execute("UPDATE tx_guard SET val = 'second' WHERE id = 1")
+      end
+    end
+
+    [first, second].each(&:join)
+    expect(db.query_row("SELECT val FROM tx_guard WHERE id = 1").first).to eq("second")
+    db.close
+  end
 end

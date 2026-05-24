@@ -17,6 +17,8 @@ module Prouterd
     #      `{run_id, status: queued}` immediately. The WorkerPool drains
     #      the queue; daemon crash mid-run is recoverable.
     class WebhookHandler
+      include BodyReader
+
       def initialize(store:, runner:, jobs:, secret_resolver: nil,
                      logger: Prouterd::NullLogger.new,
                      in_flight: nil, metrics: nil, rate_limiter: nil)
@@ -155,13 +157,9 @@ module Prouterd
       end
 
       def read_raw_body(request)
-        body_io = request.body
-        return "" unless body_io
-
         # Body IO is a one-shot reader; cache the bytes so HMAC verify
         # and JSON parse don't fight over it.
-        body_io.rewind if body_io.respond_to?(:rewind)
-        body_io.read.to_s
+        read_bounded_body(request).to_s
       end
 
       def secure_equal?(a, b)

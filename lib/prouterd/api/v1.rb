@@ -16,6 +16,8 @@ module Prouterd
     #   { "data": ..., "meta": { ... } }   on success
     #   { "error": "...", "details": [..] } on failure
     class V1
+      include BodyReader
+
       def initialize(store:, runner:, secret_resolver:, in_flight:, metrics:, jobs:,
                      logger: Prouterd::NullLogger.new, events: nil, app: nil)
         @store = store
@@ -750,7 +752,7 @@ module Prouterd
       end
 
       def read_body(request)
-        text = request.body&.read.to_s
+        text = read_bounded_body(request).to_s
         text.empty? ? nil : text
       end
 

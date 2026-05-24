@@ -40,6 +40,8 @@ module Prouterd
     # /v1/* endpoints are open — fine for local dev, not for production.
     # The daemon prints a warning at boot when unset.
     class App
+      include BodyReader
+
       WEBHOOK_PATH = %r{\A/i/(?<name>[A-Za-z_][A-Za-z0-9_-]*)\z}.freeze
       CLI_WS_PATH  = %r{\A/v1/cli/(?<session_id>[A-Za-z0-9._-]+)\z}.freeze
 
@@ -172,6 +174,19 @@ module Prouterd
         return status_response if method == "GET" && path == "/v1/status"
         return metrics_response if method == "GET" && path == "/metrics"
 
+        if !@accepting && !readonly?(method, path)
+          return json_error(503, "unavailable", "daemon is shutting down — try again later")
+        end
+
+        # Reject oversized bodies before any handler reads them. Puma streams
+        # the body through, so a 5GB POST would otherwise block a worker
+        # thread plus eat memory. Limit is per-request and configurable via
+        # PROUTERD_MAX_BODY_BYTES (default 1MB for ingest, lifted to 4MB for
+        # /v1/config/apply since DSL files can grow).
+        if (err = enforce_body_limit(method, path, request))
+          return err
+        end
+
         # Auth-establishment endpoints: pre-bearer-check by design.
         # /v1/login validates the admin bearer once and hands the
         # browser an HttpOnly cookie session in exchange. /v1/logout
@@ -184,19 +199,6 @@ module Prouterd
         # so the regular Rack response cycle is short-circuited.
         if Faye::WebSocket.websocket?(env)
           return dispatch_ws(env, path)
-        end
-
-        if !@accepting && !readonly?(method, path)
-          return json_error(503, "unavailable", "daemon is shutting down — try again later")
-        end
-
-        # Reject oversized bodies before any handler reads them. Puma streams
-        # the body through, so a 5GB POST would otherwise block a worker
-        # thread plus eat memory. Limit is per-request and configurable via
-        # PROUTERD_MAX_BODY_BYTES (default 1MB for ingest, lifted to 4MB for
-        # /v1/config/apply since DSL files can grow).
-        if (err = enforce_body_limit(method, path, request))
-          return err
         end
 
         if @console_dir && (path == "/console" || path.start_with?("/console/"))
@@ -221,6 +223,9 @@ module Prouterd
                       facility: "STORE", mnemonic: "UNAVAILABLE",
                       error: e.class.name, message: e.message)
         json_error(503, "storage_unavailable", "storage unavailable")
+      rescue PayloadTooLarge => e
+        json_error(413, "payload_too_large", "request body too large",
+                   details: { limit_bytes: e.limit_bytes })
       rescue StandardError => e
         @logger.error("internal API error",
                       facility: "API", mnemonic: "INTERNAL",
@@ -271,6 +276,7 @@ module Prouterd
         return nil if %w[GET HEAD DELETE].include?(method)
 
         cap = body_cap_for(path)
+        request.env["prouterd.max_body_bytes"] = cap
         # Content-Length header is the cheap path — reject before even
         # reading bytes off the socket. (Puma still streams through to
         # body.read, but Rack exposes the header.)
@@ -442,7 +448,7 @@ module Prouterd
       end
 
       def parse_json_body(request)
-        text = request.body&.read.to_s
+        text = read_bounded_body(request).to_s
         return nil if text.empty?
         JSON.parse(text)
       rescue JSON::ParserError

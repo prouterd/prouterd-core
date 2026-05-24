@@ -92,5 +92,62 @@ RSpec.describe Prouterd::API::EventsWebSocket do
       expect { conn.on_open }.not_to raise_error
       expect(JSON.parse(no_close_socket.sent.first)["type"]).to eq("error")
     end
+
+    it "accepts a valid cookie session even with no Authorization header" do
+      allow(Prouterd::API::Auth).to receive(:cookie_session_valid?).and_return(true)
+      conn = described_class.new(socket, env: {}, events: events,
+                                          admin_token: "set-and-required")
+      conn.on_open
+      hello = JSON.parse(socket.sent.first)
+      expect(hello["type"]).to eq("hello")
+    end
+
+    it "rejects when admin_token is set but no bearer is provided" do
+      conn = described_class.new(socket, env: {}, events: events,
+                                          admin_token: "expected")
+      conn.on_open
+      err = JSON.parse(socket.sent.first)
+      expect(err.dig("payload", "code")).to eq("unauthorized")
+    end
+  end
+
+  describe "internal-event routing skip-when-missing branches" do
+    let(:conn) { described_class.new(socket, env: env, events: events, admin_token: nil) }
+    before { conn.on_open }
+
+    it "route_run is a no-op when payload has no :run" do
+      events.publish(:run_created, {}) # no :run key
+      # no subscribed topic → still expect no run-related frame even
+      # if a topic WERE subscribed. The early return short-circuits.
+      run_frames = socket.sent.map { |s| JSON.parse(s) }.select { |m| m.dig("payload", "uid") }
+      expect(run_frames).to be_empty
+    end
+
+    it "route_step is a no-op when payload has no :step or no :run_uid" do
+      events.publish(:step_created, {}) # no :step, no :run_uid
+      events.publish(:step_created, { step: double }) # :step but no :run_uid
+      step_frames = socket.sent.map { |s| JSON.parse(s) }
+                          .select { |m| m["type"]&.start_with?("step.") }
+      expect(step_frames).to be_empty
+    end
+
+    it "route_log is a no-op when payload has no :run_uid" do
+      events.publish(:log_appended, { stream: "stdout", content: "x" })
+      log_frames = socket.sent.map { |s| JSON.parse(s) }
+                          .select { |m| m["type"] == "log.appended" }
+      expect(log_frames).to be_empty
+    end
+  end
+
+  describe "send_raw rescue when @logger is nil" do
+    it "swallows the exception silently" do
+      bad_socket = Class.new do
+        def send(_); raise "kaboom"; end
+        def close(*); end
+      end.new
+      conn = described_class.new(bad_socket, env: env, events: events,
+                                              admin_token: nil) # no logger
+      expect { conn.on_open }.not_to raise_error
+    end
   end
 end

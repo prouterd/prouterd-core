@@ -103,4 +103,70 @@ RSpec.describe Prouterd::API::CliWebSocket do
       expect { conn.on_close }.not_to raise_error
     end
   end
+
+  describe "unauthorized open against a socket that doesn't respond to close" do
+    it "does not raise NoMethodError when @socket has no #close" do
+      no_close_socket = Class.new do
+        attr_reader :sent
+        def initialize; @sent = []; end
+        def send(s); @sent << s; end
+        # intentionally no #close
+      end.new
+      conn = described_class.new(no_close_socket, env: env, session_id: "x",
+                                                   store: store,
+                                                   admin_token: "expected-token")
+      expect { conn.on_open }.not_to raise_error
+      err = JSON.parse(no_close_socket.sent.last)
+      expect(err.dig("payload", "code")).to eq("unauthorized")
+    end
+  end
+
+  describe "bearer-auth missing-token branch" do
+    it "rejects when admin_token is set but no Authorization header is sent" do
+      conn = described_class.new(socket, env: {}, session_id: "x",
+                                          store: store, admin_token: "set-and-required")
+      conn.on_open
+      err = JSON.parse(socket.sent.last)
+      expect(err.dig("payload", "code")).to eq("unauthorized")
+    end
+  end
+
+  describe "cookie session auth wins over missing bearer" do
+    it "passes when Auth.cookie_session_valid? returns true" do
+      allow(Prouterd::API::Auth).to receive(:cookie_session_valid?).and_return(true)
+      conn = described_class.new(socket, env: {}, session_id: "x",
+                                          store: store, admin_token: "set-and-required")
+      conn.on_open
+      hello = JSON.parse(socket.sent.last)
+      expect(hello["type"]).to eq("hello")
+    end
+  end
+
+  describe "prompt_for with a mode lacking #prompt_suffix" do
+    it "falls back to '#' prompt suffix" do
+      conn = described_class.new(socket, env: env, session_id: "weird",
+                                          store: store, admin_token: nil)
+      # Pre-load a session bucket whose mode_stack top is an Object
+      # without prompt_suffix.
+      bucket = described_class.session_bucket_for("weird", store)
+      bucket[:session].mode_stack.clear
+      bucket[:session].mode_stack << Object.new
+
+      conn.on_open
+      hello = JSON.parse(socket.sent.last)
+      expect(hello.dig("payload", "prompt")).to end_with("# ")
+    end
+  end
+
+  describe "send_raw rescue without a logger" do
+    it "swallows the exception without raising when @logger is nil" do
+      bad_socket = Class.new do
+        def send(_); raise "explode"; end
+        def close(*); end
+      end.new
+      conn = described_class.new(bad_socket, env: env, session_id: "y",
+                                              store: store, admin_token: nil)
+      expect { conn.on_open }.not_to raise_error
+    end
+  end
 end

@@ -280,7 +280,6 @@ module Prouterd
                          extra_env: {}, sandbox_env: false)
         max_turns = (max_turns || DEFAULT_MAX_TURNS).to_i
         max_turns = DEFAULT_MAX_TURNS if max_turns < 1
-        deadline = Time.now + ((timeout_ms || DEFAULT_TIMEOUT_MS) / 1000.0)
 
         argv = LlmSubprocess.build_argv(provider, binary, model, sandbox,
                                          reasoning_effort: reasoning_effort)
@@ -305,16 +304,20 @@ module Prouterd
         final_text = String.new(encoding: Encoding::UTF_8)
         stop_reason = nil
         turns = 0
-        stderr_buf = String.new(encoding: Encoding::UTF_8)
 
-        options = LlmSubprocess.popen_options(cwd: resolved_cwd, sandbox_env: sandbox_env)
-        popen_args = options.empty? ? [env, *argv] : [env, *argv, options]
-        Open3.popen3(*popen_args) do |stdin, stdout, stderr, wait_thr|
-          err_thread = Thread.new { stderr_buf << LlmSubprocess.utf8_safe(stderr.read.to_s) }
+        session = LlmSubprocess::Session.new(
+          env: env, argv: argv,
+          timeout_ms: timeout_ms || DEFAULT_TIMEOUT_MS,
+          cwd: resolved_cwd, sandbox_env: sandbox_env
+        )
 
-          # First message: prompt + tools + system. Subsequent messages
-          # are tool outputs only; the CLI carries the conversation
-          # state in the persistent process.
+        # First message: prompt + tools + system. Subsequent messages
+        # are tool outputs only; the CLI carries the conversation state
+        # in the persistent process. The block returns the inner
+        # stop_reason / counters via the closure (final_text, usage_*,
+        # tool_calls, turns are all enclosed locals); Session.run only
+        # surfaces the spawn outcome (status / timed_out / stderr).
+        result = session.run do |stdin, stdout, _handle|
           first_msg = { "role" => "user", "content" => prompt, "tools" => tool_defs }
           first_msg["system"] = system_msg unless system_msg.to_s.empty?
           stdin.puts(JSON.dump(first_msg))
@@ -323,19 +326,11 @@ module Prouterd
           pending_tool_calls = []
 
           stdout.each_line do |raw|
-            if Time.now > deadline
-              Process.kill("TERM", wait_thr.pid) rescue nil
-              return failure(error_type: "timeout",
-                              message: "#{provider} agentic timed out",
-                              usage_in: usage_in, usage_out: usage_out,
-                              tool_calls: tool_calls, turns: turns)
-            end
-
             # IO chunks land in the IO's external encoding (typically
             # ASCII-8BIT). Force-tag UTF-8 + scrub so a non-Latin-1
             # character anywhere in the JSONL event stream doesn't
             # crash the parser or the text aggregator downstream.
-            raw  = LlmSubprocess.utf8_safe(raw)
+            raw   = LlmSubprocess.utf8_safe(raw)
             event = (JSON.parse(raw) rescue nil)
             next unless event.is_a?(Hash)
 
@@ -388,16 +383,21 @@ module Prouterd
               pending_tool_calls.clear
             end
           end
+        end
 
-          stdin.close rescue nil
-          err_thread.join
-          status = wait_thr.value
-          unless status.success? || stop_reason
-            return failure(error_type: "llm_error",
-                            message: "#{provider} exited #{status.exitstatus}: #{stderr_buf.lines.first.to_s.chomp}",
-                            usage_in: usage_in, usage_out: usage_out,
-                            tool_calls: tool_calls, turns: turns)
-          end
+        if result.timed_out
+          return failure(error_type: "timeout",
+                          message: "#{provider} agentic timed out",
+                          usage_in: usage_in, usage_out: usage_out,
+                          tool_calls: tool_calls, turns: turns)
+        end
+
+        status = result.status
+        unless status.success? || stop_reason
+          return failure(error_type: "llm_error",
+                          message: "#{provider} exited #{status.exitstatus}: #{result.stderr_text.lines.first.to_s.chomp}",
+                          usage_in: usage_in, usage_out: usage_out,
+                          tool_calls: tool_calls, turns: turns)
         end
 
         {
@@ -411,7 +411,7 @@ module Prouterd
             "turns"       => turns
           },
           error_type: nil, error_message: nil,
-          stdout: "", stderr: stderr_buf, exit_code: 0
+          stdout: "", stderr: result.stderr_text, exit_code: 0
         }
       end
 

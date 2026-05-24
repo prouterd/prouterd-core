@@ -206,29 +206,18 @@ module Prouterd
 
       private
 
-      # Mirror of LlmCaller#build_subprocess_env. The agentic path
-      # doesn't share that method (it builds its own env via the
-      # AgenticRunner's host), so the strict-spawn semantics for env /
-      # env-forward / secret are duplicated here.
+      # Thin wrapper over `LlmSubprocess.build_subprocess_env` that
+      # pulls iface fields from the templated-iface Hash the agentic
+      # path already has at hand (the synchronous LlmCaller path
+      # passes through a RunRequest, so it sees the same data with a
+      # different accessor).
       def build_subprocess_env(templated_iface, parent_env)
-        env_static  = templated_iface["env"]
-        env_static  = env_static.is_a?(Hash) ? env_static : {}
-        env_forward = Array(templated_iface["env-forward"])
-        secret_refs = Array(templated_iface["secret"])
-        sandbox_env = !env_static.empty? || !env_forward.empty? || !secret_refs.empty?
-
-        extra = {}
-        env_static.each { |k, v| extra[k.to_s] = v.to_s }
-        env_forward.each do |key|
-          v = ENV[key]
-          extra[key] = v.to_s if v
-        end
-        secret_refs.each do |name|
-          v = parent_env[name]
-          extra[name] = v.to_s if v
-        end
-
-        [extra, sandbox_env]
+        Iface::LlmSubprocess.build_subprocess_env(
+          env_static:  templated_iface["env"],
+          env_forward: templated_iface["env-forward"],
+          secret_refs: templated_iface["secret"],
+          parent_env:  parent_env
+        )
       end
 
       def invalid_agentic(block, message)

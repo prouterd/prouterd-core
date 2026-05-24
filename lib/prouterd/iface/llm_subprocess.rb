@@ -2,6 +2,7 @@
 
 require "open3"
 require "json"
+require_relative "llm_subprocess/session"
 
 module Prouterd
   module Iface
@@ -61,9 +62,16 @@ module Prouterd
           }
         end
 
-        stdout_lines, stderr_text, status = run_subprocess(env, argv, stdin_text, timeout_ms || DEFAULT_TIMEOUT_MS,
-                                                            cwd: resolved_cwd, sandbox_env: sandbox_env,
-                                                            stream_sink: stream_sink)
+        session = Session.new(env: env, argv: argv, timeout_ms: timeout_ms,
+                              cwd: resolved_cwd, sandbox_env: sandbox_env)
+        result = session.run do |stdin, stdout, _handle|
+          stdin.write(stdin_text) rescue nil
+          stdin.close rescue nil
+          collect_stdout_lines(stdout, stream_sink)
+        end
+        stdout_lines = result.value
+        stderr_text  = result.stderr_text
+        status       = result.status
 
         if status == :timeout
           return { exit_code: nil, output_json: nil, stdout: "", stderr: stderr_text,
@@ -221,6 +229,40 @@ module Prouterd
         bin
       end
 
+      # Shared `env` / `env-forward` / `secret` resolver for subprocess
+      # LLM spawns. Returns `[extra_env, sandbox_env]` where
+      # `sandbox_env` is true when ANY of the three is declared on the
+      # interface — the opt-in signal that the spawn should run with
+      # `unsetenv_others: true` so a prompt-injection can't exfiltrate
+      # whatever else the daemon was started with.
+      #
+      # Resolution rules:
+      #   env_static  Hash<KEY, VALUE>  — static (already templated)
+      #   env_forward Array<KEY>        — pass through ENV[KEY] if set
+      #   secret_refs Array<NAME>       — read resolved value from
+      #                                    parent_env[NAME] (the
+      #                                    orchestrator's resolver
+      #                                    populated it already)
+      def build_subprocess_env(env_static:, env_forward:, secret_refs:, parent_env:)
+        env_static  = env_static.is_a?(Hash) ? env_static : {}
+        env_forward = Array(env_forward)
+        secret_refs = Array(secret_refs)
+        sandbox_env = !env_static.empty? || !env_forward.empty? || !secret_refs.empty?
+
+        extra = {}
+        env_static.each { |k, v| extra[k.to_s] = v.to_s }
+        env_forward.each do |key|
+          v = ENV[key]
+          extra[key] = v.to_s if v
+        end
+        secret_refs.each do |name|
+          v = (parent_env || {})[name]
+          extra[name] = v.to_s if v
+        end
+
+        [extra, sandbox_env]
+      end
+
       def build_env(home)
         env = {}
         env["HOME"] = home if home && !home.empty?
@@ -263,54 +305,21 @@ module Prouterd
         end
       end
 
-      def run_subprocess(env, argv, stdin_text, timeout_ms, cwd: nil, sandbox_env: false,
-                         stream_sink: nil)
-        stdout_lines = []
-        stderr_buf = String.new(encoding: Encoding::UTF_8)
-        status = nil
-
-        deadline = Time.now + (timeout_ms / 1000.0)
-        options = popen_options(cwd: cwd, sandbox_env: sandbox_env)
-        popen_args = options.empty? ? [env, *argv] : [env, *argv, options]
-        Open3.popen3(*popen_args) do |stdin, stdout, stderr, wait_thr|
-          stdin.write(stdin_text) rescue nil
-          stdin.close rescue nil
-
-          out_thread = Thread.new do
-            stdout.each_line do |raw|
-              # IO chunks from Open3 arrive in the IO's default
-              # external encoding — typically ASCII-8BIT under a C
-              # locale. The CLI's JSONL events are UTF-8 by contract,
-              # so we force-tag UTF-8 and scrub any invalid sequence
-              # (replaced with `?`) rather than letting the line
-              # explode the log appender / JSON parser downstream.
-              line = utf8_safe(raw).chomp
-              stdout_lines << line
-              # When the operator opted into streaming, hand each line
-              # to the per-step log writer immediately — `prouter logs
-              # <run_uid> --follow` then sees agent progress without
-              # waiting for the subprocess to terminate.
-              stream_sink&.call(line, "stdout")
-            end
-          end
-          err_thread = Thread.new { stderr_buf << utf8_safe(stderr.read.to_s) }
-
-          while wait_thr.alive?
-            if Time.now > deadline
-              Process.kill("TERM", wait_thr.pid) rescue nil
-              sleep 0.05
-              Process.kill("KILL", wait_thr.pid) rescue nil
-              status = :timeout
-              break
-            end
-            sleep 0.02
-          end
-          out_thread.join
-          err_thread.join
-          status ||= wait_thr.value
+      # Drain a subprocess stdout pipe into an array, force-tagging
+      # UTF-8 + scrubbing invalid sequences per line. When the operator
+      # opted into streaming, each line is also handed to the per-step
+      # log sink as it arrives so `prouter logs <run_uid> --follow`
+      # sees agent progress without waiting for the subprocess to
+      # terminate. The Session watchdog kills the spawn on deadline
+      # expiry; the pipe then EOFs and `each_line` returns naturally.
+      def collect_stdout_lines(stdout, stream_sink)
+        lines = []
+        stdout.each_line do |raw|
+          line = utf8_safe(raw).chomp
+          lines << line
+          stream_sink&.call(line, "stdout")
         end
-
-        [stdout_lines, stderr_buf, status]
+        lines
       end
 
       # Build the canonical output shape from parsed pieces, or return

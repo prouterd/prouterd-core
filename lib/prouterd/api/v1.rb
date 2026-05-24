@@ -114,39 +114,29 @@ module Prouterd
         json(200, data: commit_summary(commit).merge(rendered_config: commit.rendered_config))
       end
 
-      # ----- /v1/{interfaces,queues,policies,secrets} -----
+      # ----- /v1/{interfaces,queues,policies,secrets,processes,tools} -----
+      #
+      # Every list endpoint loads the running document, maps the named
+      # collection through its `*_summary` builder, and returns the
+      # result. `list_collection` keeps that boilerplate in one place;
+      # /secrets needs the per-name `used` index, so it builds an extra
+      # arg via the optional block.
 
-      def get_interfaces(_request)
-        document = @store.load_running
-        json(200, data: document.interfaces.map { |i| interface_summary(i) })
-      end
-
-      def get_queues(_request)
-        document = @store.load_running
-        json(200, data: document.queues.map { |q| queue_summary(q) })
-      end
-
-      def get_policies(_request)
-        document = @store.load_running
-        json(200, data: document.policies.map { |p| policy_summary(p) })
-      end
+      def get_interfaces(_request); list_collection(:interfaces, :interface_summary); end
+      def get_queues(_request);     list_collection(:queues,     :queue_summary);     end
+      def get_policies(_request);   list_collection(:policies,   :policy_summary);    end
+      def get_processes(_request);  list_collection(:processes,  :process_summary);   end
+      def get_tools(_request);      list_collection(:tools,      :tool_summary);      end
 
       # Secret values must never be exposed via the API. We return the
       # declared name, source type, and source ref (e.g.
-      # an env var NAME, never its value), plus a "present"/"missing" status
-      # for env-backed secrets so operators can verify configuration without
-      # the value crossing the wire.
+      # an env var NAME, never its value), plus a "present"/"missing"
+      # status for env-backed secrets so operators can verify
+      # configuration without the value crossing the wire.
       def get_secrets(_request)
         document = @store.load_running
         used = secret_usage_index(document)
         json(200, data: document.secrets.map { |s| secret_summary(s, used[s.name] || []) })
-      end
-
-      # ----- /v1/processes -----
-
-      def get_processes(_request)
-        document = @store.load_running
-        json(200, data: document.processes.map { |p| process_summary(p) })
       end
 
       def get_process(_request, name)
@@ -154,11 +144,6 @@ module Prouterd
         return json_error(404, "not_found", "no such process '#{name}'") unless process
 
         json(200, data: process_detail(process))
-      end
-
-      def get_tools(_request)
-        document = @store.load_running
-        json(200, data: document.tools.map { |t| tool_summary(t) })
       end
 
       # GET /v1/local-repo/status — per-iface, per-whitelist-entry
@@ -368,21 +353,7 @@ module Prouterd
 
       def post_run_resume(request, uid)
         run = run_by_uid(uid) or return json_error(404, "not_found", "no such run")
-        return json_error(409, "conflict", "run is not paused (status=#{run.status})") unless run.status == "paused"
-        return json_error(422, "unprocessable", "run not pinned to a commit") unless run.process_config_commit_id
-
-        commit = @store.get_commit(run.process_config_commit_id)
-        return json_error(410, "gone", "config commit no longer exists") unless commit
-
-        body = parse_json_body(request) || {}
-        value = body["value"]
-
-        document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
-        orchestrator = build_orchestrator
-        finished = orchestrator.resume_run(uid, document, value: value)
-        json(202, data: { run_id: finished.uid, status: finished.status })
-      rescue Runtime::TriggerError => e
-        json_error(409, "conflict", e.message)
+        dispatch_resume(request, run)
       end
 
       # POST /v1/runs/by-thread/:thread_id/resume — resume the most
@@ -397,6 +368,17 @@ module Prouterd
         paused = repo.list_runs(limit: 200, status: "paused", thread_id: thread_id)
         run = paused.first   # list_runs orders DESC by id → first is latest
         return json_error(404, "not_found", "no paused run for thread '#{thread_id}'") unless run
+
+        dispatch_resume(request, run, extra: { thread_id: thread_id })
+      end
+
+      # Shared resume path. Both /v1/runs/:uid/resume and
+      # /v1/runs/by-thread/:thread_id/resume share the same body shape,
+      # status / commit-pinning preconditions, document parse, and
+      # orchestrator call. Callers just need to resolve the Run row;
+      # this handles validation, parse, and the 409 conversion.
+      def dispatch_resume(request, run, extra: {})
+        return json_error(409, "conflict", "run is not paused (status=#{run.status})") unless run.status == "paused"
         return json_error(422, "unprocessable", "run not pinned to a commit") unless run.process_config_commit_id
 
         commit = @store.get_commit(run.process_config_commit_id)
@@ -408,7 +390,7 @@ module Prouterd
         document = Config::Parser.parse(Config::Lexer.tokenize(commit.rendered_config))
         orchestrator = build_orchestrator
         finished = orchestrator.resume_run(run.uid, document, value: value)
-        json(202, data: { run_id: finished.uid, status: finished.status, thread_id: thread_id })
+        json(202, data: { run_id: finished.uid, status: finished.status }.merge(extra))
       rescue Runtime::TriggerError => e
         json_error(409, "conflict", e.message)
       end
@@ -508,6 +490,15 @@ module Prouterd
           message: commit.message,
           created_at: commit.created_at
         }
+      end
+
+      # Shared list-endpoint shape: load the running document, map the
+      # named collection through `summary_method`, wrap in the standard
+      # `{data: [...]}` envelope. /secrets opts out because its summary
+      # needs a per-document usage index passed in alongside the item.
+      def list_collection(collection, summary_method)
+        items = @store.load_running.public_send(collection)
+        json(200, data: items.map { |item| send(summary_method, item) })
       end
 
       def process_summary(p)

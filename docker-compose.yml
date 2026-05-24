@@ -8,8 +8,9 @@
 # For source builds, uncomment `build: .` or run:
 #   docker build -t prouterd:dev .
 #
-# The Docker-socket mount is REQUIRED for `interface docker` blocks. If you
-# only use `interface shell` blocks, comment that line out.
+# The Docker-socket mount is only needed for `interface docker` blocks.
+# On Linux, expose the socket group to the non-root container user with:
+#   export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
 services:
   prouterd:
     image: ghcr.io/prouterd/prouterd:latest
@@ -26,9 +27,10 @@ services:
       TZ: UTC
     volumes:
       - prouterd-data:/data
-      # Allow the daemon to spawn child containers on the host's Docker daemon.
-      # Comment out for pure shell-block pipelines.
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Enable both lines below for `interface docker` blocks.
+      # - /var/run/docker.sock:/var/run/docker.sock
+    # group_add:
+    #   - "${DOCKER_GID}"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "ruby -rnet/http -e 'exit Net::HTTP.get_response(URI(\"http://127.0.0.1:8080/v1/status\")).code == \"200\" ? 0 : 1'"]

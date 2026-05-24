@@ -5,9 +5,10 @@
 #   docker run -p 127.0.0.1:8080:8080 -v prouterd-data:/data ghcr.io/prouterd/prouterd:latest
 #   docker run --rm -v "$PWD:/work" ghcr.io/prouterd/prouterd:latest check /work/router.prc
 #
-# To allow `interface docker` blocks (which spawn child containers on the host),
-# mount the host Docker socket:
+# To allow `interface docker` blocks (which spawn child containers on the
+# host), mount the host Docker socket and grant the socket group if needed:
 #   -v /var/run/docker.sock:/var/run/docker.sock
+#   --group-add "$(stat -c '%g' /var/run/docker.sock)"
 # Pure-shell pipelines don't need it.
 FROM ruby:3.4-slim-bookworm AS builder
 
@@ -57,6 +58,7 @@ RUN mkdir -p /data && chown prouterd:prouterd /data
 ENV PROUTERD_DB=/data/prouterd.db
 ENV BUNDLE_PATH=/usr/local/bundle
 ENV BUNDLE_GEMFILE=/app/Gemfile
+ENV PATH="/app/exe:${PATH}"
 
 USER prouterd
 

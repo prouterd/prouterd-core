@@ -101,7 +101,7 @@ module Prouterd
           end
         when 5
           case tokens[1]
-          when "logs", "artifacts" then blocks_in_process_of_run(tokens[2])
+          when "logs", "artifacts" then blocks_in_process_of_run(tokens[3])
           else []
           end
         else []

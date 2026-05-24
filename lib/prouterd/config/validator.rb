@@ -46,15 +46,23 @@ module Prouterd
         @result = Result.new
       end
 
+      # Top-level collections that share the "duplicate <kind> '<name>'"
+      # uniqueness check. Order matches the validate sequence below — we
+      # check uniqueness of every collection before doing per-item
+      # semantic checks so duplicates surface as their own errors.
+      UNIQUE_COLLECTIONS = {
+        secrets:    "secret",
+        policies:   "policy",
+        queues:     "queue",
+        interfaces: "interface",
+        processes:  "process",
+        contracts:  "contract",
+        tools:      "tool"
+      }.freeze
+
       def validate
         check_router
-        check_unique_secrets
-        check_unique_policies
-        check_unique_queues
-        check_unique_interfaces
-        check_unique_processes
-        check_unique_contracts
-        check_unique_tools
+        UNIQUE_COLLECTIONS.each { |coll, kind| check_unique(@doc.public_send(coll), kind) }
         check_secret_sources
         check_policies
         check_queues
@@ -64,10 +72,6 @@ module Prouterd
         check_processes
         check_global_routes
         @result
-      end
-
-      def check_unique_tools
-        check_unique(@doc.tools, "tool")
       end
 
       def check_tools
@@ -93,26 +97,6 @@ module Prouterd
         return if @doc.router
 
         @result.error("missing 'router' declaration")
-      end
-
-      def check_unique_secrets
-        check_unique(@doc.secrets, "secret")
-      end
-
-      def check_unique_policies
-        check_unique(@doc.policies, "policy")
-      end
-
-      def check_unique_queues
-        check_unique(@doc.queues, "queue")
-      end
-
-      def check_unique_interfaces
-        check_unique(@doc.interfaces, "interface")
-      end
-
-      def check_unique_processes
-        check_unique(@doc.processes, "process")
       end
 
       def check_unique(items, kind)
@@ -465,7 +449,7 @@ module Prouterd
           return
         end
 
-        iface = @doc.interfaces.find { |i| i.name == ref.name }
+        iface = collection_index(:interfaces)[ref.name]
         unless iface
           @result.error(
             "block '#{process.name}/#{block.name}' references unknown interface '#{ref.name}'",
@@ -660,28 +644,24 @@ module Prouterd
       end
 
       # ----- lookup helpers -----
+      #
+      # Single generic `defined?` over a top-level collection. Pure
+      # Hash#has_key? after a lazy-built index — O(1) per check instead
+      # of O(n) `Array#any?` for every block-level secret/policy/
+      # contract/queue reference. The index is per-validate-call, so a
+      # subsequent validate of a different document sees a fresh map.
 
-      def secret_defined?(name)
-        @doc.secrets.any? { |s| s.name == name }
-      end
+      def secret_defined?(name);   collection_index(:secrets).key?(name);   end
+      def policy_defined?(name);   collection_index(:policies).key?(name);  end
+      def queue_defined?(name);    collection_index(:queues).key?(name);    end
+      def contract_defined?(name); collection_index(:contracts).key?(name); end
 
-      def policy_defined?(name)
-        @doc.policies.any? { |p| p.name == name }
-      end
-
-      def queue_defined?(name)
-        @doc.queues.any? { |q| q.name == name }
-      end
-
-      def contract_defined?(name)
-        @doc.contracts.any? { |c| c.name == name }
+      def collection_index(coll)
+        (@collection_indices ||= {})[coll] ||=
+          @doc.public_send(coll).each_with_object({}) { |item, h| h[item.name] = item }
       end
 
       # ----- contract validation -----
-
-      def check_unique_contracts
-        check_unique(@doc.contracts, "contract")
-      end
 
       def check_contracts
         @doc.contracts.each do |contract|

@@ -455,4 +455,177 @@ RSpec.describe Prouterd::CLI::Main do
       end
     end
   end
+
+  describe "missing_arg / invalid_arg helpers" do
+    it "missing_arg prints 'requires a value' and returns 2" do
+      err = StringIO.new
+      m = described_class.new([], StringIO.new, StringIO.new, err)
+      expect(m.send(:missing_arg, "cmd", "--db")).to eq(2)
+      expect(err.string).to include("--db requires a value")
+    end
+
+    it "invalid_arg prints the message and returns 2" do
+      err = StringIO.new
+      m = described_class.new([], StringIO.new, StringIO.new, err)
+      expect(m.send(:invalid_arg, "cmd", "boom")).to eq(2)
+      expect(err.string).to include("prouter cmd: boom")
+    end
+  end
+
+  describe "read_file SystemCallError" do
+    it "prints 'cannot read' and returns nil on permission error" do
+      err = StringIO.new
+      m = described_class.new([], StringIO.new, StringIO.new, err)
+      allow(File).to receive(:read).with("/tmp/x").and_raise(Errno::EACCES.new("denied"))
+      expect(m.send(:read_file, "/tmp/x")).to be_nil
+      expect(err.string).to include("cannot read")
+    end
+  end
+
+  describe "replay variants" do
+    it "passes from_block to session.replay_from" do
+      with_db do |db|
+        run("apply", fixture_path("minimal.prc"), "--db", db)
+        allow_any_instance_of(Prouterd::Shell::Session).to receive(:replay_from).and_raise(
+          Prouterd::Shell::ShellError, "no such run"
+        )
+        code, _, err = run("replay", "run", "x", "from", "blk", "--db", db, "--runner", "stub")
+        expect(code).to eq(1)
+        expect(err).to include("no such run")
+      end
+    end
+
+    it "honors --use-current-config" do
+      with_db do |db|
+        run("apply", fixture_path("minimal.prc"), "--db", db)
+        captured = nil
+        allow_any_instance_of(Prouterd::Shell::Session).to receive(:replay) do |_, _uid, **opts|
+          captured = opts
+          raise Prouterd::Shell::ShellError, "stop here"
+        end
+        run("replay", "run", "x", "--use-current-config", "--db", db, "--runner", "stub")
+        expect(captured).to eq(use_current_config: true)
+      end
+    end
+  end
+
+  describe "resume --value pure-parse path" do
+    it "accepts --value JSON and proceeds" do
+      with_db do |db|
+        run("apply", fixture_path("minimal.prc"), "--db", db)
+        # --value parses fine; downstream fails with "no run" because uid doesn't exist.
+        code, _, err = run("resume", "run", "missing", "--value", '{"x":1}', "--db", db, "--runner", "stub")
+        expect(code).to eq(1)
+        expect(err).to include("no run")
+      end
+    end
+  end
+
+  describe "check report shape" do
+    it "emits 'schedule=' for cron iface and method/path for webhook" do
+      Tempfile.create(["mixed", ".prc"]) do |t|
+        t.write(<<~PRC)
+          router demo
+          exit
+          secret TOK
+           source env TOK
+          exit
+          interface webhook in
+           path /x
+           method POST
+           auth bearer secret TOK
+          exit
+          interface cron tick
+           schedule "0 * * * *"
+          exit
+          interface docker img
+           image foo
+          exit
+          process p
+           block a
+            interface docker img
+           exit
+          exit
+        PRC
+        t.flush
+        code, out, _err = run("check", t.path)
+        expect(code).to eq(0)
+        expect(out).to include("schedule=")
+        expect(out).to include("POST /x")
+      end
+    end
+  end
+
+  describe "shell_exec_warnings rescue" do
+    it "skips a block whose exec has unbalanced quotes (ArgumentError rescue)" do
+      Tempfile.create(["sh", ".prc"]) do |t|
+        t.write(<<~PRC)
+          router demo
+          exit
+          interface shell sh1
+          exit
+          process p
+           block a
+            interface shell sh1
+            exec `echo "unterminated`
+           exit
+          exit
+        PRC
+        t.flush
+        code, out, _ = run("check", t.path)
+        expect(code).to eq(0)
+        expect(out).to include("Warnings:")
+      end
+    end
+  end
+
+  describe "validate prints diff lines in human mode (TTY-mocked stdout)" do
+    it "renders 'no semantic changes' when identical and stdout is a tty" do
+      with_db do |db|
+        run("apply", fixture_path("minimal.prc"), "--db", db)
+        # Use a fake stdout that pretends to be a TTY
+        out = StringIO.new
+        def out.tty?; true; end
+        err = StringIO.new
+        code = described_class.run(
+          ["validate", fixture_path("minimal.prc"), "--against", "running", "--db", db],
+          stdout: out, stderr: err
+        )
+        expect(code).to eq(0)
+        expect(out.string).to include("no semantic changes")
+      end
+    end
+
+    it "renders the section list when there are diffs and stdout is a TTY" do
+      with_db do |db|
+        run("apply", fixture_path("minimal.prc"), "--db", db)
+        Tempfile.create(["other", ".prc"]) do |t|
+          t.write(<<~PRC)
+            router demo
+            exit
+            interface docker img1
+             image alpine
+            exit
+            process p
+             block hello
+              interface docker img1
+             exit
+             block extra
+              interface docker img1
+             exit
+            exit
+          PRC
+          t.flush
+          out = StringIO.new
+          def out.tty?; true; end
+          err = StringIO.new
+          described_class.run(
+            ["validate", t.path, "--against", "running", "--db", db],
+            stdout: out, stderr: err
+          )
+          expect(out.string).to match(/change\(s\) vs running config/)
+        end
+      end
+    end
+  end
 end

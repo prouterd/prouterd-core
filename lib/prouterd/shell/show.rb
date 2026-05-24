@@ -416,33 +416,10 @@ module Prouterd
       end
 
       def show_logs(rest, session, out)
-        # syntax: show logs run <uid> [block <name>]
-        unless rest.length >= 2 && rest[0] == "run"
-          raise CommandError, "syntax: show logs run <uid> [block <name>]"
-        end
-        unless session.store
-          out.puts "(no DB attached — logs not available)"
-          return
-        end
-        run_uid = rest[1]
-        block_name = nil
-        if rest.length == 4 && rest[2] == "block"
-          block_name = rest[3]
-        elsif rest.length != 2
-          raise CommandError, "syntax: show logs run <uid> [block <name>]"
-        end
+        resolved = resolve_run_and_step(rest, session, out, "logs")
+        return unless resolved
 
-        repo = Prouterd::Storage::Repositories::Runs.new(session.store.db)
-        run = repo.get_run_by_uid(run_uid)
-        raise CommandError, "no such run '#{run_uid}'" unless run
-
-        step_id = nil
-        if block_name
-          step = repo.list_steps(run.id).find { |s| s.block_name == block_name }
-          raise CommandError, "no such block '#{block_name}' in run '#{run_uid}'" unless step
-          step_id = step.id
-        end
-
+        run, step_id, repo = resolved
         logs = repo.list_logs(run.id, step_id: step_id)
         if logs.empty?
           out.puts "No logs."
@@ -458,21 +435,45 @@ module Prouterd
       end
 
       def show_artifacts(rest, session, out)
-        # syntax: show artifacts run <uid> [block <name>]
-        unless rest.length >= 2 && rest[0] == "run"
-          raise CommandError, "syntax: show artifacts run <uid> [block <name>]"
-        end
-        unless session.store
-          out.puts "(no DB attached — artifacts not available)"
+        resolved = resolve_run_and_step(rest, session, out, "artifacts")
+        return unless resolved
+
+        run, step_id, repo = resolved
+        artifacts = repo.list_artifacts(run.id, step_id: step_id)
+        if artifacts.empty?
+          out.puts "No artifacts."
           return
         end
-        run_uid = rest[1]
-        block_name = nil
-        if rest.length == 4 && rest[2] == "block"
-          block_name = rest[3]
-        elsif rest.length != 2
-          raise CommandError, "syntax: show artifacts run <uid> [block <name>]"
+        out.puts "%-25s %-30s %-10s %-12s" % ["BLOCK", "NAME", "SIZE", "CHECKSUM"]
+        artifacts.each do |a|
+          out.puts "%-25s %-30s %-10s %-12s" % [a.block_name, a.name, "#{a.size_bytes}B", a.checksum.to_s[0, 12]]
         end
+      end
+
+      # `show logs run <uid> [block <name>]` and `show artifacts run
+      # <uid> [block <name>]` parse the same argument shape, do the
+      # same store / run / optional-block resolution. Returns
+      # `[run, step_id, repo]` on success, or nil when the request is
+      # malformed / store-less (the helper itself emits the message).
+      # Caller patterns `or return` on nil to short-circuit cleanly.
+      def resolve_run_and_step(rest, session, out, label)
+        usage = "syntax: show #{label} run <uid> [block <name>]"
+        raise CommandError, usage unless rest.length >= 2 && rest[0] == "run"
+
+        unless session.store
+          out.puts "(no DB attached — #{label} not available)"
+          return nil
+        end
+
+        run_uid = rest[1]
+        block_name =
+          if rest.length == 4 && rest[2] == "block"
+            rest[3]
+          elsif rest.length == 2
+            nil
+          else
+            raise CommandError, usage
+          end
 
         repo = Prouterd::Storage::Repositories::Runs.new(session.store.db)
         run = repo.get_run_by_uid(run_uid)
@@ -485,15 +486,7 @@ module Prouterd
           step_id = step.id
         end
 
-        artifacts = repo.list_artifacts(run.id, step_id: step_id)
-        if artifacts.empty?
-          out.puts "No artifacts."
-          return
-        end
-        out.puts "%-25s %-30s %-10s %-12s" % ["BLOCK", "NAME", "SIZE", "CHECKSUM"]
-        artifacts.each do |a|
-          out.puts "%-25s %-30s %-10s %-12s" % [a.block_name, a.name, "#{a.size_bytes}B", a.checksum.to_s[0, 12]]
-        end
+        [run, step_id, repo]
       end
 
       def show_commit(rest, session, out)

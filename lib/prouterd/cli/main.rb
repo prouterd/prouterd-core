@@ -298,22 +298,11 @@ module Prouterd
                   end
 
         repo = Prouterd::Storage::Repositories::Runs.new(store.db)
-        if machine_output?
-          steps = repo.list_steps(new_run.id).map do |s|
-            { block: s.block_name, status: s.status, attempt: s.attempt,
-              duration_ms: s.duration_ms, error_type: s.error_type }
-          end
-          @stdout.puts JSON.dump(run_id: new_run.uid, replay_of: run_uid,
-                                  status: new_run.status, steps: steps,
-                                  error: new_run.error_summary)
-        else
-          @stdout.puts "Replayed #{run_uid} as #{new_run.uid} (#{new_run.status})"
-          repo.list_steps(new_run.id).each do |s|
-            duration = s.duration_ms ? "#{s.duration_ms}ms" : "-"
-            @stdout.puts "  %-25s %-9s %s" % [s.block_name, s.status, duration]
-          end
-          @stdout.puts "  error: #{new_run.error_summary}" if new_run.error_summary
-        end
+        emit_run_summary(
+          new_run, repo,
+          header: "Replayed #{run_uid} as #{new_run.uid} (#{new_run.status})",
+          extra:  { replay_of: run_uid }
+        )
 
         new_run.status == "success" ? 0 : 1
       rescue Prouterd::Shell::ShellError, Prouterd::Runtime::TriggerError => e
@@ -395,21 +384,10 @@ module Prouterd
         orchestrator = Prouterd::Runtime::Orchestrator.new(db: store.db, runner: runner)
         finished = orchestrator.resume_run(run_uid, document, value: value)
 
-        if machine_output?
-          steps = repo.list_steps(finished.id).map do |s|
-            { block: s.block_name, status: s.status, attempt: s.attempt,
-              duration_ms: s.duration_ms, error_type: s.error_type }
-          end
-          @stdout.puts JSON.dump(run_id: finished.uid, status: finished.status,
-                                 steps: steps, error: finished.error_summary)
-        else
-          @stdout.puts "Resumed #{run_uid} (#{finished.status})"
-          repo.list_steps(finished.id).each do |s|
-            duration = s.duration_ms ? "#{s.duration_ms}ms" : "-"
-            @stdout.puts "  %-25s %-9s %s" % [s.block_name, s.status, duration]
-          end
-          @stdout.puts "  error: #{finished.error_summary}" if finished.error_summary
-        end
+        emit_run_summary(
+          finished, repo,
+          header: "Resumed #{run_uid} (#{finished.status})"
+        )
 
         finished.status == "success" ? 0 : 1
       rescue Prouterd::Runtime::TriggerError => e
@@ -497,18 +475,23 @@ module Prouterd
       # Emits a run summary in machine-readable JSON when stdout is piped,
       # human-friendly table form when on a TTY. Same shape across
       # `trigger`, `replay`, etc.
-      def emit_run_summary(run, repo)
+      # `header:` overrides the human-mode first line ("Run <uid>: <s>"),
+      # which replay / resume customise ("Replayed X as Y (status)" /
+      # "Resumed X (status)"). `extra:` is merged into the JSON output
+      # so commands can surface extra context (replay_of, thread_id)
+      # without forking the per-command JSON branch.
+      def emit_run_summary(run, repo, header: nil, extra: {})
         steps = repo.list_steps(run.id).map do |s|
           { block: s.block_name, status: s.status, attempt: s.attempt,
             duration_ms: s.duration_ms, error_type: s.error_type }
         end
         if machine_output?
           @stdout.puts JSON.dump(
-            run_id: run.uid, status: run.status, steps: steps,
-            error: run.error_summary
+            { run_id: run.uid, status: run.status, steps: steps,
+              error: run.error_summary }.merge(extra)
           )
         else
-          @stdout.puts "Run #{run.uid}: #{run.status}"
+          @stdout.puts(header || "Run #{run.uid}: #{run.status}")
           steps.each do |s|
             duration = s[:duration_ms] ? "#{s[:duration_ms]}ms" : "-"
             @stdout.puts "  %-25s %-9s %s" % [s[:block], s[:status], duration]

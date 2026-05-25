@@ -27,6 +27,15 @@ $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 require "prouterd"
 require "tmpdir"
 
+# Load Reline once so any test that uses `stub_const("Reline", ...)`
+# restores the real constant on teardown instead of leaving it undefined.
+begin
+  require "reline"
+rescue LoadError
+  # Reline is part of the stdlib on the supported Rubies; only test paths
+  # that need it require it explicitly.
+end
+
 # Spec support files (helpers, shared contexts).
 Dir[File.expand_path("support/**/*.rb", __dir__)].each { |f| require f }
 

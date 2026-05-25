@@ -362,3 +362,58 @@ RSpec.describe Prouterd::Runtime::RetryEngine do
     end
   end
 end
+
+RSpec.describe "Runtime::RetryEngine post-loop clamp result nil branch" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:runs) { Prouterd::Storage::Repositories::Runs.new(db) }
+  after { db.close }
+  let(:engine) { Prouterd::Runtime::RetryEngine.new(runs: runs) }
+
+  it "skips the policy-clamp branch when the inner yield returned nil" do
+    run = runs.create_run(process_name: "p", input_event: {})
+    doc = parse("router demo\nexit\n")
+    block = double(name: "b", retry_policy_name: nil)
+    # Stub yields to return nil — `result&.success?` short-circuits via &.
+    result = engine.run_with_retries(run, double(name: "p"), block,
+                                      Prouterd::Runtime::Context.new({}),
+                                      doc, Monitor.new, Monitor.new) { nil }
+    expect(result).to be_nil
+  end
+end
+
+RSpec.describe "Runtime::RetryEngine downstream_reachable cycle handling" do
+  it "doesn't re-enqueue a node already in `seen`" do
+    engine = Prouterd::Runtime::RetryEngine.new(runs: double)
+    route_ab = double(from_block: "a", to_block: "b")
+    route_ba = double(from_block: "b", to_block: "a") # cycle
+    process = double(routes: [route_ab, route_ba])
+    seen = engine.send(:downstream_reachable, process, "a")
+    expect(seen.to_a.sort).to eq(["a", "b"])
+  end
+end
+
+RSpec.describe "RetryEngine run_with_retries with nil result from yield" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:runs) { Prouterd::Storage::Repositories::Runs.new(db) }
+  after { db.close }
+  let(:engine) { Prouterd::Runtime::RetryEngine.new(runs: runs) }
+
+  it "returns nil when yield never produces a result (failed first attempt mid-loop)" do
+    # When result is nil after the loop, the `result&.success?` is false,
+    # so the policy-clamp doesn't reshape it.
+    run = runs.create_run(process_name: "p", input_event: {})
+    doc = parse("router demo\nexit\n")
+    block = double(name: "b", retry_policy_name: nil)
+    result = engine.run_with_retries(run, double(name: "p"), block,
+                                      Prouterd::Runtime::Context.new({}),
+                                      doc, Monitor.new, Monitor.new) do
+      Prouterd::Runner::ExecutionResult.new(
+        exit_code: 0, stdout: "", stderr: "",
+        output_json: {}, artifacts: [],
+        error_type: nil, error_message: nil,
+        duration_ms: 0, started_at: nil, finished_at: nil
+      )
+    end
+    expect(result).not_to be_nil
+  end
+end

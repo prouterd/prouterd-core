@@ -121,3 +121,142 @@ RSpec.describe Prouterd::Shell::Session do
     }.to raise_error(Prouterd::Shell::ShellError, /no captured input/)
   end
 end
+
+RSpec.describe "Shell::Session replay_from full fallback path" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  let(:runner) { Prouterd::Runner::StubRunner.new }
+  let(:session) { Prouterd::Shell::Session.new(store: store, runner: runner) }
+  after { db.close }
+
+  it "feeds {} when neither payload context.event nor original.input_event_json is present" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+      exit
+    PRC
+    store.commit(doc)
+    original = session.orchestrator.trigger(doc, "p", input_event: {},
+                                             commit_id: store.running_commit.id)
+    step = Prouterd::Storage::Repositories::Runs.new(db).list_steps(original.id).find { |s| s.block_name == "b" }
+    db.execute("UPDATE runs SET input_event_json = NULL WHERE id = ?", [original.id])
+    db.execute("UPDATE run_steps SET input_json = ? WHERE id = ?",
+               [JSON.dump("context" => {}), step.id])
+    replayed = session.replay_from(original.uid, "b")
+    expect(replayed.status).to eq("success")
+  end
+end
+
+RSpec.describe "Shell::Session replay_from with payload.context.event" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  let(:runner) { Prouterd::Runner::StubRunner.new }
+  let(:session) { Prouterd::Shell::Session.new(store: store, runner: runner) }
+  after { db.close }
+
+  it "uses payload.context.event when present (the first branch of ||)" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+      exit
+    PRC
+    store.commit(doc)
+    original = session.orchestrator.trigger(doc, "p",
+                                             input_event: { "from" => "outer" },
+                                             commit_id: store.running_commit.id)
+    step = Prouterd::Storage::Repositories::Runs.new(db).list_steps(original.id).find { |s| s.block_name == "b" }
+    # context has 'event' key — that one wins.
+    db.execute("UPDATE run_steps SET input_json = ? WHERE id = ?",
+               [JSON.dump("context" => { "event" => { "from" => "inner" } }), step.id])
+    replayed = session.replay_from(original.uid, "b")
+    expect(replayed.status).to eq("success")
+  end
+
+  it "falls back to original.input_event_json when payload.context lacks event AND has nil context" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+      exit
+    PRC
+    store.commit(doc)
+    original = session.orchestrator.trigger(doc, "p",
+                                             input_event: { "from" => "outer" },
+                                             commit_id: store.running_commit.id)
+    step = Prouterd::Storage::Repositories::Runs.new(db).list_steps(original.id).find { |s| s.block_name == "b" }
+    # payload has no 'context' key at all → `payload["context"]&.dig` returns nil → fallback
+    db.execute("UPDATE run_steps SET input_json = ? WHERE id = ?",
+               [JSON.dump("other" => "x"), step.id])
+    replayed = session.replay_from(original.uid, "b")
+    expect(replayed.status).to eq("success")
+  end
+end
+
+RSpec.describe "Shell::Session replay_from payload missing context.event" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  let(:runner) { Prouterd::Runner::StubRunner.new }
+  let(:session) { Prouterd::Shell::Session.new(store: store, runner: runner) }
+  after { db.close }
+
+  it "falls back to original.input_event_json when payload['context']['event'] missing" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+      exit
+    PRC
+    store.commit(doc)
+    original = session.orchestrator.trigger(doc, "p",
+                                             input_event: { "from" => "outer" },
+                                             commit_id: store.running_commit.id)
+    step = Prouterd::Storage::Repositories::Runs.new(db).list_steps(original.id).find { |s| s.block_name == "b" }
+    # Strip context.event from the captured input_json
+    db.execute("UPDATE run_steps SET input_json = ? WHERE id = ?",
+               [JSON.dump("context" => { "other" => "x" }), step.id])
+    replayed = session.replay_from(original.uid, "b")
+    expect(replayed.status).to eq("success")
+  end
+end

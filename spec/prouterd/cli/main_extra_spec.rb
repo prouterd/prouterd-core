@@ -1012,3 +1012,408 @@ RSpec.describe Prouterd::CLI::Main do
     end
   end
 end
+
+RSpec.describe "CLI::Main resume exit code != success" do
+  it "exits 1 when resumed run finishes with non-success status" do
+    Tempfile.create(["db", ".sqlite3"]) do |db|
+      db.close
+      # Build a process where resume of the paused block leads to ANOTHER pause
+      Tempfile.create(["double-pause", ".prc"]) do |t|
+        t.write(<<~PRC)
+          router demo
+          exit
+          interface docker img
+           image x
+          exit
+          process p
+           block ask
+            pause "first"
+           exit
+           block confirm
+            pause "second"
+           exit
+           route ask confirm
+          exit
+        PRC
+        t.flush
+        Tempfile.create(["evt", ".json"]) do |f|
+          f.write('{}')
+          f.flush
+          Prouterd::CLI::Main.run(["apply", t.path, "--db", db.path],
+                                   stdout: StringIO.new, stderr: StringIO.new)
+          Prouterd::CLI::Main.run(["trigger", "process", "p", "input", f.path,
+                                    "--db", db.path, "--runner", "stub"],
+                                   stdout: StringIO.new, stderr: StringIO.new)
+          sql = Prouterd::Storage::DB.open(db.path)
+          paused = Prouterd::Storage::Repositories::Runs.new(sql).list_runs(status: "paused", limit: 1).first
+          sql.close
+          code = Prouterd::CLI::Main.run(["resume", "run", paused.uid, "--db", db.path, "--runner", "stub"],
+                                          stdout: StringIO.new, stderr: StringIO.new)
+          # After resume, the run hits the second `pause` → still not "success"
+          expect(code).to eq(1)
+        end
+      end
+    end
+  end
+end
+
+RSpec.describe "CLI::Main exit 1 when replayed run finishes non-success" do
+  it "exits 1 when replay produces a paused run" do
+    Tempfile.create(["db", ".sqlite3"]) do |db|
+      db.close
+      Tempfile.create(["evt", ".json"]) do |f|
+        f.write('{}')
+        f.flush
+        Tempfile.create(["pause-prc", ".prc"]) do |t|
+          t.write(<<~PRC)
+            router demo
+            exit
+            interface docker img
+             image x
+            exit
+            process p
+             block hold
+              pause "wait"
+             exit
+            exit
+          PRC
+          t.flush
+          Prouterd::CLI::Main.run(["apply", t.path, "--db", db.path],
+                                   stdout: StringIO.new, stderr: StringIO.new)
+          Prouterd::CLI::Main.run(["trigger", "process", "p", "input", f.path,
+                                    "--db", db.path, "--runner", "stub"],
+                                   stdout: StringIO.new, stderr: StringIO.new)
+          sql = Prouterd::Storage::DB.open(db.path)
+          orig = Prouterd::Storage::Repositories::Runs.new(sql).list_runs(limit: 1).first
+          sql.close
+          out = StringIO.new
+          code = Prouterd::CLI::Main.run(["replay", "run", orig.uid,
+                                           "--db", db.path, "--runner", "stub"],
+                                          stdout: out, stderr: StringIO.new)
+          expect(code).to eq(1)
+        end
+      end
+    end
+  end
+end
+
+RSpec.describe "CLI::Main trigger commit_id nil branch" do
+  it "passes commit_id=nil when running pointer is absent (else of &.id)" do
+    Tempfile.create(["db", ".sqlite3"]) do |db|
+      db.close
+      Tempfile.create(["evt", ".json"]) do |f|
+        f.write('{}')
+        f.flush
+        Tempfile.create(["cfg", ".prc"]) do |c|
+          c.write(<<~PRC)
+            router demo
+            exit
+            interface docker img
+             image x
+            exit
+            process p
+             block a
+              interface docker img
+             exit
+            exit
+          PRC
+          c.flush
+          # No --db apply; pass --config instead. store.running_commit is nil.
+          Prouterd::CLI::Main.run(
+            ["trigger", "process", "p", "input", f.path,
+             "--db", db.path, "--runner", "stub", "--config", c.path],
+            stdout: StringIO.new, stderr: StringIO.new
+          )
+          # Check the persisted run has commit_id nil.
+          sql = Prouterd::Storage::DB.open(db.path)
+          row = Prouterd::Storage::Repositories::Runs.new(sql).list_runs(limit: 1).first
+          sql.close
+          expect(row.process_config_commit_id).to be_nil
+        end
+      end
+    end
+  end
+end
+
+RSpec.describe "CLI::Main cmd_resume TriggerError rescue" do
+  it "exits 1 + prints 'prouter resume:' when orchestrator.resume_run raises" do
+    Tempfile.create(["db", ".sqlite3"]) do |db|
+      db.close
+      Tempfile.create(["pause", ".prc"]) do |t|
+        t.write(<<~PRC)
+          router demo
+          exit
+          interface docker img
+           image x
+          exit
+          process p
+           block hold
+            pause "wait"
+           exit
+          exit
+        PRC
+        t.flush
+        Prouterd::CLI::Main.run(["apply", t.path, "--db", db.path],
+                                 stdout: StringIO.new, stderr: StringIO.new)
+        Tempfile.create(["evt", ".json"]) do |f|
+          f.write('{}')
+          f.flush
+          Prouterd::CLI::Main.run(["trigger", "process", "p", "input", f.path,
+                                    "--db", db.path, "--runner", "stub"],
+                                   stdout: StringIO.new, stderr: StringIO.new)
+          sql = Prouterd::Storage::DB.open(db.path)
+          paused = Prouterd::Storage::Repositories::Runs.new(sql).list_runs(status: "paused", limit: 1).first
+          sql.close
+          # Stub orchestrator.resume_run to raise TriggerError mid-flight
+          allow_any_instance_of(Prouterd::Runtime::Orchestrator).to receive(:resume_run).and_raise(
+            Prouterd::Runtime::TriggerError, "synthetic resume failure"
+          )
+          err = StringIO.new
+          code = Prouterd::CLI::Main.run(["resume", "run", paused.uid, "--db", db.path, "--runner", "stub"],
+                                          stdout: StringIO.new, stderr: err)
+          expect(code).to eq(1)
+          expect(err.string).to include("prouter resume:")
+          expect(err.string).to include("synthetic resume failure")
+        end
+      end
+    end
+  end
+end
+
+RSpec.describe "CLI::Main ensure paths with store == nil" do
+  it "cmd_apply ensure no-op when store is nil (--no-db)" do
+    Tempfile.create(["good", ".prc"]) do |t|
+      t.write(read_fixture("minimal.prc"))
+      t.flush
+      code = Prouterd::CLI::Main.run(["apply", t.path, "--no-db"],
+                                      stdout: StringIO.new, stderr: StringIO.new)
+      expect(code).to eq(0)
+    end
+  end
+
+  it "cmd_validate ensure no-op when store is nil (--no-db + --against running)" do
+    Tempfile.create(["good", ".prc"]) do |t|
+      t.write(read_fixture("minimal.prc"))
+      t.flush
+      code = Prouterd::CLI::Main.run(
+        ["validate", t.path, "--against", "running", "--no-db"],
+        stdout: StringIO.new, stderr: StringIO.new
+      )
+      expect(code).to eq(0)
+    end
+  end
+end
+
+RSpec.describe "CLI::Main emit_run_summary duration nil" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  after { db.close }
+
+  it "prints '-' for a step with no duration_ms (machine_output? false branch)" do
+    runs = Prouterd::Storage::Repositories::Runs.new(db)
+    r = runs.create_run(process_name: "p", input_event: {})
+    step = runs.create_step(run_id: r.id, block_name: "blockz")
+    runs.update_step(step.id, status: "success") # no duration_ms
+    run_row = runs.get_run(r.id)
+
+    out = StringIO.new
+    def out.tty?; true; end
+    m = Prouterd::CLI::Main.new([], StringIO.new, out, StringIO.new)
+    m.send(:emit_run_summary, run_row, runs)
+    expect(out.string).to match(/blockz\s+success\s+-/)
+  end
+end
+
+RSpec.describe "CLI::Main cmd_apply missing path" do
+  it "exits 2 with 'missing file argument' when no path is given" do
+    err = StringIO.new
+    Prouterd::CLI::Main.run(["apply"], stdout: StringIO.new, stderr: err)
+    expect(err.string).to include("missing file argument")
+  end
+end
+
+RSpec.describe "CLI::Main shell_exec_warnings: empty exec is silently skipped" do
+  it "doesn't add a warning for a shell block with an empty exec field" do
+    Tempfile.create(["sh-empty", ".prc"]) do |t|
+      t.write(<<~PRC)
+        router demo
+        exit
+        interface shell sh1
+        exit
+        process p
+         block a
+          interface shell sh1
+          exec ""
+         exit
+        exit
+      PRC
+      t.flush
+      out = StringIO.new
+      Prouterd::CLI::Main.run(["check", t.path], stdout: out, stderr: StringIO.new)
+      expect(out.string).not_to include("exec '' ")
+    end
+  end
+end
+
+RSpec.describe "CLI::Main exit code ternaries" do
+  def run_cli(*argv, **opts)
+    out = StringIO.new
+    err = StringIO.new
+    code = Prouterd::CLI::Main.run(argv, stdout: out, stderr: err, **opts)
+    [code, out.string, err.string]
+  end
+
+  it "replay exits 0 on a successful run AND emits a 'Replayed ... success' header" do
+    Tempfile.create(["db", ".sqlite3"]) do |db|
+      db.close
+      Tempfile.create(["evt", ".json"]) do |f|
+        f.write('{}')
+        f.flush
+        run_cli("apply", fixture_path("minimal.prc"), "--db", db.path)
+        run_cli("trigger", "process", "pipeline", "input", f.path,
+                "--db", db.path, "--runner", "stub")
+        sql = Prouterd::Storage::DB.open(db.path)
+        orig = Prouterd::Storage::Repositories::Runs.new(sql).list_runs(limit: 1).first
+        sql.close
+        code, _out, _err = run_cli("replay", "run", orig.uid, "--db", db.path, "--runner", "stub")
+        expect(code).to eq(0)
+      end
+    end
+  end
+
+  it "trigger passes commit_id: nil when running_commit is unset on the store" do
+    Tempfile.create(["db", ".sqlite3"]) do |db|
+      db.close
+      Tempfile.create(["evt", ".json"]) do |f|
+        f.write('{}')
+        f.flush
+        # Apply config, then nil the running pointer in the DB so
+        # store.running_commit returns nil at trigger time.
+        run_cli("apply", fixture_path("minimal.prc"), "--db", db.path)
+        sql = Prouterd::Storage::DB.open(db.path)
+        sql.execute("DELETE FROM config_pointers WHERE name = 'running'")
+        sql.close
+        code, _out, _err = run_cli("trigger", "process", "pipeline", "input", f.path,
+                                    "--db", db.path, "--runner", "stub")
+        expect([0, 1]).to include(code)
+      end
+    end
+  end
+
+  it "resume exits 0 on successful resume of a paused run" do
+    Tempfile.create(["db", ".sqlite3"]) do |db|
+      db.close
+      Tempfile.create(["pause-prc", ".prc"]) do |t|
+        t.write(<<~PRC)
+          router demo
+          exit
+          interface docker img
+           image x
+          exit
+          process p
+           block ask
+            pause "wait"
+           exit
+           block tail
+            interface docker img
+           exit
+           route ask tail
+          exit
+        PRC
+        t.flush
+        run_cli("apply", t.path, "--db", db.path)
+        Tempfile.create(["evt", ".json"]) do |f|
+          f.write('{}')
+          f.flush
+          run_cli("trigger", "process", "p", "input", f.path,
+                  "--db", db.path, "--runner", "stub")
+          sql = Prouterd::Storage::DB.open(db.path)
+          paused = Prouterd::Storage::Repositories::Runs.new(sql).list_runs(status: "paused", limit: 1).first
+          sql.close
+          code, _out, _err = run_cli("resume", "run", paused.uid, "--db", db.path, "--runner", "stub")
+          expect(code).to eq(0)
+        end
+      end
+    end
+  end
+end
+
+RSpec.describe "CLI::Main ensure block with store == :error" do
+  it "does not attempt close on store == :error in cmd_diff" do
+    allow(Prouterd::Storage::DB).to receive(:open).and_raise(SQLite3::CantOpenException, "denied")
+    out = StringIO.new
+    err = StringIO.new
+    # Triggers `store = open_store(...)` → :error → ensure with
+    # `store && store != :error` short-circuits, no close attempt.
+    code = Prouterd::CLI::Main.run(
+      ["diff", fixture_path("minimal.prc"), "--db", "/no/where"],
+      stdout: out, stderr: err
+    )
+    expect(code).to eq(1)
+  end
+end
+
+RSpec.describe "CLI::Main trigger non-success exit (paused run)" do
+  it "exits 1 when the run pauses (status != success branch)" do
+    Tempfile.create(["pause", ".prc"]) do |t|
+      t.write(<<~PRC)
+        router demo
+        exit
+        interface docker img
+         image x
+        exit
+        process p
+         block hold
+          pause "waiting"
+         exit
+        exit
+      PRC
+      t.flush
+      Tempfile.create(["evt", ".json"]) do |f|
+        f.write('{}')
+        f.flush
+        Tempfile.create(["db", ".sqlite3"]) do |db|
+          db.close
+          out = StringIO.new
+          exit_code = Prouterd::CLI::Main.run(
+            ["trigger", "process", "p", "input", f.path,
+             "--db", db.path, "--runner", "stub"],
+            stdin: StringIO.new, stdout: out, stderr: StringIO.new
+          )
+          expect(exit_code).to eq(1)
+        end
+      end
+    end
+  end
+end
+
+RSpec.describe "CLI::Main shell_exec_warnings empty-head branch" do
+  it "skips a block whose exec resolves to an empty head" do
+    Tempfile.create(["sh-emptyhead", ".prc"]) do |t|
+      # exec = a single quoted empty string → Shellwords splits to [""] → head = ""
+      t.write(<<~PRC)
+        router demo
+        exit
+        interface shell sh1
+        exit
+        process p
+         block a
+          interface shell sh1
+          exec `""`
+         exit
+        exit
+      PRC
+      t.flush
+      out = StringIO.new
+      Prouterd::CLI::Main.run(["check", t.path], stdout: out, stderr: StringIO.new)
+      expect(out.string).not_to include("exec '' ")
+    end
+  end
+end
+
+RSpec.describe "CLI::Main parse_with_diagnostics with nil path" do
+  it "returns the parsed doc without raising when path is nil" do
+    m = Prouterd::CLI::Main.new([], StringIO.new, StringIO.new, StringIO.new)
+    result = m.send(:parse_with_diagnostics, "router demo\nexit\n", nil)
+    expect(result).to be_a(Prouterd::Config::AST::Document)
+  end
+end

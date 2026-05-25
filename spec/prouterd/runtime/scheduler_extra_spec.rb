@@ -542,3 +542,197 @@ RSpec.describe Prouterd::Runtime::Scheduler do
     end
   end
 end
+
+RSpec.describe "Runtime::Scheduler tick safety break" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "breaks the per-iface tick loop when fugit returns the same next_time twice" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface cron daily
+       schedule "* * * * *"
+       no shutdown
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block hello
+        interface docker img
+       exit
+      exit
+      route interface daily process p
+      exit
+    PRC
+    store.commit(doc)
+    sched = Prouterd::Runtime::Scheduler.new(
+      store: store, runner: Prouterd::Runner::StubRunner.new,
+      jobs: Prouterd::Storage::Repositories::Jobs.new(db),
+      logger: Prouterd::NullLogger.new
+    )
+    # Stub parse_cron to return a fake cron whose #next_time always
+    # returns the same Time in the past — forces the loop's `break if
+    # next_at == last` safety branch on iteration 2.
+    stuck_at = Time.now.utc - 60
+    stuck_at.define_singleton_method(:to_t) { self }
+    fake_cron = Object.new
+    fake_cron.define_singleton_method(:next_time) { |_| stuck_at }
+    allow(sched).to receive(:parse_cron).and_return(fake_cron)
+    sched.send(:tick, now: Time.now.utc)
+  end
+end
+
+RSpec.describe "Runtime::Scheduler invalid cron rescue lines" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "logs CRON_INVALID + returns nil when Fugit.parse_cron raises" do
+    sched = Prouterd::Runtime::Scheduler.new(
+      store: store, runner: Prouterd::Runner::StubRunner.new,
+      jobs: Prouterd::Storage::Repositories::Jobs.new(db),
+      logger: (logger = double).tap { |l| allow(l).to receive(:warn) }
+    )
+    allow(Fugit).to receive(:parse_cron).and_raise(StandardError, "bad cron")
+    iface = double(name: "i", type_fields: { "schedule" => "garbage", "timezone" => nil })
+    expect(logger).to receive(:warn).with("invalid cron expression", hash_including(mnemonic: "CRON_INVALID"))
+    expect(sched.send(:parse_cron, iface)).to be_nil
+  end
+end
+
+RSpec.describe "Runtime::Scheduler dispatch without metrics" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "fires the cron without crashing when @metrics is nil" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface manual cli
+       no shutdown
+      exit
+      interface cron daily
+       schedule "* * * * *"
+       no shutdown
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+      exit
+      route interface daily process p
+      exit
+    PRC
+    store.commit(doc)
+    sched = Prouterd::Runtime::Scheduler.new(
+      store: store, runner: Prouterd::Runner::StubRunner.new,
+      jobs: Prouterd::Storage::Repositories::Jobs.new(db),
+      logger: Prouterd::NullLogger.new
+      # NO metrics
+    )
+    iface = doc.interfaces.find { |i| i.name == "daily" }
+    expect { sched.send(:dispatch, iface, doc, Time.now.utc) }.not_to raise_error
+  end
+end
+
+RSpec.describe "Runtime::Scheduler.run class-level convenience" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "constructs and immediately calls .run on the instance" do
+    allow_any_instance_of(Prouterd::Runtime::Scheduler).to receive(:run)
+    Prouterd::Runtime::Scheduler.run(
+      store: store,
+      runner: Prouterd::Runner::StubRunner.new,
+      jobs: Prouterd::Storage::Repositories::Jobs.new(db)
+    )
+  end
+end
+
+RSpec.describe "Runtime::Scheduler dispatch increments metrics when configured" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "increments :cron_fires_total per dispatch when @metrics is set" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface cron daily
+       schedule "* * * * *"
+       no shutdown
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block hello
+        interface docker img
+       exit
+      exit
+      route interface daily process p
+      exit
+    PRC
+    store.commit(doc)
+    in_flight = Prouterd::Runtime::InFlightRegistry.new
+    metrics = Prouterd::API::Metrics.new(in_flight: in_flight)
+    sched = Prouterd::Runtime::Scheduler.new(
+      store: store, runner: Prouterd::Runner::StubRunner.new,
+      jobs: Prouterd::Storage::Repositories::Jobs.new(db),
+      logger: Prouterd::NullLogger.new,
+      metrics: metrics
+    )
+    iface = doc.interfaces.find { |i| i.name == "daily" }
+    expect(metrics).to receive(:increment).with(:cron_fires_total, hash_including(interface: "daily")).at_least(:once)
+    sched.send(:dispatch, iface, doc, Time.now.utc)
+  end
+end
+
+RSpec.describe "Runtime::Scheduler parse_cron with fugit unavailable" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  let(:jobs) { Prouterd::Storage::Repositories::Jobs.new(db) }
+  after { db.close }
+
+  it "returns nil + logs once when fugit_available? is false" do
+    sched = Prouterd::Runtime::Scheduler.new(
+      store: store, runner: Prouterd::Runner::StubRunner.new, jobs: jobs,
+      logger: Prouterd::NullLogger.new
+    )
+    allow(Prouterd::Runtime::Scheduler).to receive(:fugit_available?).and_return(false)
+    iface = double(name: "i", type_fields: { "schedule" => "0 * * * *", "timezone" => nil })
+    expect(sched.send(:parse_cron, iface)).to be_nil
+    expect(sched.send(:parse_cron, iface)).to be_nil # second call skips re-warn
+  end
+end
+
+RSpec.describe "Runtime::Scheduler parse_cron @fugit_warned re-warn skip" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "warns once and stays silent on subsequent calls when fugit is missing" do
+    sched = Prouterd::Runtime::Scheduler.new(
+      store: store, runner: Prouterd::Runner::StubRunner.new,
+      jobs: Prouterd::Storage::Repositories::Jobs.new(db),
+      logger: Prouterd::NullLogger.new
+    )
+    allow(Prouterd::Runtime::Scheduler).to receive(:fugit_available?).and_return(false)
+    logger = double
+    sched.instance_variable_set(:@logger, logger)
+    # First call: warns once.
+    expect(logger).to receive(:warn).once
+    iface = double(name: "i", type_fields: { "schedule" => "0 * * * *", "timezone" => nil })
+    sched.send(:parse_cron, iface)
+    # Second call: must not re-warn.
+    sched.send(:parse_cron, iface)
+  end
+end

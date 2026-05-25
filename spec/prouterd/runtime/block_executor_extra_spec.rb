@@ -668,3 +668,36 @@ RSpec.describe Prouterd::Runtime::BlockExecutor do
     end
   end
 end
+
+RSpec.describe "BlockExecutor build_env plugin nil branch" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:runs) { Prouterd::Storage::Repositories::Runs.new(db) }
+  after { db.close }
+
+  it "skips plugin-driven secret_refs when iface.type isn't in the registry" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block b
+        interface docker img
+       exit
+      exit
+    PRC
+    executor = Prouterd::Runtime::BlockExecutor.new(
+      db: db, runs: runs, runner: Prouterd::Runner::StubRunner.new,
+      artifact_store: Prouterd::Runtime::ArtifactStore.new,
+      secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+      events: Prouterd::Events.default, logger: Prouterd::NullLogger.new,
+      mcp_pool: nil, retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+    )
+    run = runs.create_run(process_name: "p", input_event: {})
+    iface = Prouterd::Config::AST::Interface.new(type: "phantom", name: "x", line: 1)
+    env = executor.build_env(run, doc.processes.first, doc.processes.first.blocks.first, iface, doc, 1)
+    # No NoMethodError on the nil-plugin path; PROUTER_* env vars still set.
+    expect(env["PROUTER_RUN_ID"]).to eq(run.uid)
+  end
+end

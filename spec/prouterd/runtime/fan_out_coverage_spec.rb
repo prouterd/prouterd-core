@@ -216,3 +216,25 @@ RSpec.describe Prouterd::Runtime::FanOut do
     end
   end
 end
+
+RSpec.describe "Runtime::FanOut filter_prefix without strip_prefix" do
+  it "keeps the prefix on filtered values when strip_prefix is absent" do
+    fan_out = Prouterd::Runtime::FanOut.new(db: nil, runs: nil, host: nil)
+    maps = [{ "name" => "tags", "from" => "labels", "filter_prefix" => "team-" }]
+    item = { "labels" => ["team-alpha", "team-beta", "other"] }
+    event = fan_out.send(:build_fan_out_event, item, 0, maps)
+    expect(event["tags"]).to eq(["team-alpha", "team-beta"])
+  end
+end
+
+RSpec.describe "Runtime::FanOut build_fan_out_event strip_prefix" do
+  it "strips the prefix from each matched string when strip_prefix is set" do
+    fan_out = Prouterd::Runtime::FanOut.new(db: nil, runs: nil, host: nil)
+    maps = [{ "name" => "tags", "from" => "labels",
+              "filter_prefix" => "team-", "strip_prefix" => true }]
+    item = { "labels" => ["team-alpha", "team-beta", "other"] }
+    event = fan_out.send(:build_fan_out_event, item, 0, maps)
+    expect(event["tags"]).to eq(["alpha", "beta"])
+    expect(event["index"]).to eq(0)
+  end
+end

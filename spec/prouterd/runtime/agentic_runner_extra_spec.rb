@@ -572,3 +572,99 @@ RSpec.describe Prouterd::Runtime::AgenticRunner do
     end
   end
 end
+
+RSpec.describe "Runtime::AgenticRunner non-String call_field branch" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:runs) { Prouterd::Storage::Repositories::Runs.new(db) }
+  after { db.close }
+
+  it "leaves an Integer call_field value untemplated (else of is_a?(String) ternary)" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface llm m
+       provider anthropic
+       model claude-X
+      exit
+      process p
+       block b
+        interface llm m
+        prompt "hi"
+        agentic on
+       exit
+      exit
+    PRC
+    # Set cwd to a non-String value so the ternary's else fires
+    doc.processes.first.blocks.first.type_fields["cwd"] = 42
+    run = runs.create_run(process_name: "p", input_event: {})
+    runner_stub = Prouterd::Runner::StubRunner.new
+    executor = Prouterd::Runtime::BlockExecutor.new(
+      db: db, runs: runs, runner: runner_stub,
+      artifact_store: Prouterd::Runtime::ArtifactStore.new,
+      secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+      events: Prouterd::Events.default,
+      logger: Prouterd::NullLogger.new, mcp_pool: nil,
+      retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+    )
+    ar = Prouterd::Runtime::AgenticRunner.new(
+      runs: runs, runner: runner_stub, mcp_pool: nil, host: executor
+    )
+    captured = nil
+    allow(Prouterd::Iface::LlmAgentic).to receive(:run) do |**kwargs|
+      captured = kwargs
+      { ok: true, output_json: { "text" => "ok" }, exit_code: 0,
+        stdout: "", stderr: "", error_type: nil, error_message: nil }
+    end
+    process = doc.processes.first
+    block = process.blocks.first
+    ar.execute(run, process, block,
+                Prouterd::Runtime::Context.new({}), doc,
+                Mutex.new, Mutex.new,
+                Prouterd::Runtime::Redactor.new([]), 1)
+    expect(captured[:cwd]).to eq(42)
+  end
+end
+
+RSpec.describe "Runtime::AgenticRunner secret lookup with no iface (defensive)" do
+  # The `if secret` / `if iface` / `if plugin` guards in build_env are
+  # defensive against parser-violating AST mutations. Exercise the
+  # block via a doc whose iface has an `auth` field but no
+  # matching secret in document.secrets — that hits the `if secret`
+  # else branch (secret not found → no env var added).
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:runs) { Prouterd::Storage::Repositories::Runs.new(db) }
+  after { db.close }
+
+  it "skips iface_auth env binding when the referenced secret was scrubbed from the doc" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      secret WEBHOOK_TOKEN
+       source env WEBHOOK_TOKEN
+      exit
+      interface http api
+       base-url "https://x"
+       auth bearer secret WEBHOOK_TOKEN
+      exit
+      process p
+       block call
+        interface http api
+       exit
+      exit
+    PRC
+    doc.secrets.clear # drop secret post-parse
+    run = runs.create_run(process_name: "p", input_event: {})
+    executor = Prouterd::Runtime::BlockExecutor.new(
+      db: db, runs: runs, runner: Prouterd::Runner::StubRunner.new,
+      artifact_store: Prouterd::Runtime::ArtifactStore.new,
+      secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+      events: Prouterd::Events.default, logger: Prouterd::NullLogger.new,
+      mcp_pool: nil, retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+    )
+    process = doc.processes.first
+    block = process.blocks.first
+    iface = doc.interfaces.first
+    env = executor.build_env(run, process, block, iface, doc, 1)
+    expect(env).not_to have_key("WEBHOOK_TOKEN")
+  end
+end

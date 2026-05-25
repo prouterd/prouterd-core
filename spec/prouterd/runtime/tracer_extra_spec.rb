@@ -602,3 +602,81 @@ RSpec.describe Prouterd::Runtime::TracerRenderer do
     expect(text).to include("Warnings:\n  none")
   end
 end
+
+RSpec.describe "Runtime::Tracer reason nil when match isn't runtime-dependent" do
+  it "leaves reason nil for a static-evaluable match against event.*" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface manual cli
+       no shutdown
+      exit
+      process p
+       block a
+       exit
+      exit
+      route interface cli process p
+       match event.k eq "v"
+      exit
+    PRC
+    res = Prouterd::Runtime::Tracer.trace(doc, { "k" => "v" }, interface_name: "cli")
+    ann = res.global_route.matches.first
+    # The reason on the GLOBAL route's annotation is nil since the event
+    # path resolves cleanly (not :runtime).
+    expect(res.global_route_passes).to be(true)
+    expect(ann).not_to be_nil
+  end
+end
+
+RSpec.describe "Tracer.deep_stringify scalar/nil pass-through" do
+  it "returns the value unchanged for nil" do
+    tracer = Prouterd::Runtime::Tracer.new(
+      Prouterd::Config::AST::Document.new, {}, nil
+    )
+    expect(tracer.send(:deep_stringify, nil)).to be_nil
+    expect(tracer.send(:deep_stringify, 42)).to eq(42)
+    expect(tracer.send(:deep_stringify, "x")).to eq("x")
+  end
+end
+
+RSpec.describe "Tracer.deep_stringify with Array values" do
+  it "recursively stringifies symbol keys inside Arrays" do
+    tracer = Prouterd::Runtime::Tracer.new(
+      Prouterd::Config::AST::Document.new, {}, nil
+    )
+    input = { a: [{ b: 1 }, { c: 2 }] }
+    out = tracer.send(:deep_stringify, input)
+    expect(out).to eq("a" => [{ "b" => 1 }, { "c" => 2 }])
+  end
+end
+
+RSpec.describe "Runtime::Tracer depends_on_runtime? false branch" do
+  it "leaves reason nil when a match has no runtime-output dependency" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface manual cli
+       no shutdown
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+        match event.t eq "x"
+       exit
+      exit
+      route interface cli process p
+      exit
+    PRC
+    res = Prouterd::Runtime::Tracer.trace(doc, { "t" => "x" }, interface_name: "cli")
+    edge = res.graph.find { |e| e.to == "b" }
+    expect(edge.match_results.first.reason).to be_nil
+  end
+end

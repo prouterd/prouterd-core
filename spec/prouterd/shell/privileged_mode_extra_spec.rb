@@ -486,3 +486,21 @@ RSpec.describe Prouterd::Shell::Modes::Privileged do
     end
   end
 end
+
+RSpec.describe "Shell::Modes::Privileged render_run_summary" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "prints '-' for a step with no duration_ms" do
+    session = Prouterd::Shell::Session.new(store: store)
+    repo = Prouterd::Storage::Repositories::Runs.new(db)
+    r = repo.create_run(process_name: "p", input_event: {})
+    repo.create_step(run_id: r.id, block_name: "lonely")
+    run_row = repo.get_run(r.id)
+    out = StringIO.new
+    mode = Prouterd::Shell::Modes::Privileged.new
+    mode.send(:render_run_summary, run_row, session, out)
+    expect(out.string).to match(/lonely\s+pending\s+-/)
+  end
+end

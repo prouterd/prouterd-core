@@ -194,3 +194,23 @@ RSpec.describe "Phase 13 contracts DSL" do
     end
   end
 end
+
+RSpec.describe "Config::AST::Contract upsert_requirement optional-after-require" do
+  def parse(prc)
+    Prouterd::Config::Parser.parse(Prouterd::Config::Lexer.tokenize(prc))
+  end
+
+  it "keeps required=true when an optional clause repeats a previously-required path" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      contract c
+       require lead.email type string
+       optional lead.email format email
+      exit
+    PRC
+    req = doc.contracts.first.requirements.first
+    expect(req.required).to be(true)
+    expect(req.format).to eq("email")
+  end
+end

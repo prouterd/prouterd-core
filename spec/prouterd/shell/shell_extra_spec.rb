@@ -393,3 +393,179 @@ RSpec.describe Prouterd::Shell::Shell do
     end
   end
 end
+
+RSpec.describe "Shell::Shell read_input Reline returns nil (EOF)" do
+  it "returns nil (no '#{?\n}' suffix) when Reline.readline returns nil" do
+    session = Prouterd::Shell::Session.new
+    session.replace_running(parse("router demo\nexit\n"))
+    session.mode_stack << Prouterd::Shell::Modes::User.new
+    input = StringIO.new
+    def input.isatty; true; end
+    shell = Prouterd::Shell::Shell.new(
+      session: session,
+      input: input, output: StringIO.new, error: StringIO.new,
+      interactive: true, banner: false
+    )
+    reline = Module.new
+    reline.define_singleton_method(:readline) { |_, _| nil }
+    reline.define_singleton_method(:completion_proc=) { |_| }
+    reline.define_singleton_method(:respond_to?) { |sym| sym == :completion_proc= }
+    stub_const("Reline", reline)
+    expect(shell.run).to eq(0)
+  end
+end
+
+RSpec.describe "Shell::Shell read_input no-flush output" do
+  it "prints prompt without calling flush on an output that doesn't respond to it" do
+    out_no_flush = Class.new do
+      attr_reader :sent
+      def initialize; @sent = +""; end
+      def puts(s); @sent << s.to_s << "\n"; end
+      def print(s); @sent << s.to_s; end
+      # intentionally no :flush
+    end.new
+    input = StringIO.new("show version\nexit\n")
+    def input.isatty; true; end
+    shell = Prouterd::Shell::Shell.new(
+      session: Prouterd::Shell::Session.new,
+      input: input, output: out_no_flush, error: StringIO.new,
+      interactive: true, banner: false
+    )
+    allow(shell).to receive(:reline_available?).and_return(false)
+    shell.run
+    expect(out_no_flush.sent).to include("process-router")
+  end
+end
+
+RSpec.describe "Shell::Shell read_input via Reline returning a real line" do
+  it "appends \\n to the returned line (then branch of line.nil? ternary)" do
+    session = Prouterd::Shell::Session.new
+    session.replace_running(parse("router demo\nexit\n"))
+    session.mode_stack << Prouterd::Shell::Modes::User.new
+    input = StringIO.new
+    def input.isatty; true; end
+    shell = Prouterd::Shell::Shell.new(
+      session: session,
+      input: input, output: StringIO.new, error: StringIO.new,
+      interactive: true, banner: false
+    )
+    queue = ["show version", "exit", nil]
+    reline = Module.new
+    reline.define_singleton_method(:readline) { |_, _| queue.shift }
+    reline.define_singleton_method(:completion_proc=) { |_| }
+    reline.define_singleton_method(:respond_to?) { |sym| sym == :completion_proc= }
+    stub_const("Reline", reline)
+    expect(shell.run).to eq(0)
+  end
+end
+
+RSpec.describe "Shell::Shell install_completer with Reline lacking #line_buffer" do
+  it "falls back to the partial-as-line when Reline.line_buffer is unavailable" do
+    session = Prouterd::Shell::Session.new
+    session.replace_running(parse("router demo\nexit\n"))
+    shell = Prouterd::Shell::Shell.new(
+      session: session,
+      input: StringIO.new, output: StringIO.new, error: StringIO.new,
+      interactive: true, banner: false
+    )
+    reline = Module.new
+    captured = nil
+    reline.define_singleton_method(:completion_proc=) { |p| captured = p }
+    reline.define_singleton_method(:respond_to?) { |_| false }
+    stub_const("Reline", reline)
+    shell.send(:install_completer)
+    session.mode_stack << Prouterd::Shell::Modes::Privileged.new
+    # Lambda was called with partial only — uses partial as the line
+    # because Reline.line_buffer doesn't exist.
+    result = captured.call("show")
+    expect(result).to include("show")
+  end
+end
+
+RSpec.describe "Shell::Shell branches" do
+  it "breaks the run loop when read_input returns nil (EOF)" do
+    session = Prouterd::Shell::Session.new
+    session.mode_stack << Prouterd::Shell::Modes::User.new
+    shell = Prouterd::Shell::Shell.new(
+      session: session,
+      input: StringIO.new, # immediately EOFs
+      output: StringIO.new, error: StringIO.new,
+      interactive: false, banner: false
+    )
+    expect(shell.run).to eq(0)
+  end
+
+  it "install_completer registers the autocompletion dialog proc when Reline supports it" do
+    session = Prouterd::Shell::Session.new
+    session.replace_running(parse("router demo\nexit\n"))
+    shell = Prouterd::Shell::Shell.new(
+      session: session,
+      input: StringIO.new, output: StringIO.new, error: StringIO.new,
+      interactive: true, banner: false
+    )
+    reline = Module.new
+    added_dialogs = []
+    reline.define_singleton_method(:completion_proc=) { |_| }
+    reline.define_singleton_method(:completion_append_character=) { |_| }
+    reline.define_singleton_method(:autocompletion=) { |_| }
+    reline.define_singleton_method(:add_dialog_proc) { |sym, proc| added_dialogs << sym }
+    reline.define_singleton_method(:respond_to?) do |sym|
+      %i[completion_proc= completion_append_character= autocompletion= add_dialog_proc].include?(sym)
+    end
+    stub_const("Reline", reline)
+    stub_const("Reline::DEFAULT_DIALOG_PROC_AUTOCOMPLETE", proc { [] })
+    shell.send(:install_completer)
+    expect(added_dialogs).to include(:autocomplete)
+  end
+
+  it "install_completer @error nil branch swallows StandardError silently" do
+    shell = Prouterd::Shell::Shell.new(
+      session: Prouterd::Shell::Session.new,
+      input: StringIO.new, output: StringIO.new, error: nil,
+      interactive: true, banner: false
+    )
+    reline = Module.new
+    reline.define_singleton_method(:completion_proc=) { |_| raise "x" }
+    reline.define_singleton_method(:respond_to?) { |_| false }
+    stub_const("Reline", reline)
+    expect { shell.send(:install_completer) }.not_to raise_error
+  end
+end
+
+RSpec.describe "Shell::Shell read_input nil from Reline" do
+  it "treats nil from Reline.readline as EOF" do
+    session = Prouterd::Shell::Session.new
+    session.replace_running(parse("router demo\nexit\n"))
+    input = StringIO.new
+    def input.isatty; true; end
+    shell = Prouterd::Shell::Shell.new(
+      session: session,
+      input: input, output: StringIO.new, error: StringIO.new,
+      interactive: true, banner: false
+    )
+    reline = Module.new
+    reline.define_singleton_method(:readline) { |_, _| nil } # EOF
+    reline.define_singleton_method(:completion_proc=) { |_| }
+    reline.define_singleton_method(:completion_append_character=) { |_| }
+    reline.define_singleton_method(:autocompletion=) { |_| }
+    reline.define_singleton_method(:respond_to?) { |sym| %i[completion_proc= completion_append_character= autocompletion=].include?(sym) }
+    stub_const("Reline", reline)
+    expect(shell.run).to eq(0)
+  end
+end
+
+RSpec.describe "Shell::Shell read_input non-interactive prompt flush" do
+  it "prints the prompt + flush when @output responds to both" do
+    input = StringIO.new("show version\nexit\n")
+    def input.isatty; true; end
+    output = StringIO.new
+    shell = Prouterd::Shell::Shell.new(
+      session: Prouterd::Shell::Session.new,
+      input: input, output: output, error: StringIO.new,
+      interactive: true, banner: false
+    )
+    allow(shell).to receive(:reline_available?).and_return(false)
+    shell.run
+    expect(output.string).to include("process-router")
+  end
+end

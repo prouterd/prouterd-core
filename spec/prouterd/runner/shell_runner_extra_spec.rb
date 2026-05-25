@@ -236,3 +236,54 @@ RSpec.describe Prouterd::Runner::ShellRunner do
     end
   end
 end
+
+RSpec.describe "Runner::ShellRunner collect_artifacts rel.empty? branch" do
+  let(:runner) { Prouterd::Runner::ShellRunner.new }
+  it "drops empty-rel entries from the listing" do
+    Dir.mktmpdir do |work|
+      art_dir = File.join(work, "artifacts")
+      FileUtils.mkdir_p(art_dir)
+      File.write(File.join(art_dir, "f.txt"), "x")
+      # Override Dir.glob to inject the artifacts root itself as a yielded
+      # path so the post-sub rel becomes "".
+      original = Dir.method(:glob)
+      allow(Dir).to receive(:glob) do |pattern, *args|
+        paths = original.call(pattern, *args)
+        paths.unshift(art_dir) # rel after sub("\A<art_dir>/?", "") is ""
+        paths
+      end
+      result = runner.send(:collect_artifacts, work)
+      expect(result.map(&:name)).to eq(["f.txt"])
+    end
+  end
+end
+
+RSpec.describe "Runner::ShellRunner terminate_process clean-exit branch" do
+  let(:runner) { Prouterd::Runner::ShellRunner.new }
+  it "captures the status when wait_thr.join(0) returns the thread (exited)" do
+    fake = Class.new do
+      def pid; 99_999_999; end
+      def join(*args)
+        # Pretend TERM made the process exit immediately.
+        self
+      end
+      def value
+        double(exitstatus: 0)
+      end
+    end.new
+    allow(Process).to receive(:kill).with("TERM", any_args)
+    runner.send(:terminate_process, fake)
+  end
+end
+
+RSpec.describe "Runner::ShellRunner collect_artifacts dir-entry skip" do
+  let(:runner) { Prouterd::Runner::ShellRunner.new }
+  it "drops the artifacts root '.' entry (rel.empty? branch)" do
+    Dir.mktmpdir do |work|
+      FileUtils.mkdir_p(File.join(work, "artifacts"))
+      File.write(File.join(work, "artifacts/x.txt"), "x")
+      result = runner.send(:collect_artifacts, work)
+      expect(result.map(&:name)).to eq(["x.txt"])
+    end
+  end
+end

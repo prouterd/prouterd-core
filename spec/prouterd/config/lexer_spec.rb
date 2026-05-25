@@ -106,3 +106,25 @@ RSpec.describe Prouterd::Config::Lexer do
     expect(tokens[1].column).to eq(10)
   end
 end
+
+RSpec.describe "Lexer escape sequences" do
+  it "decodes \\t inside a double-quoted string" do
+    lines = Prouterd::Config::Lexer.tokenize(%q(description "tab\there"))
+    expect(lines.first.tokens[1].value).to eq("tab\there")
+  end
+
+  it "decodes \\r inside a double-quoted string" do
+    lines = Prouterd::Config::Lexer.tokenize(%q(description "cr\rhere"))
+    expect(lines.first.tokens[1].value).to eq("cr\rhere")
+  end
+
+  it "decodes \\\\ inside a double-quoted string" do
+    lines = Prouterd::Config::Lexer.tokenize(%q(description "back\\\\slash"))
+    expect(lines.first.tokens[1].value).to eq("back\\slash")
+  end
+
+  it "decodes \\\" inside a double-quoted string" do
+    lines = Prouterd::Config::Lexer.tokenize(%q(description "quote\"in"))
+    expect(lines.first.tokens[1].value).to eq("quote\"in")
+  end
+end

@@ -41,3 +41,20 @@ RSpec.describe Prouterd::Storage::Repositories::Runs do
     end
   end
 end
+
+RSpec.describe "Storage::Repositories::Runs#generate_uid exhaustion" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:repo) { Prouterd::Storage::Repositories::Runs.new(db) }
+  after { db.close }
+
+  it "raises StorageError after 5 consecutive uid collisions" do
+    # Plant an existing run with a known uid, then stub SecureRandom
+    # to always return the same hex → 5 collisions → raise.
+    existing = repo.create_run(process_name: "p", input_event: {})
+    collision_hex = existing.uid.sub(/\Arun_/, "")
+    allow(SecureRandom).to receive(:hex).with(4).and_return(collision_hex)
+    expect {
+      repo.create_run(process_name: "p", input_event: {})
+    }.to raise_error(Prouterd::Storage::StorageError, /could not allocate/)
+  end
+end

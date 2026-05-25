@@ -1623,3 +1623,283 @@ RSpec.describe Prouterd::Shell::Show do
     end
   end
 end
+
+RSpec.describe "Shell::Show list_routes process-routes empty-matches branch" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "renders 'a -> b' without [N match] for routes with no match clauses" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+      exit
+    PRC
+    session = Prouterd::Shell::Session.new(store: store)
+    session.replace_running(doc)
+    out = StringIO.new
+    Prouterd::Shell::Show.list_routes([], session, out)
+    expect(out.string).to include("a -> b")
+    expect(out.string).not_to match(/a -> b\s+\[/)
+  end
+
+  it "renders 'a -> b [1 match]' for process routes with matches via list_routes" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+        match event.k eq "v"
+       exit
+      exit
+    PRC
+    session = Prouterd::Shell::Session.new(store: store)
+    session.replace_running(doc)
+    out = StringIO.new
+    Prouterd::Shell::Show.list_routes([], session, out)
+    expect(out.string).to include("[1 match]")
+  end
+end
+
+RSpec.describe "Shell::Show route + match-values branches" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  def session_with(prc)
+    doc = parse(prc)
+    sess = Prouterd::Shell::Session.new(store: store)
+    sess.replace_running(doc)
+    sess
+  end
+
+  it "show_process renders 'block -> block  [N match]' for routes with matches" do
+    session = session_with(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+        match event.k eq "v1"
+       exit
+      exit
+    PRC
+    out = StringIO.new
+    Prouterd::Shell::Show.show_process(["p"], session, out)
+    expect(out.string).to include("a -> b").and include("1 match")
+  end
+
+  it "show_process renders bare 'block -> block' for routes WITHOUT matches" do
+    session = session_with(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+      exit
+    PRC
+    out = StringIO.new
+    Prouterd::Shell::Show.show_process(["p"], session, out)
+    expect(out.string).to include("a -> b")
+    expect(out.string).not_to match(/\[\d+ match\]/)
+  end
+
+  it "show_policy retry-when 'in' values get joined with commas" do
+    session = session_with(<<~PRC)
+      router demo
+      exit
+      policy r
+       retry attempts 3
+       retry when error_type in "a","b","c"
+      exit
+    PRC
+    out = StringIO.new
+    Prouterd::Shell::Show.show_policy(["r"], session, out)
+    expect(out.string).to include("a,b,c").or include("a, b, c")
+  end
+
+  it "show_policy retry-when 'exists' renders without a values suffix" do
+    session = session_with(<<~PRC)
+      router demo
+      exit
+      policy r
+       retry attempts 3
+       retry when error_type exists
+      exit
+    PRC
+    out = StringIO.new
+    Prouterd::Shell::Show.show_policy(["r"], session, out)
+    expect(out.string).to include("error_type")
+    expect(out.string).not_to include("exists  ")
+  end
+end
+
+RSpec.describe "Shell::Show policy + routes branches" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  def session_with(prc)
+    doc = parse(prc)
+    sess = Prouterd::Shell::Session.new(store: store)
+    sess.replace_running(doc)
+    store.commit(doc)
+    sess
+  end
+
+  it "list_policies renders rows for retry policies (covers retry-delay '-' fallback)" do
+    session = session_with(<<~PRC)
+      router demo
+      exit
+      policy r1
+       retry attempts 3
+      exit
+      policy r2
+       retry attempts 2
+       retry backoff exponential
+      exit
+    PRC
+    out = StringIO.new
+    Prouterd::Shell::Show.list_policies(session, out)
+    expect(out.string).to include("r1")
+    expect(out.string).to include("r2")
+  end
+
+  it "list_routes (without process scope) lists global routes with no matches" do
+    session = session_with(<<~PRC)
+      router demo
+      exit
+      interface manual cli
+       no shutdown
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+      exit
+      route interface cli process p
+      exit
+    PRC
+    out = StringIO.new
+    Prouterd::Shell::Show.list_routes([], session, out)
+    expect(out.string).to include("cli")
+    expect(out.string).to include("p")
+  end
+end
+
+RSpec.describe "Shell::Show list_routes scoped with route matches" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "prints the [N match] suffix when a route has match conditions" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+        match event.k eq "v"
+       exit
+      exit
+    PRC
+    session = Prouterd::Shell::Session.new(store: store)
+    session.replace_running(doc)
+    out = StringIO.new
+    Prouterd::Shell::Show.list_routes(["process", "p"], session, out)
+    expect(out.string).to include("[1 match]")
+  end
+end
+
+RSpec.describe "Shell::Show show_policy renders delay fields" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "renders retry initial-delay / max-delay through DurationParser" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      policy r1
+       retry attempts 3
+       retry initial-delay 5s
+       retry max-delay 2m
+      exit
+    PRC
+    session = Prouterd::Shell::Session.new(store: store)
+    session.replace_running(doc)
+    out = StringIO.new
+    Prouterd::Shell::Show.show_policy(["r1"], session, out)
+    expect(out.string).to include("5s")
+    expect(out.string).to include("2m")
+  end
+end
+
+RSpec.describe "Shell::Show show_policy retry-when match values" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "joins match values with commas" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      policy r1
+       retry attempts 3
+       retry when error_type in "timeout","boom"
+      exit
+    PRC
+    session = Prouterd::Shell::Session.new(store: store)
+    session.replace_running(doc)
+    out = StringIO.new
+    Prouterd::Shell::Show.show_policy(["r1"], session, out)
+    expect(out.string).to include("timeout,boom").or include("timeout, boom")
+  end
+end

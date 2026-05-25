@@ -128,3 +128,16 @@ RSpec.describe Prouterd::Logger do
     end
   end
 end
+
+RSpec.describe "Logger formatter newline handling" do
+  it "exercises both branches of the formatter (ends-with-\\n vs not)" do
+    io = StringIO.new
+    logger = Prouterd::Logger.build(io, level: "debug")
+    # Call .info with messages that hit both branches of the
+    # formatter lambda set in Logger.build.
+    logger.info("ends-with-newline\n", facility: "T", mnemonic: "T")
+    logger.info("plain-message",      facility: "T", mnemonic: "T")
+    expect(io.string).to include("ends-with-newline\n")
+    expect(io.string).to include("plain-message\n")
+  end
+end

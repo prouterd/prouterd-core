@@ -275,3 +275,25 @@ RSpec.describe Prouterd::API::RpcDispatcher do
     end
   end
 end
+
+RSpec.describe "API::RpcDispatcher config.commit method" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "dispatches config.commit to V1#get_config_commit" do
+    doc = parse("router demo\nexit\n")
+    commit = store.commit(doc)
+    v1 = Prouterd::API::V1.new(
+      store: store, runner: Prouterd::Runner::StubRunner.new,
+      secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+      in_flight: nil, metrics: nil,
+      jobs: Prouterd::Storage::Repositories::Jobs.new(db),
+      app: nil
+    )
+    dispatcher = Prouterd::API::RpcDispatcher.new(v1: v1, app: nil, store: store)
+    result = dispatcher.call("config.commit", { "id" => commit.id })
+    expect(result[:type]).to eq("reply")
+    expect(result.dig(:payload, "data", "id")).to eq(commit.id)
+  end
+end

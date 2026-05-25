@@ -380,3 +380,23 @@ RSpec.describe Prouterd::Iface::Mcp::Session do
     expect(woke).to eq(:closed)
   end
 end
+
+RSpec.describe "Iface::Mcp::Session io.close rescue" do
+  it "swallows StandardError raised by io.close during stop" do
+    session = Prouterd::Iface::Mcp::Session.new(argv: ["/usr/bin/true"], env: {})
+    # Inject ivars without actually starting a process
+    bad_io = Object.new
+    def bad_io.close; raise StandardError, "io.close blew up"; end
+    session.instance_variable_set(:@stdin, bad_io)
+    session.instance_variable_set(:@stdout, nil)
+    session.instance_variable_set(:@stderr, nil)
+    session.instance_variable_set(:@waiters, {})
+    session.instance_variable_set(:@waiters_lock, Mutex.new)
+    session.instance_variable_set(:@reader_thread, nil)
+    session.instance_variable_set(:@stderr_thread, nil)
+    session.instance_variable_set(:@wait_thread, nil)
+    session.instance_variable_set(:@state, :ready)
+    session.instance_variable_set(:@state_lock, Mutex.new)
+    expect { session.stop(grace_seconds: 0) }.not_to raise_error
+  end
+end

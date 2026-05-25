@@ -51,3 +51,26 @@ RSpec.describe Prouterd::API::BodyReader do
     expect(reader.read_bounded_body(request)).to eq(body)
   end
 end
+
+RSpec.describe "API::BodyReader body without rewind" do
+  let(:host) do
+    Class.new do
+      include Prouterd::API::BodyReader
+      public :read_bounded_body
+    end.new
+  end
+
+  it "does not call rewind on an IO that doesn't respond to it" do
+    no_rewind = Class.new do
+      def initialize(data); @data = data; end
+      def read(n = nil)
+        return nil if @data.empty?
+        n ? @data.slice!(0, n) : @data.dup
+      end
+      # intentionally no :rewind
+    end.new("hello")
+    req = double("Request", body: no_rewind, get_header: nil)
+    result = host.read_bounded_body(req)
+    expect(result).to eq("hello")
+  end
+end

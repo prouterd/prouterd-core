@@ -219,3 +219,23 @@ RSpec.describe Prouterd::Shell::Mode do
     end
   end
 end
+
+RSpec.describe "Shell::Mode invoke_help no-handler" do
+  it "returns :handled when commands has neither 'help' nor '?'" do
+    m = Class.new(Prouterd::Shell::Mode) {
+      def commands; { "doit" => :cmd_doit }; end
+      def cmd_doit(*); :handled; end
+    }.new
+    tokens = Prouterd::Shell::CommandLine.tokenize("?")
+    result = m.execute(tokens, Prouterd::Shell::Session.new, StringIO.new, StringIO.new)
+    expect(result).to eq(:handled)
+  end
+end
+
+RSpec.describe "Shell::Mode expect_min_args pass branch" do
+  it "does not raise when token count is exactly the minimum" do
+    m = Prouterd::Shell::Mode.new
+    tokens = Prouterd::Shell::CommandLine.tokenize("a b")
+    expect { m.send(:expect_min_args, tokens, 2, "a b") }.not_to raise_error
+  end
+end

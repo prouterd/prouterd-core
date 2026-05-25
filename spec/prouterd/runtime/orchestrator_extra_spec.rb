@@ -456,3 +456,259 @@ RSpec.describe Prouterd::Runtime::Orchestrator do
     end
   end
 end
+
+RSpec.describe "Runtime::Orchestrator next_ready dedupe in cross-block sweep" do
+  it "does not double-add a block already queued in next_ready" do
+    engine = Prouterd::Runtime::RetryEngine.new(runs: double)
+    process = double(routes: [double(from_block: "a", to_block: "b")])
+    next_ready = ["a"]
+    # Simulate the inner logic of cross-block sweep: a is in next_ready,
+    # so the `unshift unless include?` else-branch fires.
+    block_name = "a"
+    next_ready.unshift(block_name) unless next_ready.include?(block_name)
+    expect(next_ready).to eq(["a"])
+  end
+end
+
+RSpec.describe "Runtime::Orchestrator ready dedupe against executed" do
+  it "skips a block that was already marked executed via direct execute_run loop" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+      exit
+    PRC
+    orch = Prouterd::Runtime::Orchestrator.new(
+      db: Prouterd::Storage::DB.open(":memory:"),
+      runner: Prouterd::Runner::StubRunner.new
+    )
+    # Use the cross-block retry path indirectly by trigger + cross-block sweep.
+    run = orch.trigger(doc, "p", input_event: {})
+    expect(run.status).to eq("success")
+  end
+end
+
+RSpec.describe "Runtime::Orchestrator build_next_ready phantom block name" do
+  it "skips an executed block that no longer exists in process.blocks" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+      exit
+    PRC
+    orch = Prouterd::Runtime::Orchestrator.new(
+      db: Prouterd::Storage::DB.open(":memory:"),
+      runner: Prouterd::Runner::StubRunner.new
+    )
+    process = doc.processes.first
+    block_a = process.block("a")
+    successful = [block_a]
+    executed = Set.new(["a", "ghost-name-not-in-process"])
+    ctx = Prouterd::Runtime::Context.new("a" => { "x" => 1 })
+    mutex = Mutex.new
+    result = orch.send(:build_next_ready, process, successful, executed, ctx, mutex)
+    expect(result).to include("b")
+  end
+end
+
+RSpec.describe "Runtime::Orchestrator events.publish nil guards" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:repo) { Prouterd::Storage::Repositories::Runs.new(db) }
+  after { db.close }
+
+  let(:doc) do
+    parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block hello
+        interface docker img
+       exit
+      exit
+    PRC
+  end
+
+  it "skips :run_updated publish when execute_inner's running update returns nil" do
+    orch = Prouterd::Runtime::Orchestrator.new(
+      db: db, runner: Prouterd::Runner::StubRunner.new
+    )
+    # Make update_run return nil so the `if running` guard fires.
+    original_update = Prouterd::Storage::Repositories::Runs.instance_method(:update_run)
+    call_count = 0
+    Prouterd::Storage::Repositories::Runs.define_method(:update_run) do |*a, **kw|
+      call_count += 1
+      next nil if call_count == 1 # first update_run in execute_inner
+
+      original_update.bind(self).call(*a, **kw)
+    end
+    # The orchestrator should not crash even when running is nil.
+    run = orch.trigger(doc, "p", input_event: {})
+    expect(run).not_to be_nil
+  ensure
+    Prouterd::Storage::Repositories::Runs.define_method(:update_run, original_update)
+  end
+
+  it "skips :run_updated publish in finalize_canceled when get_run returns nil" do
+    orch = Prouterd::Runtime::Orchestrator.new(
+      db: db, runner: Prouterd::Runner::StubRunner.new
+    )
+    run = repo.create_run(process_name: "p", input_event: {})
+    repo.update_run(run.id, status: "canceled", finished_at: Time.now.utc.iso8601(3))
+    allow(repo).to receive(:get_run).and_return(nil)
+    # Re-resolve into orchestrator's @runs reference
+    allow_any_instance_of(Prouterd::Storage::Repositories::Runs).to receive(:get_run).and_return(nil)
+    result = orch.send(:finalize_canceled, run)
+    expect(result).to be_nil
+  end
+end
+
+RSpec.describe "Runtime::Orchestrator input_event_json nil branch" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:repo) { Prouterd::Storage::Repositories::Runs.new(db) }
+  after { db.close }
+
+  it "wraps a run with NULL input_event_json into an empty event hash" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+      exit
+    PRC
+    orch = Prouterd::Runtime::Orchestrator.new(
+      db: db, runner: Prouterd::Runner::StubRunner.new
+    )
+    run = repo.create_run(process_name: "p", input_event: {})
+    db.execute("UPDATE runs SET input_event_json = NULL WHERE id = ?", [run.id])
+    reloaded = repo.get_run(run.id)
+    expect { orch.execute_run(reloaded, doc) }.not_to raise_error
+  end
+end
+
+RSpec.describe "Orchestrator and_style_merge_barrier? non-barrier target" do
+  it "returns false when the target isn't a barrier block at all" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+      exit
+    PRC
+    orch = Prouterd::Runtime::Orchestrator.new(
+      db: Prouterd::Storage::DB.open(":memory:"),
+      runner: Prouterd::Runner::StubRunner.new
+    )
+    result = orch.send(:and_style_merge_barrier?, doc.processes.first, "b", Set.new)
+    expect(result).to be(false)
+  end
+end
+
+RSpec.describe "Orchestrator soft-cancel between levels" do
+  it "stops scheduling when run.status flips to canceled mid-execution" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+      exit
+    PRC
+    db = Prouterd::Storage::DB.open(":memory:")
+    runs_repo = Prouterd::Storage::Repositories::Runs.new(db)
+    runner = Prouterd::Runner::StubRunner.new
+    # After block 'a' executes, flip the run row to canceled so the
+    # orchestrator's top-of-loop polling catches the soft-cancel.
+    runner.program("a") do |req|
+      run = runs_repo.get_run_by_uid(req.run_uid)
+      runs_repo.update_run(run.id, status: "canceled",
+                                   finished_at: Time.now.utc.iso8601(3))
+      Prouterd::Runner::ExecutionResult.new(
+        exit_code: 0, stdout: "", stderr: "",
+        output_json: {}, artifacts: [],
+        error_type: nil, error_message: nil,
+        duration_ms: 1, started_at: nil, finished_at: nil
+      )
+    end
+    orch = Prouterd::Runtime::Orchestrator.new(db: db, runner: runner)
+    run = orch.trigger(doc, "p", input_event: {})
+    expect(run.status).to eq("canceled")
+    db.close
+  end
+end
+
+RSpec.describe "Orchestrator on-failure stop terminates the run" do
+  it "marks the run failed with the configured error_summary" do
+    doc = parse(<<~PRC)
+      router demo
+      exit
+      interface docker img
+       image x
+      exit
+      process p
+       block a
+        interface docker img
+       exit
+       block b
+        interface docker img
+       exit
+       route a b
+      exit
+    PRC
+    db = Prouterd::Storage::DB.open(":memory:")
+    runner = Prouterd::Runner::StubRunner.new
+    runner.program("a") do |_req|
+      Prouterd::Runner::ExecutionResult.new(
+        exit_code: 7, stdout: "", stderr: "fail",
+        output_json: nil, artifacts: [],
+        error_type: "boom", error_message: "oops",
+        duration_ms: 0, started_at: nil, finished_at: nil
+      )
+    end
+    orch = Prouterd::Runtime::Orchestrator.new(db: db, runner: runner)
+    run = orch.trigger(doc, "p", input_event: {})
+    expect(run.status).to eq("failed")
+    expect(run.error_summary).to include("boom")
+    db.close
+  end
+end

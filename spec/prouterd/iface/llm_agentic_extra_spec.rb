@@ -262,7 +262,9 @@ RSpec.describe Prouterd::Iface::LlmAgentic do
       # event. The watchdog kills it on the agentic loop's deadline so
       # each_line returns and the outcome is `timeout`.
       f = Tempfile.create(["fake-agentic-hang-", ".sh"])
-      f.write("#!/bin/sh\nsleep 10\n")
+      # `exec` so KILL hits sleep directly (otherwise the orphaned sleep
+      # holds stdout open and the test waits the full 10s).
+      f.write("#!/bin/sh\nexec sleep 10\n")
       f.close
       File.chmod(0o755, f.path)
 

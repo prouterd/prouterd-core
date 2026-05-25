@@ -70,10 +70,14 @@ module Prouterd
               loop do
                 break unless wait_thr.alive?
                 if Time.now > deadline
+                  # Set the flag first: the kill causes stdout to EOF,
+                  # which lets the block return and the session check the
+                  # flag — possibly before the watchdog gets back here to
+                  # assign it.
+                  timed_out_flag = true
                   Process.kill("TERM", wait_thr.pid) rescue nil
                   sleep 0.05
                   Process.kill("KILL", wait_thr.pid) rescue nil
-                  timed_out_flag = true
                   break
                 end
                 sleep 0.02

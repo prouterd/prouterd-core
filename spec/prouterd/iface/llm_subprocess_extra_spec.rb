@@ -509,7 +509,9 @@ RSpec.describe Prouterd::Iface::LlmSubprocess do
     it "returns error_type=timeout when the watchdog kills a hung child" do
       hang = Tempfile.create(["llm-hang-", ".sh"])
       # Hold stdout open, never write. Watchdog kills on the deadline.
-      hang.write("#!/bin/sh\nsleep 10\n")
+      # `exec` so KILL hits sleep directly — without it the shell exits but
+      # the orphaned sleep keeps stdout open, stretching the test to 10s.
+      hang.write("#!/bin/sh\nexec sleep 10\n")
       hang.close
       File.chmod(0o755, hang.path)
       begin

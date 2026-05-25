@@ -68,9 +68,9 @@ RSpec.describe Prouterd::API::RateLimiter do
   end
 
   it "allow? trims requests outside the sliding window" do
-    limiter = described_class.new(max_requests: 2, window_seconds: 1)
+    limiter = described_class.new(max_requests: 2, window_seconds: 0.1)
     limiter.allow?("k")
-    sleep 1.05
+    sleep 0.15
     # After the window, the bucket is trimmed; new requests are accepted.
     expect(limiter.allow?("k")).to be(true)
     expect(limiter.allow?("k")).to be(true)
@@ -78,13 +78,13 @@ RSpec.describe Prouterd::API::RateLimiter do
   end
 
   it "maybe_evict drops fully-aged-out buckets after the interval" do
-    limiter = described_class.new(max_requests: 5, window_seconds: 1)
+    limiter = described_class.new(max_requests: 5, window_seconds: 0.1)
     limiter.allow?("ghost")
     expect(limiter.bucket_count).to eq(1)
 
     # Force the next evict pass by walking the clock forward.
     limiter.instance_variable_set(:@last_evict, Time.now.to_f - 120)
-    sleep 1.05
+    sleep 0.15
     limiter.allow?("anchor") # triggers maybe_evict; ghost should be dropped
     expect(limiter.bucket_count).to eq(1)  # only :anchor left
   end

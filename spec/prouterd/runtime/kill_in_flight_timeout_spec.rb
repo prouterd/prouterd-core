@@ -37,11 +37,11 @@ RSpec.describe "Orchestrator#kill_in_flight_containers timeout" do
   end
 
   it "abandons the kill and warns when Docker.get hangs past the cap" do
+    # Shrink the cap so the test doesn't pay the full production timeout.
+    stub_const("Prouterd::Runtime::Orchestrator::KILL_DOCKER_TIMEOUT_SECONDS", 0.2)
     registry.attach_container(run.uid, "ctr-stuck")
     cap = Prouterd::Runtime::Orchestrator::KILL_DOCKER_TIMEOUT_SECONDS
-    # Make the docker round-trip block far longer than the cap. Test
-    # passes only if the timeout actually fires.
-    allow(Docker::Container).to receive(:get) { sleep(cap + 5) }
+    allow(Docker::Container).to receive(:get) { sleep(cap + 2) }
 
     started = Time.now
     orchestrator.send(:kill_in_flight_containers, run)

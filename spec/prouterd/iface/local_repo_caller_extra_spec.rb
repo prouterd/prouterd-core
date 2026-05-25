@@ -342,7 +342,9 @@ RSpec.describe Prouterd::Iface::LocalRepoCaller do
         allow(Open3).to receive(:popen3).and_wrap_original do |orig, *args, &blk|
           # The first popen3 will be the gather git log. Replace it with
           # a sleeping process so the deadline triggers.
-          orig.call("/bin/sh", "-c", "sleep 5", &blk)
+          # `exec` so KILL hits sleep directly; otherwise the shell exits
+          # but orphaned sleep holds stdout open until it naturally exits.
+          orig.call("/bin/sh", "-c", "exec sleep 5", &blk)
         end
         result = caller_instance.run(build_request(
           { "root" => root, "whitelist" => "good", "repo" => "good",

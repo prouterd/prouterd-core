@@ -738,6 +738,95 @@ RSpec.describe Prouterd::CLI::Main do
     end
   end
 
+  describe "trigger exit 0 on successful run" do
+    it "exits 0 when stub runner succeeds (status == success branch)" do
+      Tempfile.create(["evt", ".json"]) do |f|
+        f.write('{}')
+        f.flush
+        with_db do |db|
+          run("apply", fixture_path("minimal.prc"), "--db", db)
+          code, out, _err = run("trigger", "process", "pipeline", "input", f.path,
+                                 "--db", db, "--runner", "stub")
+          expect(code).to eq(0)
+          expect(out).to include("success")
+        end
+      end
+    end
+  end
+
+  describe "replay exit 0 on successful replay" do
+    it "exits 0 when the new run finishes successfully" do
+      Tempfile.create(["evt", ".json"]) do |f|
+        f.write('{}')
+        f.flush
+        with_db do |db|
+          run("apply", fixture_path("minimal.prc"), "--db", db)
+          # Trigger to produce a successful run we can replay.
+          run("trigger", "process", "pipeline", "input", f.path, "--db", db, "--runner", "stub")
+          sql_db = Prouterd::Storage::DB.open(db)
+          original = Prouterd::Storage::Repositories::Runs.new(sql_db).list_runs(limit: 1).first
+          sql_db.close
+          code, _out, _err = run("replay", "run", original.uid, "--db", db, "--runner", "stub")
+          expect(code).to eq(0)
+        end
+      end
+    end
+  end
+
+  describe "validate --against running --no-db" do
+    it "treats no-DB as an empty running document and emits diff sections" do
+      code, _out, _err = run("validate", fixture_path("minimal.prc"), "--against", "running", "--no-db")
+      # Comparing minimal.prc vs empty Document → all sections added.
+      expect(code).to eq(0)
+    end
+  end
+
+  describe "report_check mcp branch: no warning when bin resolves" do
+    it "does NOT append a warning when the mcp server bin is a real executable" do
+      Tempfile.create(["mcp-ok", ".prc"]) do |t|
+        t.write(<<~PRC)
+          router demo
+          exit
+          interface mcp local
+           server bin "/bin/sh"
+          exit
+          interface docker img
+           image x
+          exit
+          process p
+           block a
+            interface docker img
+           exit
+          exit
+        PRC
+        t.flush
+        code, out, _ = run("check", t.path)
+        expect([0, 1]).to include(code)
+        expect(out).not_to include("interface mcp 'local':")
+      end
+    end
+  end
+
+  describe "machine_output? with stdout that has no #tty?" do
+    it "returns true (treats it as a pipe by default)" do
+      out_no_tty = Class.new do
+        def puts(*); end
+        def print(*); end
+        # intentionally no :tty?
+      end.new
+      m = described_class.new([], StringIO.new, out_no_tty, StringIO.new)
+      expect(m.send(:machine_output?)).to be(true)
+    end
+  end
+
+  describe "diff with bad option fed to parse_runtime_options" do
+    it "exits 2 with 'unknown option' (cmd_diff branch L200)" do
+      code, _, err = run("diff", fixture_path("minimal.prc"), "--bogus")
+      expect(code).to eq(2)
+      expect(err).to include("unknown option")
+    end
+  end
+
   describe "shell error path" do
     it "exits 1 when initial config is bad and surfaces a ShellError" do
       Tempfile.create(["bad", ".prc"]) do |t|

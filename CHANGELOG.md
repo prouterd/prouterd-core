@@ -2136,7 +2136,9 @@ and stream-json modes, and the agentic multi-turn loop.
 ## Status
 
 - 43 phases shipped, one git commit per fix or feature
-- 1012 RSpec specs, 0 failures
+- 2817 RSpec specs, 0 failures
+- 100% line + 100% branch coverage, enforced in CI via SimpleCov's
+  `minimum_coverage` gate (any drop exits the rspec run non-zero)
 - Two binaries: `prouter` (operator CLI) + `prouterd` (long-running daemon)
 - Default install runs on Ruby stdlib only (`Open3`, `Net::HTTP`); the
   shell / http / llm / webhook / manual interfaces all work out of the

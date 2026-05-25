@@ -391,9 +391,10 @@ If you change how timezones are stored, update
 ## Testing
 
 ```bash
-bundle exec rspec                  # full suite (~1000 specs)
+bundle exec rspec                          # full suite (~2800 specs, ~37s)
 bundle exec rspec spec/prouterd/runtime/   # one subsystem
 bundle exec rspec spec/prouterd/runtime/orchestrator_spec.rb:42  # one example
+COVERAGE=1 bundle exec rspec               # writes coverage/index.html
 ```
 
 `spec/spec_helper.rb` sets `PROUTERD_DB` to a per-run tmpdir so
@@ -407,6 +408,32 @@ queue FIFO results, then assert on `runner.calls` (captured RunRequests).
 
 For end-to-end Docker tests, see `examples/` — those scripts run real
 containers and assert on persisted state.
+
+### Coverage gate (100% line + 100% branch)
+
+CI runs with `COVERAGE=1` and fails on any drop below 100% line or
+100% branch coverage (SimpleCov's `minimum_coverage` exits 2). When the
+gate trips the `coverage/` directory is uploaded as a CI artifact, so
+the offending lines/branches can be inspected without re-running locally.
+
+`:nocov:` annotations are NOT permitted anywhere in `lib/`. The
+historically-hard cases (signal handlers, infinite background loops,
+optional `require` rescues, defensive guards) get one of two treatments:
+
+1. **Refactor for testability** — extract the body into a named method
+   the spec can drive directly, then verify the wrapper delegates.
+   Examples: `daemon.rb`'s signal-trap bodies → `handle_term` /
+   `handle_int`; `api/server.rb`'s drain loop → `drain_tick(now:)`.
+2. **Delete the dead guard** — if a defensive `if X` can never be
+   false given the caller's state machine, the guard is dead code, not
+   a coverage hole. Delete it and let the active path stand alone.
+   Examples: `next if rel.empty?` in collect_artifacts (Dir.glob never
+   yields the root, and lstat.file? already drops directories).
+
+If a single hard-case spec turns out genuinely impossible to write
+under the no-`:nocov:` constraint, the resolution is to refactor the
+lib code further (smaller seam, stub-friendly collaborator) — never to
+add `:nocov:`.
 
 ## What's intentionally NOT here
 

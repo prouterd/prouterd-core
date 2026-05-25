@@ -142,6 +142,10 @@ RSpec.describe Prouterd::API::Auth do
         expect(described_class.parse_cookies("")).to eq({})
         expect(described_class.parse_cookies("; ;")).to eq({})
       end
+
+      it "ignores an empty-key pair like '=val'" do
+        expect(described_class.parse_cookies("=val; real=x")).to eq("real" => "x")
+      end
     end
   end
 end

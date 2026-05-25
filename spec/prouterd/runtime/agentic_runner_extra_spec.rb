@@ -442,6 +442,43 @@ RSpec.describe Prouterd::Runtime::AgenticRunner do
       expect(result[:output_json]).to eq("hit" => 1)
     end
 
+    it "omits the 'call' field when impl.call_name is empty (defensive against malformed AST)" do
+      # Parser forbids `implementation interface ... ` without `call <name>`,
+      # so this path is defensive against an in-memory mutation /
+      # third-party AST builder. Construct the AST directly.
+      doc = make_doc(<<~PRC)
+        router demo
+        exit
+        interface shell sh
+        exit
+        tool stripped
+         description "x"
+         implementation interface shell sh call boom
+        exit
+      PRC
+      tool = doc.tools.first
+      tool.implementation = tool.implementation.dup
+      tool.implementation.call_name = "" # mutate to empty
+
+      captured_fields = nil
+      runner = Class.new do
+        define_method(:run) do |req|
+          captured_fields = req.type_fields
+          Prouterd::Runner::ExecutionResult.new(
+            exit_code: 0, stdout: "", stderr: "",
+            output_json: { "ok" => true }, artifacts: [],
+            error_type: nil, error_message: nil,
+            duration_ms: 0, started_at: nil, finished_at: nil
+          )
+        end
+      end.new
+      ar = described_class.new(runs: runs, runner: runner, mcp_pool: nil, host: double)
+      block = double(name: "b", timeout_ms: nil)
+      dispatcher = ar.send(:build_tool_dispatcher, run, double(name: "p"), block, doc, {})
+      dispatcher.call(name: "stripped", input: {})
+      expect(captured_fields).not_to have_key("call")
+    end
+
     it "rejects a known tool whose implementation references a missing iface" do
       doc = make_doc(<<~PRC)
         router demo

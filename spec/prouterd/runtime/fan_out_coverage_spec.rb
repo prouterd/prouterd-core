@@ -167,4 +167,52 @@ RSpec.describe Prouterd::Runtime::FanOut do
       expect(children.length).to eq(2)
     end
   end
+
+  describe "dedupe with prior run OUTSIDE the window" do
+    let(:document) do
+      parse(<<~PRC)
+        router demo
+        exit
+        process poller
+         block search
+          interface docker img1
+          fan-out from issues into analyze
+           map ticket from key
+           dedupe by ticket window 1h
+          exit
+         exit
+        exit
+        process analyze
+         thread-id "{{event.ticket}}"
+         block do
+          interface docker img1
+         exit
+        exit
+      PRC
+    end
+
+    it "does NOT dedupe a child when the only prior run is older than the window" do
+      # Plant a stale prior analyze run with the same thread_id but
+      # created_at 2 hours ago — past the 1h dedupe window.
+      stale = repo.create_run(process_name: "analyze", input_event: { "ticket" => "K-1" },
+                              parent_run_id: nil, thread_id: "K-1")
+      db.execute("UPDATE runs SET created_at = ? WHERE id = ?",
+                 [(Time.now.utc - 7200).iso8601(3), stale.id])
+
+      runner.program("search") do |_req|
+        Prouterd::Runner::ExecutionResult.new(
+          exit_code: 0, stdout: "", stderr: "",
+          output_json: { "issues" => [{ "key" => "K-1" }] },
+          artifacts: [], error_type: nil, error_message: nil,
+          duration_ms: 1, started_at: nil, finished_at: nil
+        )
+      end
+
+      orchestrator.trigger(document, "poller", input_event: {})
+      children = repo.list_runs(process_name: "analyze")
+      # 1 stale + 1 fresh child — dedupe didn't fire because the prior
+      # run is past the cutoff.
+      expect(children.length).to eq(2)
+    end
+  end
 end

@@ -183,6 +183,16 @@ RSpec.describe Prouterd::Runtime::RetryEngine do
       expect(s["feedback"]).to eq("fail")
     end
 
+    it "returns nil for a bare-key feedback when result has no output_json" do
+      r = result.dup
+      r.output_json = nil
+      ctx = Prouterd::Runtime::Context.new({})
+      fb = double(from: "anything", into: "feedback")
+      policy = double(retry_feedbacks: [fb])
+      s = engine.build_previous_summary(r, 2, policy, ctx)
+      expect(s["feedback"]).to be_nil
+    end
+
     it "falls back to output_json when context lookup returns nil" do
       ctx = Prouterd::Runtime::Context.new({})
       fb = double(from: "issues", into: "feedback")

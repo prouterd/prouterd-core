@@ -360,6 +360,36 @@ RSpec.describe Prouterd::API::App do
     end
   end
 
+  describe "POST /v1/logout without a SessionStore wired" do
+    it "returns 204 with no body and no Set-Cookie" do
+      a = described_class.new(store: store, runner: runner, jobs: jobs,
+                              in_flight: in_flight, metrics: metrics,
+                              admin_token: nil) # no `sessions:` ⇒ @sessions nil
+      env = Rack::MockRequest.env_for("/v1/logout", method: "POST")
+      status, _h, body = a.call(env)
+      expect(status).to eq(204)
+      body_str = body.is_a?(Array) ? body.join : body.to_s
+      expect(body_str).to eq("")
+    end
+  end
+
+  describe "console serve HEAD branch" do
+    it "returns 200 + empty body for HEAD requests to a real console file" do
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, "index.html"), "<html>x</html>")
+        a = described_class.new(store: store, runner: runner, jobs: jobs,
+                                in_flight: in_flight, metrics: metrics,
+                                admin_token: nil, console_dir: dir)
+        env = Rack::MockRequest.env_for("/console/", method: "HEAD")
+        status, headers, body = a.call(env)
+        expect(status).to eq(200)
+        body_str = body.is_a?(Array) ? body.join : body.to_s
+        expect(body_str).to eq("")
+        expect(headers["content-length"]).to eq("14")
+      end
+    end
+  end
+
   describe "metrics_response with no metrics configured" do
     it "returns 200 + JSON error stub when @metrics is nil" do
       a = described_class.new(store: store, runner: runner, jobs: jobs,

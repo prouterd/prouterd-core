@@ -83,8 +83,7 @@ module Prouterd
         end
 
         def count_runs_by_status(status)
-          row = @db.query_row("SELECT COUNT(*) FROM runs WHERE status = ?", [status])
-          row ? row.first.to_i : 0
+          @db.query_row("SELECT COUNT(*) FROM runs WHERE status = ?", [status]).first.to_i
         end
 
         def list_runs(limit: 50, offset: 0, process_name: nil, status: nil, thread_id: nil)

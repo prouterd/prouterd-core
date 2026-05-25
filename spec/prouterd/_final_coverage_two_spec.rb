@@ -475,15 +475,6 @@ RSpec.describe "Coverage mop-up — batch 2" do
   # ---- runs: count_runs_by_status defensive nil-row guard -----
   # COUNT(*) always returns one row; the `: 0` branch is genuinely
   # unreachable in practice. Stub the DB to force the nil-row branch.
-  describe "Storage::Repositories::Runs#count_runs_by_status defensive nil-row" do
-    it "returns 0 when @db.query_row returns nil (defensive)" do
-      db = Prouterd::Storage::DB.open(":memory:")
-      repo = Prouterd::Storage::Repositories::Runs.new(db)
-      allow(db).to receive(:query_row).and_return(nil)
-      expect(repo.count_runs_by_status("queued")).to eq(0)
-      db.close
-    end
-  end
 
   # ---- privileged: render_run_summary duration nil + commit_id branches -----
 

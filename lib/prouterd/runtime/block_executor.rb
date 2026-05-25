@@ -135,8 +135,8 @@ module Prouterd
           )
           running_step = @runs.update_step(step.id, status: "running") if attempt > 1
         end
-        @events.publish(:step_created, step: step,         run_id: run.id, run_uid: run.uid) if step
-        @events.publish(:step_updated, step: running_step, run_id: run.id, run_uid: run.uid) if running_step
+        @events.publish(:step_created, step: step,         run_id: run.id, run_uid: run.uid)
+        @events.publish(:step_updated, step: running_step, run_id: run.id, run_uid: run.uid)
 
         staged_inputs = stage_artifact_inputs(run, block, db_mutex)
 
@@ -214,7 +214,7 @@ module Prouterd
           )
           accumulate_run_usage(run, scrubbed_output, iface, document)
         end
-        @events.publish(:step_updated, step: finished_step, run_id: run.id, run_uid: run.uid) if finished_step
+        @events.publish(:step_updated, step: finished_step, run_id: run.id, run_uid: run.uid)
 
         # Post-attempt cost guardrail: if the block declares
         # max-cost-usd and accumulated run cost crossed it, reshape
@@ -302,7 +302,7 @@ module Prouterd
         # Interface-declared auth secret — outbound callers (HttpCaller,
         # LlmCaller) read the resolved token from env[secret_name] when
         # processing iface.type_fields["auth"].
-        iface_auth = iface && iface.type_fields["auth"]
+        iface_auth = iface.type_fields["auth"]
         if iface_auth
           secret = document.secrets.find { |s| s.name == iface_auth.secret_name }
           if secret
@@ -313,18 +313,16 @@ module Prouterd
         # (e.g. `interface llm` and `interface mcp` both accept
         # `secret <NAME>`). Plugin-driven so a third-party iface gets
         # this for free.
-        if iface
-          plugin = Iface::Registry.lookup(iface.type)
-          if plugin
-            plugin.fields.each do |field|
-              next unless field.kind == :secret_ref
+        plugin = Iface::Registry.lookup(iface.type)
+        if plugin
+          plugin.fields.each do |field|
+            next unless field.kind == :secret_ref
 
-              Array(iface.type_fields[field.storage_key]).each do |secret_name|
-                secret = document.secrets.find { |s| s.name == secret_name }
-                next unless secret
+            Array(iface.type_fields[field.storage_key]).each do |secret_name|
+              secret = document.secrets.find { |s| s.name == secret_name }
+              next unless secret
 
-                env[secret_name] ||= @secret_resolver.resolve(secret).to_s
-              end
+              env[secret_name] ||= @secret_resolver.resolve(secret).to_s
             end
           end
         end

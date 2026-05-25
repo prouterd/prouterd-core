@@ -231,7 +231,7 @@ module Prouterd
       def execute_inner(run, process, document, seed_context: nil, start_blocks: nil)
         run_started_at = Time.now.utc
         running = @runs.update_run(run.id, status: "running", started_at: run_started_at.iso8601(3))
-        @events.publish(:run_updated, run: running) if running
+        @events.publish(:run_updated, run: running)
 
         # `system` carries daemon-scoped data templates can read — currently
         # `system.url` (the bind URL of the daemon process). Lets a block
@@ -298,13 +298,7 @@ module Prouterd
           skipped = []
           paused_block = nil
           ready.each do |bn|
-            next if executed.include?(bn)
-
             block = process.block(bn)
-            unless block
-              failure_reason = "block '#{bn}' is not defined"
-              break
-            end
             if block.shutdown
               executed << bn
               log_system_safe(run, "block '#{bn}' is shutdown; skipped", db_mutex)
@@ -326,7 +320,6 @@ module Prouterd
             end
             level << block
           end
-          break if failure_reason
           if paused_block
             db_mutex.synchronize { update_run_context(run, context) }
             return finalize_run_paused(run, paused_block)
@@ -427,8 +420,6 @@ module Prouterd
       # entry includes the LAST attempt's result — retry history is in DB.
       def run_level_in_parallel(run, process, document, level, context, db_mutex, ctx_mutex, redactor,
                                 outer_overlays: {})
-        return [] if level.empty?
-
         if level.length == 1 || @max_parallelism <= 1
           return level.map do |block|
             [block.name, execute_block_with_retries(run, process, block, context, document, db_mutex, ctx_mutex, redactor,
@@ -530,7 +521,7 @@ module Prouterd
       # partial context.
       def and_style_merge_barrier?(process, name, executed)
         target = process.block(name)
-        return false unless target&.barrier?
+        return false unless target.barrier?
         return false unless target.barrier_kind == :merge
         return false unless %w[all-required all-best-effort].include?(target.barrier_join_strategy)
 
@@ -587,7 +578,7 @@ module Prouterd
         end
         ctx_mutex.synchronize { context.set(block.name, output) }
         log_system_safe(run, "block '#{block.name}' skipped (skip-when matched)", db_mutex)
-        @events.publish(:step_updated, step: step, run_id: run.id, run_uid: run.uid) if step
+        @events.publish(:step_updated, step: step, run_id: run.id, run_uid: run.uid)
       end
 
       def entry_blocks(process)
@@ -628,28 +619,26 @@ module Prouterd
           finished_at: Time.now.utc.iso8601(3),
           error_summary: error
         )
-        @events.publish(:run_updated, run: finalized) if finalized
+        @events.publish(:run_updated, run: finalized)
 
         # Daemon-level run-completion log line. Per-run system_logs in
         # the DB carry the full timeline; this is the single line the
         # operator sees on stdout / `show logging` when grepping for
         # "what's recently failed".
-        if finalized
-          mnemonic = case status
-                     when "success"   then "COMPLETED"
-                     when "failed"    then "FAILED"
-                     when "canceled"  then "CANCELED"
-                     else                  "DONE"
-                     end
-          severity_method = (status == "failed") ? :error : :info
-          @logger.public_send(
-            severity_method, "run #{status}",
-            facility: "RUN", mnemonic: mnemonic,
-            run_uid: run.uid, process: run.process_name,
-            duration_ms: finalized.duration_ms,
-            error: error
-          )
-        end
+        mnemonic = case status
+                   when "success"   then "COMPLETED"
+                   when "failed"    then "FAILED"
+                   when "canceled"  then "CANCELED"
+                   else                  "DONE"
+                   end
+        severity_method = (status == "failed") ? :error : :info
+        @logger.public_send(
+          severity_method, "run #{status}",
+          facility: "RUN", mnemonic: mnemonic,
+          run_uid: run.uid, process: run.process_name,
+          duration_ms: finalized.duration_ms,
+          error: error
+        )
 
         finalized
       end
@@ -728,8 +717,8 @@ module Prouterd
                        facility: "RUN", mnemonic: "PAUSED",
                        run_uid: run.uid, process: run.process_name,
                        block: block.name, reason: block.pause_reason)
-        @events.publish(:run_updated, run: paused) if paused
-        @events.publish(:step_updated, step: step, run_id: run.id, run_uid: run.uid) if step
+        @events.publish(:run_updated, run: paused)
+        @events.publish(:step_updated, step: step, run_id: run.id, run_uid: run.uid)
         paused
       end
 
@@ -738,7 +727,7 @@ module Prouterd
         # just return the row. Don't overwrite finished_at — the cancel
         # command set it the moment the operator hit cancel.
         canceled = @runs.get_run(run.id)
-        @events.publish(:run_updated, run: canceled) if canceled
+        @events.publish(:run_updated, run: canceled)
         canceled
       end
 

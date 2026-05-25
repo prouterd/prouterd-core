@@ -12,7 +12,6 @@ module Prouterd
       def tokenize(input)
         lines = Config::Lexer.tokenize(input)
         return nil if lines.empty?
-        return nil if lines.length == 1 && lines.first.tokens.empty?
 
         # If the user paste-included multiple lines, only consider the first.
         lines.first.tokens

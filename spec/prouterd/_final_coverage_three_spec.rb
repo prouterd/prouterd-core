@@ -56,27 +56,6 @@ RSpec.describe "Coverage mop-up — batch 3 (surgical)" do
       Prouterd::Storage::Repositories::Runs.define_method(:update_run, original_update)
     end
 
-    it "skips :run_updated publish when finalize_run's update returns nil" do
-      orch = Prouterd::Runtime::Orchestrator.new(
-        db: db, runner: Prouterd::Runner::StubRunner.new
-      )
-      # Patch update_run to return nil specifically when finalize_run calls it
-      # (called with status: + finished_at: + error_summary:).
-      original_update = Prouterd::Storage::Repositories::Runs.instance_method(:update_run)
-      Prouterd::Storage::Repositories::Runs.define_method(:update_run) do |id, **kwargs|
-        if kwargs[:status] && kwargs[:finished_at] && kwargs.key?(:error_summary)
-          # First finalize_run call → nil; subsequent restores
-          original_update.bind(self).call(id, **kwargs)
-          nil
-        else
-          original_update.bind(self).call(id, **kwargs)
-        end
-      end
-      expect { orch.trigger(doc, "p", input_event: {}) }.not_to raise_error
-    ensure
-      Prouterd::Storage::Repositories::Runs.define_method(:update_run, original_update)
-    end
-
     it "skips :run_updated publish in finalize_canceled when get_run returns nil" do
       orch = Prouterd::Runtime::Orchestrator.new(
         db: db, runner: Prouterd::Runner::StubRunner.new

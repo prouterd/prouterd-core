@@ -106,7 +106,8 @@ module Prouterd
       end
 
       def evaluate_match_against_event(match)
-        # Global route matches reference event-only paths by construction.
+        # Global route matches reference event-only paths by construction,
+        # so static_evaluate never returns :runtime here.
         ctx = Context.new("event" => deep_stringify(@event))
         result = MatchEvaluator.static_evaluate(match, ctx, runtime_paths: [])
         MatchAnnotation.new(
@@ -114,7 +115,7 @@ module Prouterd
           operator: match.operator,
           values: match.values,
           result: result,
-          reason: result == :runtime ? "depends on runtime data" : nil
+          reason: nil
         )
       end
 

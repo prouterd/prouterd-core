@@ -165,6 +165,64 @@ RSpec.describe "block resume-from directive" do
       expect(result.errors.map(&:message).join).to match(/provider mismatch/)
     end
 
+    it "tolerates a block whose downstream llm iface vanished from the doc (defensive &.)" do
+      src = <<~PRC
+        router demo
+        exit
+        interface llm m
+         provider claude_cli
+         model some-model
+        exit
+        process p
+         block revise
+          interface llm m
+          prompt "p"
+          resume-from "literal-uuid"
+         exit
+        exit
+      PRC
+      doc = parse(src)
+      # Strip the iface that 'revise' references AFTER parse so the
+      # check_resume_from method's iface lookup returns nil.
+      doc.interfaces.clear
+      result = Prouterd::Config::Validator.validate(doc)
+      # Other validator paths will flag the missing iface; we just want
+      # check_resume_from itself NOT to NoMethodError on the &. chain.
+      expect { result }.not_to raise_error
+    end
+
+    it "tolerates an upstream block whose iface vanished from the doc (defensive &.)" do
+      src = <<~PRC
+        router demo
+        exit
+        interface llm m
+         provider claude_cli
+         model some-model
+        exit
+        interface llm n
+         provider claude_cli
+         model some-model
+        exit
+        process p
+         block draft
+          interface llm n
+          prompt "first"
+         exit
+         block revise
+          interface llm m
+          prompt "second"
+          resume-from "{{draft.session_id}}"
+         exit
+         route draft revise
+        exit
+      PRC
+      doc = parse(src)
+      # Strip the upstream block's iface so upstream_iface lookup returns nil
+      doc.interfaces.reject! { |i| i.name == "n" }
+      result = Prouterd::Config::Validator.validate(doc)
+      expect { result }.not_to raise_error
+    end
+
     it "accepts a non-{{...}} literal resume-from value (treated as runtime opaque)" do
       src = <<~PRC
         router demo

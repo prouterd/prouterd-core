@@ -35,6 +35,42 @@ RSpec.describe Prouterd::Runtime::Scheduler do
     end
   end
 
+  describe "#dispatch with no running_commit / no metrics" do
+    it "passes commit_id: nil to enqueue when store has no running pointer" do
+      document = parse(<<~PRC)
+        router demo
+        exit
+        interface manual cli
+         no shutdown
+        exit
+        interface cron daily
+         schedule "* * * * *"
+         no shutdown
+        exit
+        interface docker img
+         image x
+        exit
+        process p
+         block hello
+          interface docker img
+         exit
+        exit
+        route interface daily process p
+        exit
+      PRC
+      allow(store).to receive(:load_running).and_return(document)
+      allow(store).to receive(:running_commit).and_return(nil)
+      # No metrics: argument omitted on scheduler ctor.
+      sched = described_class.new(store: store, runner: runner, jobs: jobs,
+                                   logger: Prouterd::NullLogger.new)
+      iface = document.interfaces.find { |i| i.name == "daily" }
+      sched.send(:dispatch, iface, document, Time.now.utc)
+
+      latest = repo.list_runs(process_name: "p", limit: 1).first
+      expect(latest.process_config_commit_id).to be_nil
+    end
+  end
+
   describe "#parse_cron error rescue" do
     it "returns nil and logs warning on invalid cron expression" do
       sched = described_class.new(store: store, runner: runner, jobs: jobs)

@@ -175,7 +175,7 @@ module Prouterd
             session.running_config,
             process_name,
             input_event: event,
-            commit_id: session.store&.running_commit&.id
+            commit_id: session.store.running_commit&.id
           )
           render_run_summary(run, session, out)
           :handled

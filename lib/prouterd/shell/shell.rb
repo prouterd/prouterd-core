@@ -65,8 +65,6 @@ module Prouterd
 
         loop do
           mode = current_mode
-          break if mode.nil?
-
           line = read_input(prompt_for(mode))
           break if line.nil? # EOF
 

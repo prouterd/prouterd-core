@@ -417,6 +417,116 @@ RSpec.describe "Coverage mop-up — batch 6 (direct calls)" do
     end
   end
 
+  describe "Tracer.deep_stringify with Array values" do
+    it "recursively stringifies symbol keys inside Arrays" do
+      tracer = Prouterd::Runtime::Tracer.new(
+        Prouterd::Config::AST::Document.new, {}, nil
+      )
+      input = { a: [{ b: 1 }, { c: 2 }] }
+      out = tracer.send(:deep_stringify, input)
+      expect(out).to eq("a" => [{ "b" => 1 }, { "c" => 2 }])
+    end
+  end
+
+  describe "Shell::Shell read_input via Reline returning a real line" do
+    it "appends \\n to the returned line (then branch of line.nil? ternary)" do
+      session = Prouterd::Shell::Session.new
+      session.replace_running(parse("router demo\nexit\n"))
+      session.mode_stack << Prouterd::Shell::Modes::User.new
+      input = StringIO.new
+      def input.isatty; true; end
+      shell = Prouterd::Shell::Shell.new(
+        session: session,
+        input: input, output: StringIO.new, error: StringIO.new,
+        interactive: true, banner: false
+      )
+      queue = ["show version", "exit", nil]
+      reline = Module.new
+      reline.define_singleton_method(:readline) { |_, _| queue.shift }
+      reline.define_singleton_method(:completion_proc=) { |_| }
+      reline.define_singleton_method(:respond_to?) { |sym| sym == :completion_proc= }
+      stub_const("Reline", reline)
+      expect(shell.run).to eq(0)
+    end
+  end
+
+  describe "API::V1 replay: payload without 'context' key" do
+    include Rack::Test::Methods
+    let(:db) { Prouterd::Storage::DB.open(":memory:") }
+    let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+    after { db.close }
+
+    def app
+      Prouterd::API::App.new(
+        store: store, runner: Prouterd::Runner::StubRunner.new,
+        jobs: Prouterd::Storage::Repositories::Jobs.new(db),
+        in_flight: nil, metrics: nil, admin_token: nil
+      )
+    end
+
+    it "uses original.input_event_json when input_json lacks 'context' (no &.dig short-circuit)" do
+      doc = parse(<<~PRC)
+        router demo
+        exit
+        interface docker img
+         image x
+        exit
+        process p
+         block hello
+          interface docker img
+         exit
+        exit
+      PRC
+      store.commit(doc)
+      runs = Prouterd::Storage::Repositories::Runs.new(db)
+      run = runs.create_run(process_name: "p", input_event: { "from" => "orig" },
+                            process_config_commit_id: store.running_commit.id)
+      step = runs.create_step(run_id: run.id, block_name: "hello")
+      # input_json with NO 'context' key
+      runs.update_step(step.id, status: "success", input_json: JSON.dump("other" => "x"))
+      post "/v1/runs/#{run.uid}/replay", JSON.dump(from_block: "hello"),
+           { "CONTENT_TYPE" => "application/json" }
+      expect(last_response.status).to eq(202)
+    end
+  end
+
+  describe "API::V1 post_run_replay original.input_event_json nil" do
+    include Rack::Test::Methods
+    let(:db) { Prouterd::Storage::DB.open(":memory:") }
+    let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+    after { db.close }
+
+    def app
+      Prouterd::API::App.new(
+        store: store, runner: Prouterd::Runner::StubRunner.new,
+        jobs: Prouterd::Storage::Repositories::Jobs.new(db),
+        in_flight: nil, metrics: nil, admin_token: nil
+      )
+    end
+
+    it "feeds {} when no from_block AND original.input_event_json is nil (else of ternary on L341)" do
+      doc = parse(<<~PRC)
+        router demo
+        exit
+        interface docker img
+         image x
+        exit
+        process p
+         block hello
+          interface docker img
+         exit
+        exit
+      PRC
+      store.commit(doc)
+      runs = Prouterd::Storage::Repositories::Runs.new(db)
+      run = runs.create_run(process_name: "p", input_event: {},
+                            process_config_commit_id: store.running_commit.id)
+      db.execute("UPDATE runs SET input_event_json = NULL WHERE id = ?", [run.id])
+      post "/v1/runs/#{run.uid}/replay", "{}", { "CONTENT_TYPE" => "application/json" }
+      expect(last_response.status).to eq(202)
+    end
+  end
+
   describe "Logger formatter newline handling" do
     it "exercises both branches of the formatter (ends-with-\\n vs not)" do
       io = StringIO.new

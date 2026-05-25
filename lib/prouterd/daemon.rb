@@ -181,7 +181,7 @@ module Prouterd
         end
         0
       ensure
-        store&.db&.close if store && store != :error
+        store.db.close if store && store != :error
       end
 
       private

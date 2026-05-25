@@ -560,6 +560,51 @@ RSpec.describe Prouterd::Runtime::BlockExecutor do
     end
   end
 
+  describe "max-cost-usd cost UNDER cap" do
+    it "leaves the result untouched when accumulated cost is still under the cap" do
+      doc = parse(<<~PRC)
+        router demo
+        exit
+        interface docker img
+         image x
+        exit
+        process p
+         block b
+          interface docker img
+          max-cost-usd 100.0
+         exit
+        exit
+      PRC
+      run = runs.create_run(process_name: "p", input_event: {})
+      runs.add_run_usage(run.id, cost_usd: 0.5) # well under 100.0
+      process = doc.processes.first
+      block = process.blocks.first
+      runner = Class.new do
+        def run(_req)
+          Prouterd::Runner::ExecutionResult.new(
+            exit_code: 0, stdout: "", stderr: "",
+            output_json: { "ok" => true }, artifacts: [],
+            error_type: nil, error_message: nil,
+            duration_ms: 0, started_at: nil, finished_at: nil
+          )
+        end
+      end.new
+      ex = described_class.new(
+        db: db, runs: runs, runner: runner,
+        artifact_store: Prouterd::Runtime::ArtifactStore.new,
+        secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+        events: Prouterd::Events.default,
+        logger: Prouterd::NullLogger.new, mcp_pool: nil,
+        retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+      )
+      result = ex.execute_single_attempt(run, process, block, 1,
+                                          Prouterd::Runtime::Context.new({}),
+                                          doc, Mutex.new, Mutex.new,
+                                          Prouterd::Runtime::Redactor.new([]))
+      expect(result.error_type).to be_nil
+    end
+  end
+
   describe "#build_log_sink" do
     let(:run) { runs.create_run(process_name: "p", input_event: {}) }
     let(:step) { runs.create_step(run_id: run.id, block_name: "b") }

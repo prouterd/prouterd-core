@@ -230,6 +230,114 @@ RSpec.describe "Coverage mop-up — batch 6 (direct calls)" do
   end
 
   # ============================================================
+  # scheduler dispatch with metrics increment fires
+  # ============================================================
+
+  describe "Runtime::Scheduler dispatch increments metrics when configured" do
+    let(:db) { Prouterd::Storage::DB.open(":memory:") }
+    let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+    after { db.close }
+
+    it "increments :cron_fires_total per dispatch when @metrics is set" do
+      doc = parse(<<~PRC)
+        router demo
+        exit
+        interface cron daily
+         schedule "* * * * *"
+         no shutdown
+        exit
+        interface docker img
+         image x
+        exit
+        process p
+         block hello
+          interface docker img
+         exit
+        exit
+        route interface daily process p
+        exit
+      PRC
+      store.commit(doc)
+      in_flight = Prouterd::Runtime::InFlightRegistry.new
+      metrics = Prouterd::API::Metrics.new(in_flight: in_flight)
+      sched = Prouterd::Runtime::Scheduler.new(
+        store: store, runner: Prouterd::Runner::StubRunner.new,
+        jobs: Prouterd::Storage::Repositories::Jobs.new(db),
+        logger: Prouterd::NullLogger.new,
+        metrics: metrics
+      )
+      iface = doc.interfaces.find { |i| i.name == "daily" }
+      expect(metrics).to receive(:increment).with(:cron_fires_total, hash_including(interface: "daily")).at_least(:once)
+      sched.send(:dispatch, iface, doc, Time.now.utc)
+    end
+  end
+
+  # ============================================================
+  # docker_runner: DockerError thrown AFTER started_at was assigned
+  # ============================================================
+
+  describe "Runner::DockerRunner DockerError post-started_at" do
+    let(:runner) { Prouterd::Runner::DockerRunner.new }
+    before do
+      unless defined?(Docker)
+        stub_const("Docker", Module.new)
+        stub_const("Docker::Error", Module.new)
+        stub_const("Docker::Error::DockerError", Class.new(StandardError))
+        stub_const("Docker::Error::NotFoundError", Class.new(StandardError))
+      end
+    end
+
+    it "preserves started_at on the result when wait() raises DockerError" do
+      Prouterd::Runner::DockerRunner.instance_variable_set(:@docker_available, true)
+      stub_const("Docker::Container", Class.new { def self.create(*); end })
+      stub_const("Docker::Image", Class.new { def self.get(*); end; def self.create(*); end })
+      allow(Docker::Image).to receive(:get).and_return(:present)
+
+      # Container that starts fine then blows up on .wait, after started_at = Time.now.utc.
+      fake = Class.new do
+        attr_reader :id
+        def initialize(wd); @id = "c"; @wd = wd; end
+        def start; File.write(File.join(@wd, "output.json"), '{}'); end
+        def wait; raise Docker::Error::DockerError, "mid-wait"; end
+        def json; { "State" => {} }; end
+        def streaming_logs(**); end
+        def delete(**); end
+      end
+      allow(Docker::Container).to receive(:create) do |params|
+        wd = params["HostConfig"]["Binds"].first.split(":").first
+        fake.new(wd)
+      end
+
+      req = Prouterd::Runner::RunRequest.new(
+        run_uid: "r", process_name: "p", block_name: "b",
+        execution_type: "docker", attempt: 1,
+        env: {}, input_json: {}, timeout_ms: nil,
+        type_fields: { "image" => "x" }, staged_inputs: {}
+      )
+      result = runner.run(req)
+      expect(result.error_type).to eq("docker_error")
+      expect(result.started_at).to match(/\d{4}-\d{2}-\d{2}T/)
+      Prouterd::Runner::DockerRunner.instance_variable_set(:@docker_available, nil)
+    end
+  end
+
+  # ============================================================
+  # fan_out build_fan_out_event with strip_prefix branch
+  # ============================================================
+
+  describe "Runtime::FanOut build_fan_out_event strip_prefix" do
+    it "strips the prefix from each matched string when strip_prefix is set" do
+      fan_out = Prouterd::Runtime::FanOut.new(db: nil, runs: nil, host: nil)
+      maps = [{ "name" => "tags", "from" => "labels",
+                "filter_prefix" => "team-", "strip_prefix" => true }]
+      item = { "labels" => ["team-alpha", "team-beta", "other"] }
+      event = fan_out.send(:build_fan_out_event, item, 0, maps)
+      expect(event["tags"]).to eq(["alpha", "beta"])
+      expect(event["index"]).to eq(0)
+    end
+  end
+
+  # ============================================================
   # api/v1: post_run_replay use_current_config: true with running pointer
   # ============================================================
 

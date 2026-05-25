@@ -44,6 +44,10 @@ RSpec.describe Prouterd::Iface::PostgresCaller do
     it "honors backslash escapes inside a quoted value" do
       expect(caller.send(:parse_params, %q("she said \"hi\"",42))).to eq(['she said "hi"', "42"])
     end
+
+    it "exits the parse loop when the input has trailing separators only" do
+      expect(caller.send(:parse_params, "a,  ,  ")).to eq(["a"])
+    end
   end
 
   describe "#parse_int" do

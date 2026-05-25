@@ -228,7 +228,7 @@ module Prouterd
         @stderr.puts "prouter diff: #{e.message}"
         2
       ensure
-        store&.db&.close if store && store != :error
+        store.db.close if store && store != :error
       end
 
       # `prouter replay run <uid>` — re-runs a previous run.
@@ -509,7 +509,7 @@ module Prouterd
         emit_validate_diff(path, diff)
         diff.empty? ? 0 : 0
       ensure
-        store&.db&.close if store && store != :error
+        store.db.close if store && store != :error
       end
 
       def emit_validate_diff(path, diff)
@@ -584,7 +584,7 @@ module Prouterd
         end
         0
       ensure
-        store&.db&.close if store && store != :error
+        store.db.close if store && store != :error
       end
 
       # Parses --config/-c, --db, --no-db, --runner options off @argv. Returns
@@ -664,7 +664,7 @@ module Prouterd
 
         yield(store, runner, opts)
       ensure
-        store&.db&.close if store && store != :error
+        store.db.close if store && store != :error
       end
 
       def read_file(path)

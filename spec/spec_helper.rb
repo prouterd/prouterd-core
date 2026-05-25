@@ -19,6 +19,11 @@ if ENV["COVERAGE"]
     add_group "Storage",  "lib/prouterd/storage"
     add_group "CLI",      "lib/prouterd/cli"
     add_group "Util",     "lib/prouterd/util"
+
+    # CI gate: any drop below 100% line OR 100% branch coverage exits
+    # the rspec process non-zero. :nocov: annotations are not permitted
+    # in lib/ — hard-to-test paths get refactored, not skipped.
+    minimum_coverage line: 100, branch: 100
   end
 end
 

@@ -28,6 +28,16 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
-      - name: Run RSpec
-        run: bundle exec rspec --format progress
+      - name: Run RSpec with coverage gate
+        # COVERAGE=1 activates simplecov; the spec_helper's
+        # `minimum_coverage line: 100, branch: 100` exits non-zero on
+        # any drop, blocking the merge.
+        run: COVERAGE=1 bundle exec rspec --format progress
         continue-on-error: ${{ matrix.experimental }}
+      - name: Upload coverage report on failure
+        if: failure() && !matrix.experimental
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.ruby }}
+          path: coverage/
+          retention-days: 7

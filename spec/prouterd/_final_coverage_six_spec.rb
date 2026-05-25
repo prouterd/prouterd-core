@@ -322,6 +322,115 @@ RSpec.describe "Coverage mop-up — batch 6 (direct calls)" do
   end
 
   # ============================================================
+  # AST::Contract upsert_requirement: optional after require keeps required=true
+  # (else branch of `existing.required = true if required`)
+  # ============================================================
+
+  describe "Config::AST::Contract upsert_requirement optional-after-require" do
+    it "keeps required=true when an optional clause repeats a previously-required path" do
+      doc = parse(<<~PRC)
+        router demo
+        exit
+        contract c
+         require lead.email type string
+         optional lead.email format email
+        exit
+      PRC
+      req = doc.contracts.first.requirements.first
+      expect(req.required).to be(true)
+      expect(req.format).to eq("email")
+    end
+  end
+
+  # ============================================================
+  # Logger formatter: msg already ends in newline branch
+  # ============================================================
+
+  describe "BlockExecutor build_env plugin nil branch" do
+    let(:db) { Prouterd::Storage::DB.open(":memory:") }
+    let(:runs) { Prouterd::Storage::Repositories::Runs.new(db) }
+    after { db.close }
+
+    it "skips plugin-driven secret_refs when iface.type isn't in the registry" do
+      doc = parse(<<~PRC)
+        router demo
+        exit
+        interface docker img
+         image x
+        exit
+        process p
+         block b
+          interface docker img
+         exit
+        exit
+      PRC
+      executor = Prouterd::Runtime::BlockExecutor.new(
+        db: db, runs: runs, runner: Prouterd::Runner::StubRunner.new,
+        artifact_store: Prouterd::Runtime::ArtifactStore.new,
+        secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+        events: Prouterd::Events.default, logger: Prouterd::NullLogger.new,
+        mcp_pool: nil, retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+      )
+      run = runs.create_run(process_name: "p", input_event: {})
+      iface = Prouterd::Config::AST::Interface.new(type: "phantom", name: "x", line: 1)
+      env = executor.build_env(run, doc.processes.first, doc.processes.first.blocks.first, iface, doc, 1)
+      # No NoMethodError on the nil-plugin path; PROUTER_* env vars still set.
+      expect(env["PROUTER_RUN_ID"]).to eq(run.uid)
+    end
+  end
+
+  describe "API::V1 interface_summary empty-string value drop" do
+    include Rack::Test::Methods
+    let(:db) { Prouterd::Storage::DB.open(":memory:") }
+    let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+    after { db.close }
+
+    def app
+      Prouterd::API::App.new(
+        store: store, runner: Prouterd::Runner::StubRunner.new,
+        jobs: Prouterd::Storage::Repositories::Jobs.new(db),
+        in_flight: nil, metrics: nil, admin_token: nil
+      )
+    end
+
+    it "drops fields whose value is an empty String/Array (respond_to :empty? && empty?)" do
+      v1 = Prouterd::API::V1.new(
+        store: store, runner: Prouterd::Runner::StubRunner.new,
+        secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+        in_flight: nil, metrics: nil,
+        jobs: Prouterd::Storage::Repositories::Jobs.new(db),
+        app: nil
+      )
+      iface = Prouterd::Config::AST::Interface.new(type: "llm", name: "l", line: 1)
+      iface.type_fields = {
+        "provider" => "claude_cli",
+        "model"    => "m",
+        "env"      => {},          # respond_to?(:empty?) && empty?
+        "env-forward" => [],       # ditto
+        "secret"   => [],          # ditto
+      }
+      summary = v1.send(:interface_summary, iface)
+      expect(summary[:fields]).not_to have_key("env")
+      expect(summary[:fields]).not_to have_key("env-forward")
+      expect(summary[:fields]).not_to have_key("secret")
+      expect(summary[:fields]).to include("provider" => "claude_cli", "model" => "m")
+    end
+  end
+
+  describe "Logger formatter newline handling" do
+    it "exercises both branches of the formatter (ends-with-\\n vs not)" do
+      io = StringIO.new
+      logger = Prouterd::Logger.build(io, level: "debug")
+      # Call .info with messages that hit both branches of the
+      # formatter lambda set in Logger.build.
+      logger.info("ends-with-newline\n", facility: "T", mnemonic: "T")
+      logger.info("plain-message",      facility: "T", mnemonic: "T")
+      expect(io.string).to include("ends-with-newline\n")
+      expect(io.string).to include("plain-message\n")
+    end
+  end
+
+  # ============================================================
   # fan_out build_fan_out_event with strip_prefix branch
   # ============================================================
 

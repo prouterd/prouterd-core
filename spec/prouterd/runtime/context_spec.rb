@@ -73,6 +73,12 @@ RSpec.describe Prouterd::Runtime::Context do
     expect(ctx.get("a")).to eq("k" => "v")
   end
 
+  it "merge_into hash-merges when both existing and incoming are Hashes" do
+    ctx = described_class.new("a" => { "k1" => "v1" })
+    ctx.merge_into("a", { "k2" => "v2" })
+    expect(ctx.get("a")).to eq("k1" => "v1", "k2" => "v2")
+  end
+
   it "merge_into overwrites when the incoming value is non-Hash" do
     ctx = described_class.new("a" => { "k" => "v" })
     ctx.merge_into("a", "scalar")

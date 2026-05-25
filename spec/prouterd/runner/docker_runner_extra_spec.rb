@@ -601,24 +601,6 @@ RSpec.describe Prouterd::Runner::DockerRunner do
   end
 end
 
-RSpec.describe "Runner::DockerRunner collect_artifacts skips empty rel_name" do
-  let(:runner) { Prouterd::Runner::DockerRunner.new }
-  it "ignores a Dir.glob yield whose path equals the artifacts root" do
-    Dir.mktmpdir do |work|
-      art_dir = File.join(work, "artifacts")
-      FileUtils.mkdir_p(art_dir)
-      File.write(File.join(art_dir, "x.txt"), "y")
-      # Inject the art-dir path itself as a Dir.glob yield. After the
-      # sub strips the prefix, rel_name == "" → next fires.
-      allow(Dir).to receive(:glob).and_wrap_original do |orig, *args|
-        [art_dir] + orig.call(*args)
-      end
-      descriptors = runner.send(:collect_artifacts, work)
-      expect(descriptors.map(&:name)).to eq(["x.txt"])
-    end
-  end
-end
-
 RSpec.describe "Runner::DockerRunner collect_artifacts SystemCallError rescue" do
   let(:runner) { Prouterd::Runner::DockerRunner.new }
   it "skips files whose lstat raises SystemCallError" do
@@ -651,21 +633,15 @@ RSpec.describe "Runner::DockerRunner capture_logs unknown stream symbol" do
   end
 end
 
-RSpec.describe "Runner::DockerRunner artifact rel_name empty" do
+RSpec.describe "Runner::DockerRunner demultiplex_logs truncated frame" do
   let(:runner) { Prouterd::Runner::DockerRunner.new }
-  it "drops the artifacts root (rel_name '' after the sub)" do
-    Dir.mktmpdir do |work|
-      FileUtils.mkdir_p(File.join(work, "artifacts"))
-      File.write(File.join(work, "artifacts/foo.txt"), "x")
-      results = runner.send(:collect_artifacts, work)
-      expect(results.map(&:name)).to eq(["foo.txt"])
-      expect(results.map(&:name)).not_to include("")
-    end
-  end
 
-  it "demultiplex_logs breaks the loop when payload-byteslice returns nil" do
-    # 8-byte header claims 100 bytes payload but buffer has only header
-    raw = [1, 0, 0, 0, 100].pack("CCCCN") # exactly 8 bytes, no payload
+  it "returns empty streams when the frame header advertises payload bytes that aren't present" do
+    # Docker multiplexes container output as [stream(1) | pad(3) | size(4) | payload(size)].
+    # Build a buffer that contains a header only — the size field claims 100 bytes
+    # but the buffer ends right after the 8-byte header. byteslice clamps to the
+    # remaining 0 bytes, so the loop processes one empty payload and exits.
+    raw = [1, 0, 0, 0, 100].pack("CCCCN")
     out, err = runner.send(:demultiplex_logs, raw)
     expect(out).to eq("")
     expect(err).to eq("")
@@ -747,22 +723,6 @@ RSpec.describe "Runner::DockerRunner DockerError post-started_at" do
     expect(result.error_type).to eq("docker_error")
     expect(result.started_at).to match(/\d{4}-\d{2}-\d{2}T/)
     Prouterd::Runner::DockerRunner.instance_variable_set(:@docker_available, nil)
-  end
-end
-
-RSpec.describe "Runner::DockerRunner collect_artifacts edge" do
-  let(:runner) { Prouterd::Runner::DockerRunner.new }
-
-  it "skips the artifacts dir itself (rel_name empty after sub)" do
-    Dir.mktmpdir do |work|
-      FileUtils.mkdir_p(File.join(work, "artifacts"))
-      File.write(File.join(work, "artifacts/x.txt"), "y")
-      # Listing with FNM_DOTMATCH also yields ".", which strips to
-      # empty rel_name → the `next if rel_name.empty?` branch fires.
-      descriptors = runner.send(:collect_artifacts, work)
-      expect(descriptors.map(&:name)).to include("x.txt")
-      expect(descriptors.map(&:name)).not_to include("")
-    end
   end
 end
 

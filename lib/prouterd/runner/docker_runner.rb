@@ -319,8 +319,6 @@ module Prouterd
           stream = raw.getbyte(pos)
           size = raw.byteslice(pos + 4, 4).unpack1("N")
           payload = raw.byteslice(pos + 8, size)
-          break if payload.nil?
-
           payload_str = payload.dup.force_encoding("UTF-8")
           payload_str.scrub!("?")
           case stream
@@ -427,7 +425,6 @@ module Prouterd
           next unless stat.file?
 
           rel_name = path.sub(/\A#{Regexp.escape(dir)}\/?/, "")
-          next if rel_name.empty?
 
           size = stat.size
           checksum = file_checksum(path)

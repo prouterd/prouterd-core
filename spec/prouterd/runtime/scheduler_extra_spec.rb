@@ -591,6 +591,7 @@ RSpec.describe "Runtime::Scheduler invalid cron rescue lines" do
   after { db.close }
 
   it "logs CRON_INVALID + returns nil when Fugit.parse_cron raises" do
+    require "fugit"
     sched = Prouterd::Runtime::Scheduler.new(
       store: store, runner: Prouterd::Runner::StubRunner.new,
       jobs: Prouterd::Storage::Repositories::Jobs.new(db),

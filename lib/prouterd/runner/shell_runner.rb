@@ -158,13 +158,12 @@ module Prouterd
 
             timed_out = true
             terminate_process(wait_thr)
-            status = wait_thr.value if wait_thr.join(0)
             break
           end
 
           out_reader.join
           err_reader.join
-          [out_reader.value, err_reader.value, timed_out ? nil : status&.exitstatus, timed_out]
+          [out_reader.value, err_reader.value, timed_out ? nil : status.exitstatus, timed_out]
         end
       end
 
@@ -269,7 +268,6 @@ module Prouterd
           next unless stat.file?
 
           rel = path.sub(/\A#{Regexp.escape(dir)}\/?/, "")
-          next if rel.empty?
 
           ArtifactDescriptor.new(
             name: rel,

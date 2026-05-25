@@ -1019,3 +1019,32 @@ RSpec.describe "API::V1 GET /v1/mcp with @app.mcp_pool nil" do
     expect(entries.first["state"]).to eq("no_pool")
   end
 end
+
+RSpec.describe "API::V1#get_mcp with @app itself nil (covers the first &. else branch)" do
+  let(:db) { Prouterd::Storage::DB.open(":memory:") }
+  let(:store) { Prouterd::ControlPlane::ConfigStore.new(db) }
+  after { db.close }
+
+  it "returns no_pool when V1 is constructed without an app" do
+    doc = Prouterd::Config::Parser.parse(
+      Prouterd::Config::Lexer.tokenize(<<~PRC)
+        router demo
+        exit
+        interface mcp local
+         server bin "true"
+        exit
+      PRC
+    )
+    store.commit(doc)
+    v1 = Prouterd::API::V1.new(
+      store: store, runner: Prouterd::Runner::StubRunner.new,
+      secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+      jobs: Prouterd::Storage::Repositories::Jobs.new(db),
+      in_flight: nil, metrics: nil, app: nil
+    )
+    status, _headers, body = v1.get_mcp(Prouterd::API::FakeRequest.new)
+    expect(status).to eq(200)
+    entries = JSON.parse(body.first)["data"]
+    expect(entries.first["state"]).to eq("no_pool")
+  end
+end

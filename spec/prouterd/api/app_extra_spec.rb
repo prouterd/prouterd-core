@@ -284,6 +284,18 @@ RSpec.describe Prouterd::API::App do
       status, _, _ = app.call(env)
       expect(status).to eq(400)
     end
+
+    it "rejects an escape that survives the segment checks (defence-in-depth)" do
+      # The earlier checks (NUL, leading slash, `..` segment) catch every
+      # natural traversal attempt, so the final start_with?(root + "/") guard
+      # is reached only when expand_path resolves to a path outside the
+      # console root. Stub expand_path to simulate that on demand.
+      allow(File).to receive(:expand_path).and_call_original
+      allow(File).to receive(:expand_path).with("ok.html", console_dir).and_return("/etc/passwd")
+      env = Rack::MockRequest.env_for("/console/ok.html", method: "GET")
+      status, _, _ = app.call(env)
+      expect(status).to eq(400)
+    end
   end
 
   describe "parse_json_body rescue" do

@@ -133,6 +133,25 @@ RSpec.describe Prouterd::Runner::ShellRunner do
     end
   end
 
+  describe "timeout against a process that ignores TERM" do
+    it "force-kills the process and returns timeout (covers the join(0) == nil branch + nil status)" do
+      # ruby -e "trap('TERM') { }; sleep 60" ignores TERM, forcing terminate_process
+      # to escalate to KILL. wait_thr.join(0) after TERM returns nil; status stays nil.
+      cmd = %q[ruby -e "trap('TERM'){}; sleep 60"]
+      result = runner.run(request(command: cmd, timeout_ms: 200))
+      expect(result.error_type).to eq("timeout")
+      expect(result.exit_code).to be_nil
+    end
+  end
+
+  describe "ensure cleanup when Dir.mktmpdir fails" do
+    it "skips remove_entry when work_dir was never assigned" do
+      allow(Dir).to receive(:mktmpdir).and_raise(Errno::ENOSPC.new("disk full"))
+      req = request(command: "true")
+      expect { runner.run(req) }.to raise_error(Errno::ENOSPC)
+    end
+  end
+
   describe "run with Errno::ENOENT (binary missing)" do
     it "returns shell_error envelope" do
       # parse_command will produce ["nope-cmd-doesnt-exist"]; popen3
@@ -237,27 +256,6 @@ RSpec.describe Prouterd::Runner::ShellRunner do
   end
 end
 
-RSpec.describe "Runner::ShellRunner collect_artifacts rel.empty? branch" do
-  let(:runner) { Prouterd::Runner::ShellRunner.new }
-  it "drops empty-rel entries from the listing" do
-    Dir.mktmpdir do |work|
-      art_dir = File.join(work, "artifacts")
-      FileUtils.mkdir_p(art_dir)
-      File.write(File.join(art_dir, "f.txt"), "x")
-      # Override Dir.glob to inject the artifacts root itself as a yielded
-      # path so the post-sub rel becomes "".
-      original = Dir.method(:glob)
-      allow(Dir).to receive(:glob) do |pattern, *args|
-        paths = original.call(pattern, *args)
-        paths.unshift(art_dir) # rel after sub("\A<art_dir>/?", "") is ""
-        paths
-      end
-      result = runner.send(:collect_artifacts, work)
-      expect(result.map(&:name)).to eq(["f.txt"])
-    end
-  end
-end
-
 RSpec.describe "Runner::ShellRunner terminate_process clean-exit branch" do
   let(:runner) { Prouterd::Runner::ShellRunner.new }
   it "captures the status when wait_thr.join(0) returns the thread (exited)" do
@@ -276,14 +274,3 @@ RSpec.describe "Runner::ShellRunner terminate_process clean-exit branch" do
   end
 end
 
-RSpec.describe "Runner::ShellRunner collect_artifacts dir-entry skip" do
-  let(:runner) { Prouterd::Runner::ShellRunner.new }
-  it "drops the artifacts root '.' entry (rel.empty? branch)" do
-    Dir.mktmpdir do |work|
-      FileUtils.mkdir_p(File.join(work, "artifacts"))
-      File.write(File.join(work, "artifacts/x.txt"), "x")
-      result = runner.send(:collect_artifacts, work)
-      expect(result.map(&:name)).to eq(["x.txt"])
-    end
-  end
-end

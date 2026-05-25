@@ -244,17 +244,10 @@ module Prouterd
           raise StorageError, "could not allocate unique run uid"
         end
 
-        def run_columns
-          "id, uid, process_name, process_config_commit_id, interface_name, status, " \
-            "input_event_json, context_json, error_summary, started_at, finished_at, " \
-            "created_at, parent_run_id, replay_of_run_id, thread_id, tokens_in, tokens_out, " \
-            "cost_usd, mcp_tools_json"
-        end
-
-        # Same fields as run_columns, prefixed with `r.` and tail-appended
-        # with parent.uid (NULL when the run has no replay_of_run_id, courtesy
-        # of LEFT JOIN). Callers issue this list against `runs r LEFT JOIN
-        # runs parent ON r.replay_of_run_id = parent.id`.
+        # Run columns prefixed with `r.` and tail-appended with parent.uid
+        # (NULL when the run has no replay_of_run_id, courtesy of LEFT JOIN).
+        # Callers issue this list against
+        # `runs r LEFT JOIN runs parent ON r.replay_of_run_id = parent.id`.
         def run_columns_with_parent
           "r.id, r.uid, r.process_name, r.process_config_commit_id, r.interface_name, r.status, " \
             "r.input_event_json, r.context_json, r.error_summary, r.started_at, r.finished_at, " \

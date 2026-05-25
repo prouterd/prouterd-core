@@ -279,6 +279,44 @@ RSpec.describe Prouterd::Runtime::AgenticRunner do
       expect(captured[:cwd]).to eq(42)
     end
 
+    it "templates String call_fields (covers the then branch of the is_a?(String) ternary)" do
+      doc = make_doc(<<~PRC)
+        router demo
+        exit
+        interface llm m
+         provider anthropic
+        exit
+        process p
+         block b
+          interface llm m
+          prompt "hi"
+          agentic on
+          cwd "/tmp/{{run.id}}"
+         exit
+        exit
+      PRC
+
+      block_executor = Prouterd::Runtime::BlockExecutor.new(
+        db: db, runs: runs, runner: runner_stub,
+        artifact_store: Prouterd::Runtime::ArtifactStore.new,
+        secret_resolver: Prouterd::Runtime::EnvSecretResolver.new,
+        events: Prouterd::Events.default,
+        logger: Prouterd::NullLogger.new, mcp_pool: nil,
+        retry_engine: Prouterd::Runtime::RetryEngine.new(runs: runs)
+      )
+      ar = described_class.new(runs: runs, runner: runner_stub, mcp_pool: nil, host: block_executor)
+      captured = nil
+      allow(Prouterd::Iface::LlmAgentic).to receive(:run) do |**kwargs|
+        captured = kwargs
+        { ok: true, output_json: { "text" => "ok" }, exit_code: 0,
+          stdout: "", stderr: "", error_type: nil, error_message: nil }
+      end
+      process = doc.processes.first
+      block = process.blocks.first
+      ar.execute(run, process, block, context, doc, db_mutex, ctx_mutex, redactor, 1)
+      expect(captured[:cwd]).to be_a(String)
+    end
+
     it "clamps max-tokens < 1 to the default 1024 and forwards failure outcomes" do
       doc = make_doc(<<~PRC)
         router demo

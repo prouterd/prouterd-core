@@ -89,6 +89,14 @@ RSpec.describe Prouterd::API::RpcDispatcher do
       expect(r[:payload]["data"]["commit_id"]).to be_a(Integer)
     end
 
+    it "config.rollback restores the document at the given commit_id" do
+      first_id = store.running_commit.id
+      store.commit(parse("router demo2\nexit\n"))
+      r = dispatcher.call("config.rollback", { "commit_id" => first_id })
+      expect(r[:type]).to eq("reply")
+      expect(r[:payload]["data"]["commit_id"]).to be_a(Integer)
+    end
+
     it "processes.trigger enqueues a run" do
       r = dispatcher.call("processes.trigger", { "name" => "pipeline", "event" => { "type" => "x" } })
       expect(r[:type]).to eq("reply")

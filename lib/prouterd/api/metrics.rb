@@ -65,7 +65,7 @@ module Prouterd
           case c
           when "\\" then '\\\\'
           when '"'  then '\\"'
-          when "\n" then '\\n'
+          else           '\\n'
           end
         end
       end

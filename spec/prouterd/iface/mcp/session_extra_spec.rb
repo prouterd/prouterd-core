@@ -321,6 +321,42 @@ RSpec.describe Prouterd::Iface::Mcp::Session do
     s&.stop
   end
 
+  it "swallows ESRCH from Process.kill('KILL', ...) when the pid vanished mid-escalation" do
+    fake = Tempfile.create(["mcp-noterm-esrch-", ".rb"])
+    fake.write(<<~'RUBY')
+      require "json"
+      $stdout.sync = true
+      Signal.trap("TERM") { }
+      Thread.new do
+        while (line = $stdin.gets)
+          line.strip!; next if line.empty?
+          frame = JSON.parse(line) rescue next
+          id = frame["id"]
+          case frame["method"]
+          when "initialize"
+            $stdout.puts JSON.dump("jsonrpc" => "2.0", "id" => id, "result" => {})
+          when "tools/list"
+            $stdout.puts JSON.dump("jsonrpc" => "2.0", "id" => id, "result" => { "tools" => [] })
+          end
+        end
+      end
+      loop { sleep 0.05 }
+    RUBY
+    fake.close
+
+    s = described_class.new(argv: ["ruby", fake.path])
+    s.start
+    s.initialize_handshake(timeout_seconds: 3)
+    s.list_tools(timeout_seconds: 3)
+    allow(Process).to receive(:kill).and_call_original
+    allow(Process).to receive(:kill).with("KILL", anything).and_raise(Errno::ESRCH)
+    allow(s.instance_variable_get(:@wait_thread)).to receive(:join).and_return(nil)
+    expect { s.stop(grace_seconds: 0.1) }.not_to raise_error
+  ensure
+    File.unlink(fake.path) if fake
+    begin; Process.kill("KILL", s.instance_variable_get(:@wait_thread)&.pid); rescue StandardError; end
+  end
+
   it "escalates to KILL when TERM is ignored during stop" do
     fake = Tempfile.create(["mcp-noterm-", ".rb"])
     fake.write(<<~'RUBY')

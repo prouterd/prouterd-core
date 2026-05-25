@@ -270,6 +270,13 @@ RSpec.describe Prouterd::Iface::LocalRepoCaller do
       expect(c.send(:canonical_path, "/tmp", "../oops")).to be_nil
     end
 
+    it "canonical_path rejects an escape that survives the segment checks" do
+      c = caller_instance
+      allow(File).to receive(:expand_path).and_call_original
+      allow(File).to receive(:expand_path).with("ok", "/tmp/repo").and_return("/etc/passwd")
+      expect(c.send(:canonical_path, "/tmp/repo", "ok")).to be_nil
+    end
+
     it "canonical_path returns the abs path for a safe relative path" do
       Dir.mktmpdir do |dir|
         abs = caller_instance.send(:canonical_path, dir, "subfile")

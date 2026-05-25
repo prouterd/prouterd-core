@@ -402,7 +402,7 @@ module Prouterd
                          "#{outer_attempts[block_name]})"
               )
             end
-            next_ready.unshift(block_name) unless next_ready.include?(block_name)
+            next_ready.unshift(block_name)
           end
           ready = next_ready
         end

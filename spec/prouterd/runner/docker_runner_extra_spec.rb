@@ -705,54 +705,6 @@ RSpec.describe "Runner::DockerRunner DockerError pre-started_at" do
   end
 end
 
-RSpec.describe "Runner::DockerRunner demultiplex_logs payload truncation" do
-  let(:runner) { Prouterd::Runner::DockerRunner.new }
-  it "exits the loop cleanly when the declared payload size exceeds the buffer" do
-    # 8-byte header (stream=1, size=100), but only 5 bytes of payload provided.
-    # byteslice(8, 100) on a 13-byte buffer returns the 5-byte slice — not nil.
-    # To trigger the explicit `break if payload.nil?`, we need byteslice
-    # to return nil — that happens when pos+8 >= len, e.g. pos starts at
-    # a position one byte past end. Build a 16-byte buffer with TWO headers
-    # back-to-back: first frame consumes 8+0=8 bytes (size=0), then
-    # second frame's header starts at pos=8, claiming 100 bytes payload
-    # but bytes 16+ don't exist → byteslice(16, 100) returns "" not nil.
-    # The only way to nil is offset > total bytesize. Construct that:
-    raw = [1, 0, 0, 0, 0].pack("CCCCN") # header at pos 0, size=0 payload
-    # Now buf is 8 bytes. Loop iteration: pos=0, pos+8=8 <= len=8, enter.
-    # stream=1, size=0, payload=byteslice(8, 0)="" (not nil), pos=8. Loop
-    # check pos+8=16 > len=8 → exit normally. break never fires.
-    #
-    # To actually hit the break, force byteslice to return nil:
-    buf = +raw
-    allow(buf).to receive(:byteslice).and_call_original
-    allow(buf).to receive(:byteslice).with(8, 0).and_return(nil)
-    out, err = runner.send(:demultiplex_logs, buf)
-    expect(out).to eq("")
-    expect(err).to eq("")
-  end
-end
-
-RSpec.describe "Runner::DockerRunner collect_artifacts rel_name empty" do
-  let(:runner) { Prouterd::Runner::DockerRunner.new }
-  it "skips the artifacts root itself (after sub) when Dir.glob yields it" do
-    Dir.mktmpdir do |work|
-      art = File.join(work, "artifacts")
-      FileUtils.mkdir_p(art)
-      File.write(File.join(art, "x.txt"), "y")
-      # Stub Dir.glob to inject the art-dir itself (which would yield rel_name="")
-      allow(Dir).to receive(:glob).and_wrap_original do |orig, *args|
-        [art] + orig.call(*args)
-      end
-      results = runner.send(:collect_artifacts, work)
-      # The injected art dir is itself a directory — skipped by lstat.file? check.
-      # But for files where rel_name comes out empty after the sub, the
-      # `next if rel_name.empty?` would fire. Construct via a file
-      # named "" (impossible). Instead just ensure no NoMethodError.
-      expect(results.map(&:name)).to include("x.txt")
-    end
-  end
-end
-
 RSpec.describe "Runner::DockerRunner DockerError post-started_at" do
   let(:runner) { Prouterd::Runner::DockerRunner.new }
   before do

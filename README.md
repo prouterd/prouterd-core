@@ -316,7 +316,7 @@ Docker / Postgres / cron callers are still optional gems
 
 ## Status
 
-Production-ready core. 2817 specs, 0 failures, 100% line + 100% branch
+Production-ready core. 2814 specs, 0 failures, 100% line + 100% branch
 coverage enforced in CI. End-to-end smoke-tested against real Docker,
 Puma, cron, and shell exec. Web console
 (`prouterd-web`) ships separately; browser login and artifact downloads

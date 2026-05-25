@@ -538,18 +538,3 @@ RSpec.describe "Iface::LocalRepoCaller commit-flush branches" do
   end
 end
 
-RSpec.describe "Iface::LocalRepoCaller canonical_path escape guard (defensive L172)" do
-  it "rejects a relative path that File.expand_path collapses outside repo_dir" do
-    caller_instance = Prouterd::Iface::LocalRepoCaller.new
-    Dir.mktmpdir do |root|
-      # Path is `subdir/.` which expand_path resolves to root, then the
-      # `.` segment is filtered out before expand_path. To actually
-      # reach the unless-branch we need a path that survives both
-      # filters and expands outside root. Use a path that contains
-      # NUL-free chars only but ends up outside via symlink? Not
-      # achievable on POSIX with expand_path alone — this branch is
-      # truly defensive against future input mutation. Skipped.
-      expect(caller_instance.send(:canonical_path, root, "valid")).to start_with(root)
-    end
-  end
-end

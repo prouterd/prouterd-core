@@ -291,7 +291,7 @@ RSpec.describe Prouterd::Runtime::AgenticRunner do
           interface llm m
           prompt "hi"
           agentic on
-          cwd "/tmp/{{run.id}}"
+          cwd "/tmp/{{seed.where}}"
          exit
         exit
       PRC
@@ -313,8 +313,12 @@ RSpec.describe Prouterd::Runtime::AgenticRunner do
       end
       process = doc.processes.first
       block = process.blocks.first
-      ar.execute(run, process, block, context, doc, db_mutex, ctx_mutex, redactor, 1)
-      expect(captured[:cwd]).to be_a(String)
+      # Seed the context so the templater has a real substitution target.
+      # If the templater is bypassed, the literal `{{seed.where}}` lands
+      # in cwd and the assertion fails — `be_a(String)` would not catch it.
+      ctx_with_seed = Prouterd::Runtime::Context.new("seed" => { "where" => "BAZ" })
+      ar.execute(run, process, block, ctx_with_seed, doc, db_mutex, ctx_mutex, redactor, 1)
+      expect(captured[:cwd]).to eq("/tmp/BAZ")
     end
 
     it "clamps max-tokens < 1 to the default 1024 and forwards failure outcomes" do

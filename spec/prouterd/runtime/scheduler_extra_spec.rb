@@ -581,7 +581,15 @@ RSpec.describe "Runtime::Scheduler tick safety break" do
     fake_cron = Object.new
     fake_cron.define_singleton_method(:next_time) { |_| stuck_at }
     allow(sched).to receive(:parse_cron).and_return(fake_cron)
+    # Without the `break if next_at == last` safety the loop would
+    # dispatch forever; with it we expect exactly one dispatch and a
+    # @last_fired entry pinned to stuck_at.
+    dispatch_calls = 0
+    allow(sched).to receive(:dispatch) { dispatch_calls += 1 }
     sched.send(:tick, now: Time.now.utc)
+    expect(dispatch_calls).to eq(1)
+    last_fired = sched.instance_variable_get(:@last_fired)
+    expect(last_fired["daily"]).to eq(stuck_at)
   end
 end
 
@@ -649,12 +657,19 @@ RSpec.describe "Runtime::Scheduler.run class-level convenience" do
   after { db.close }
 
   it "constructs and immediately calls .run on the instance" do
-    allow_any_instance_of(Prouterd::Runtime::Scheduler).to receive(:run)
-    Prouterd::Runtime::Scheduler.run(
+    instance = nil
+    allow(Prouterd::Runtime::Scheduler).to receive(:new).and_wrap_original do |orig, **kw|
+      instance = orig.call(**kw)
+      expect(instance).to receive(:run).and_return(:ran)
+      instance
+    end
+    result = Prouterd::Runtime::Scheduler.run(
       store: store,
       runner: Prouterd::Runner::StubRunner.new,
       jobs: Prouterd::Storage::Repositories::Jobs.new(db)
     )
+    expect(instance).not_to be_nil
+    expect(result).to eq(:ran)
   end
 end
 

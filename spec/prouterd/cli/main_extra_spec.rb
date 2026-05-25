@@ -609,6 +609,135 @@ RSpec.describe Prouterd::CLI::Main do
     end
   end
 
+  describe "trigger with --config injection failures" do
+    it "exits 2 when --config path doesn't exist" do
+      Tempfile.create(["evt", ".json"]) do |f|
+        f.write('{}')
+        f.flush
+        with_db do |db|
+          code, _, _ = run("trigger", "process", "p", "input", f.path,
+                            "--db", db, "--config", "/no/such/file.prc")
+          expect(code).to eq(2)
+        end
+      end
+    end
+
+    it "exits 1 when --config path fails to parse" do
+      Tempfile.create(["bad", ".prc"]) do |bad|
+        bad.write("router x\n color red\nexit\n")
+        bad.flush
+        Tempfile.create(["evt", ".json"]) do |f|
+          f.write('{}')
+          f.flush
+          with_db do |db|
+            code, _, _ = run("trigger", "process", "p", "input", f.path,
+                              "--db", db, "--config", bad.path)
+            expect(code).to eq(1)
+          end
+        end
+      end
+    end
+  end
+
+  describe "report_check entry blocks line" do
+    it "prints '(none)' for a process with no entry blocks (all blocks in cycle)" do
+      Tempfile.create(["t", ".prc"]) do |t|
+        t.write(<<~PRC)
+          router demo
+          exit
+          interface docker img
+           image x
+          exit
+          process p
+           block a
+            interface docker img
+           exit
+           block b
+            interface docker img
+           exit
+           route a b
+           route b a
+          exit
+        PRC
+        t.flush
+        code, out, _ = run("check", t.path)
+        expect(out).to include("entry blocks: (none)")
+        expect(code).to eq(1).or eq(0) # validator may flag the cycle
+      end
+    end
+  end
+
+  describe "shell_exec_warnings: warn-if-unresolvable mcp branch" do
+    it "emits a warning when mcp interface has a non-resolvable server bin path" do
+      Tempfile.create(["mcp", ".prc"]) do |t|
+        t.write(<<~PRC)
+          router demo
+          exit
+          interface mcp local
+           server bin "/no/such/binary-#{SecureRandom.hex(4)}"
+          exit
+          interface docker img
+           image x
+          exit
+          process p
+           block a
+            interface docker img
+           exit
+          exit
+        PRC
+        t.flush
+        code, out, _ = run("check", t.path)
+        expect(code).to eq(0).or eq(1)
+        expect(out).to include("interface mcp 'local'")
+      end
+    end
+  end
+
+  describe "open_store :error path through CLI" do
+    it "exits 1 from cmd_apply when DB open fails (store == :error)" do
+      Tempfile.create(["evt", ".prc"]) do |t|
+        t.write(read_fixture("minimal.prc"))
+        t.flush
+        allow(Prouterd::Storage::DB).to receive(:open).and_raise(SQLite3::CantOpenException, "permission denied")
+        code, _, err = run("apply", t.path, "--db", "/no/where.sqlite3")
+        expect(code).to eq(1)
+        expect(err).to include("cannot open DB")
+      end
+    end
+
+    it "exits 1 from cmd_diff when DB open fails" do
+      allow(Prouterd::Storage::DB).to receive(:open).and_raise(SQLite3::CantOpenException, "permission denied")
+      code, _, err = run("diff", fixture_path("minimal.prc"), "--db", "/no/where.sqlite3")
+      expect(code).to eq(1)
+      expect(err).to include("cannot open DB")
+    end
+
+    it "exits 1 from cmd_validate when DB open fails on --against running" do
+      allow(Prouterd::Storage::DB).to receive(:open).and_raise(SQLite3::CantOpenException, "permission denied")
+      code, _, err = run("validate", fixture_path("minimal.prc"), "--against", "running", "--db", "/no/where")
+      expect(code).to eq(1)
+      expect(err).to include("cannot open DB")
+    end
+
+    it "exits 1 from with_runtime when DB open fails (cmd_cancel)" do
+      allow(Prouterd::Storage::DB).to receive(:open).and_raise(SQLite3::CantOpenException, "permission denied")
+      code, _, err = run("cancel", "run", "abc", "--db", "/no/where")
+      expect(code).to eq(1)
+      expect(err).to include("cannot open DB")
+    end
+
+    it "exits 1 from with_runtime when build_runner fails" do
+      with_db do |db|
+        run("apply", fixture_path("minimal.prc"), "--db", db)
+        # Unknown runner kind → build_runner returns :error.
+        code, _, err = run("trigger", "process", "p", "input", "/tmp/x.json",
+                            "--db", db, "--runner", "totally-bogus-runner")
+        expect(code).to eq(1)
+        expect(err).to include("unknown runner")
+      end
+    end
+  end
+
   describe "shell error path" do
     it "exits 1 when initial config is bad and surfaces a ShellError" do
       Tempfile.create(["bad", ".prc"]) do |t|
